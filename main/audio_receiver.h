@@ -1,0 +1,106 @@
+#pragma once
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include "esp_err.h"
+
+/**
+ * Audio receiver for AirPlay RTP streams
+ * Handles UDP packet reception and audio decoding
+ */
+
+// Audio format info from ANNOUNCE SDP
+typedef struct {
+    char codec[32];         // "AppleLossless", "AAC", etc.
+    int sample_rate;        // 44100, 48000, etc.
+    int channels;           // 1 or 2
+    int bits_per_sample;    // 16, 24
+    int frame_size;         // Samples per frame (ALAC: 352)
+
+    // ALAC-specific config (from fmtp line)
+    uint32_t max_samples_per_frame;
+    uint8_t sample_size;
+    uint8_t rice_history_mult;
+    uint8_t rice_initial_history;
+    uint8_t rice_limit;
+    uint8_t num_channels;
+    uint16_t max_run;
+    uint32_t max_coded_frame_size;
+    uint32_t avg_bit_rate;
+    uint32_t sample_rate_config;
+} audio_format_t;
+
+// Audio encryption types
+typedef enum {
+    AUDIO_ENCRYPT_NONE = 0,
+    AUDIO_ENCRYPT_AES_CBC,
+    AUDIO_ENCRYPT_CHACHA20_POLY1305
+} audio_encrypt_type_t;
+
+// Audio encryption configuration
+typedef struct {
+    audio_encrypt_type_t type;
+    uint8_t key[32];        // AES-128 uses 16, ChaCha20 uses 32
+    uint8_t iv[16];         // AES-CBC IV
+    size_t key_len;
+} audio_encrypt_t;
+
+// Audio buffer statistics
+typedef struct {
+    uint32_t packets_received;
+    uint32_t packets_decoded;
+    uint32_t packets_dropped;
+    uint32_t decrypt_errors;
+    uint32_t buffer_underruns;
+    uint16_t last_seq;
+    uint32_t last_timestamp;
+} audio_stats_t;
+
+/**
+ * Initialize audio receiver
+ */
+esp_err_t audio_receiver_init(void);
+
+/**
+ * Set audio format from ANNOUNCE SDP
+ */
+void audio_receiver_set_format(const audio_format_t *format);
+
+/**
+ * Set encryption parameters for RTP decryption
+ */
+void audio_receiver_set_encryption(const audio_encrypt_t *encrypt);
+
+/**
+ * Start receiving audio on specified port
+ */
+esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port);
+
+/**
+ * Stop receiving audio
+ */
+void audio_receiver_stop(void);
+
+/**
+ * Get audio statistics
+ */
+void audio_receiver_get_stats(audio_stats_t *stats);
+
+/**
+ * Read decoded PCM samples from buffer
+ * @param buffer Output buffer for PCM samples (interleaved stereo, 16-bit)
+ * @param samples Number of samples to read (per channel)
+ * @return Number of samples actually read
+ */
+size_t audio_receiver_read(int16_t *buffer, size_t samples);
+
+/**
+ * Check if audio data is available
+ */
+bool audio_receiver_has_data(void);
+
+/**
+ * Flush audio buffer
+ */
+void audio_receiver_flush(void);

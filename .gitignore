@@ -1,0 +1,4 @@
+.cache/
+.claude/
+build/
+managed_components/

@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi.c"
+        "mdns_airplay.c"
+        "rtsp_server.c"
+        "plist.c"
+        "tlv8.c"
+        "hap.c"
+        "audio_receiver.c"
+        "alac_decoder.c"
+    INCLUDE_DIRS "."
+    PRIV_REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_ringbuf
+)
