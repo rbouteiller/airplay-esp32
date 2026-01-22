@@ -1,0 +1,21 @@
+menu "AirPlay 2 Receiver Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA2) to use.
+
+    config AIRPLAY_DEVICE_NAME
+        string "AirPlay Device Name"
+        default "ESP32 AirPlay"
+        help
+            Name that appears in the AirPlay device list on iOS/macOS.
+
+endmenu
