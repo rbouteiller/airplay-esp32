@@ -279,7 +279,7 @@ static size_t build_setup_bplist(uint8_t *out, size_t capacity,
 static int read_encrypted_block(int socket, uint8_t *buffer, size_t buffer_size)
 {
     if (!current_session || !encrypted_mode) {
-        ESP_LOGE(TAG, "Cannot read encrypted frame: encryption not enabled");
+        // Expected during session teardown - not an error
         return -1;
     }
 
@@ -349,7 +349,7 @@ static int read_encrypted_block(int socket, uint8_t *buffer, size_t buffer_size)
 static int write_encrypted_frame(int socket, const uint8_t *data, size_t data_len)
 {
     if (!current_session || !encrypted_mode) {
-        ESP_LOGE(TAG, "Cannot write encrypted frame: encryption not enabled");
+        // Expected during session teardown - not an error
         return -1;
     }
 
