@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -11,10 +10,6 @@
 #include "mdns_airplay.h"
 #include "rtsp_server.h"
 #include "audio_receiver.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 static const char *TAG = "airplay2";
 
@@ -89,50 +84,6 @@ static esp_err_t i2s_init(void)
     ESP_LOGI(TAG, "I2S initialized: BCK=GPIO%d, LRCK=GPIO%d, DOUT=GPIO%d, %d Hz",
              I2S_BCK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, I2S_SAMPLE_RATE);
     return ESP_OK;
-}
-
-// Play a test tone to verify I2S/DAC is working
-static void play_test_tone(int duration_seconds)
-{
-    ESP_LOGI(TAG, "Playing test tone for %d seconds...", duration_seconds);
-
-    const int BUFFER_SAMPLES = 256;
-    const float FREQ_HZ = 440.0f;  // A4 note
-    const float AMPLITUDE = 8000.0f;  // Not too loud
-
-    int16_t *buffer = malloc(BUFFER_SAMPLES * 2 * sizeof(int16_t));
-    if (!buffer) {
-        ESP_LOGE(TAG, "Failed to allocate test tone buffer");
-        return;
-    }
-
-    int total_samples = I2S_SAMPLE_RATE * duration_seconds;
-    int sample_index = 0;
-    size_t bytes_written;
-
-    while (sample_index < total_samples) {
-        // Generate sine wave
-        for (int i = 0; i < BUFFER_SAMPLES && sample_index < total_samples; i++, sample_index++) {
-            float t = (float)sample_index / I2S_SAMPLE_RATE;
-            int16_t sample = (int16_t)(AMPLITUDE * sinf(2.0f * M_PI * FREQ_HZ * t));
-
-            // Stereo: same sample for both channels
-            buffer[i * 2] = sample;      // Left
-            buffer[i * 2 + 1] = sample;  // Right
-        }
-
-        // Write to I2S
-        size_t bytes = BUFFER_SAMPLES * 2 * sizeof(int16_t);
-        i2s_channel_write(i2s_tx_handle, buffer, bytes, &bytes_written, portMAX_DELAY);
-
-        // Log progress every second
-        if (sample_index % I2S_SAMPLE_RATE == 0) {
-            ESP_LOGI(TAG, "Test tone: %d/%d seconds", sample_index / I2S_SAMPLE_RATE, duration_seconds);
-        }
-    }
-
-    free(buffer);
-    ESP_LOGI(TAG, "Test tone complete");
 }
 
 // Audio playback task - reads from audio_receiver and sends to I2S
@@ -239,9 +190,6 @@ void app_main(void)
     // Initialize I2S for audio output
     ESP_LOGI(TAG, "Initializing I2S audio output...");
     ESP_ERROR_CHECK(i2s_init());
-
-    // Play test tone for 10 seconds to verify I2S/DAC hardware
-    play_test_tone(10);
 
     // Start audio playback task
     xTaskCreatePinnedToCore(audio_playback_task, "audio_play", 4096, NULL, 7, NULL,

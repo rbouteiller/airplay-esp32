@@ -1,4 +1,4 @@
-set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/codec-alac/src/alac/codec")
+set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/apple_alac")
 
 idf_component_register(
     SRCS
@@ -11,7 +11,7 @@ idf_component_register(
         "hap.c"
         "srp.c"
         "audio_receiver.c"
-        "alac_wrapper.cpp"
+        "apple_alac.cpp"
         "${ALAC_DIR}/ALACDecoder.cpp"
         "${ALAC_DIR}/ALACBitUtilities.c"
         "${ALAC_DIR}/ag_dec.c"

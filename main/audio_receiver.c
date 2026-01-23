@@ -15,7 +15,7 @@
 #include "mbedtls/aes.h"
 
 #include "audio_receiver.h"
-#include "alac_wrapper.h"
+#include "apple_alac.h"
 
 static const char *TAG = "audio_recv";
 
@@ -52,7 +52,7 @@ static struct {
     audio_format_t format;
     audio_encrypt_t encrypt;
     audio_stats_t stats;
-    alac_handle_t alac;
+    bool alac_ready;
     int16_t *decode_buffer;
     uint8_t *decrypt_buffer;
 
@@ -496,7 +496,10 @@ static void receiver_task(void *pvParameters)
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
             }
-            ESP_LOGE(TAG, "recvfrom error: %d", errno);
+            // Don't log error during normal shutdown (socket closed)
+            if (receiver.running) {
+                ESP_LOGE(TAG, "recvfrom error: %d", errno);
+            }
             break;
         }
 
@@ -580,25 +583,28 @@ static void receiver_task(void *pvParameters)
         if (strcmp(receiver.format.codec, "AppleLossless") == 0 ||
             strcmp(receiver.format.codec, "ALAC") == 0) {
             // ALAC decode
-            if (receiver.alac && receiver.decode_buffer) {
-                size_t max_samples = receiver.format.max_samples_per_frame;
-                if (max_samples == 0) {
-                    max_samples = receiver.format.frame_size > 0 ?
-                                  (size_t)receiver.format.frame_size :
-                                  MAX_SAMPLES_PER_FRAME;
-                }
-                int ret = alac_decode(receiver.alac, audio_data, audio_len,
-                                      receiver.decode_buffer, max_samples);
-                if (ret > 0) {
-                    decoded_samples = ret;
+            if (receiver.alac_ready && receiver.decode_buffer) {
+                int out_samples = 0;
+                int ret = apple_alac_decode_frame((unsigned char *)audio_data, audio_len,
+                                                  (unsigned char *)receiver.decode_buffer,
+                                                  &out_samples);
+                if (ret == 0 && out_samples > 0) {
+                    if (out_samples > (int)MAX_SAMPLES_PER_FRAME) {
+                        out_samples = MAX_SAMPLES_PER_FRAME;
+                    }
+                    decoded_samples = (size_t)out_samples;
                     // Log first successful decode with sample values
                     static int decode_log_count = 0;
                     if (decode_log_count < 3) {
                         // Show first few samples to verify decoder output
+                        size_t total = (size_t)out_samples * receiver.format.channels;
+                        size_t mid = (out_samples / 2) * receiver.format.channels;
+                        int16_t first_l = total > 0 ? receiver.decode_buffer[0] : 0;
+                        int16_t first_r = total > 1 ? receiver.decode_buffer[1] : first_l;
+                        int16_t mid_l = total > mid ? receiver.decode_buffer[mid] : first_l;
+                        int16_t mid_r = total > (mid + 1) ? receiver.decode_buffer[mid + 1] : mid_l;
                         ESP_LOGI(TAG, "ALAC decode: %d samples, first: L=%d R=%d, mid: L=%d R=%d",
-                                 ret,
-                                 receiver.decode_buffer[0], receiver.decode_buffer[1],
-                                 receiver.decode_buffer[ret], receiver.decode_buffer[ret+1]);
+                                 out_samples, first_l, first_r, mid_l, mid_r);
                         decode_log_count++;
                     }
                 } else {
@@ -615,8 +621,8 @@ static void receiver_task(void *pvParameters)
                 // Log if decoder not initialized
                 static bool logged_missing = false;
                 if (!logged_missing) {
-                    ESP_LOGE(TAG, "ALAC decoder not initialized: alac=%p decode_buf=%p",
-                             receiver.alac, receiver.decode_buffer);
+                    ESP_LOGE(TAG, "ALAC decoder not initialized: ready=%d decode_buf=%p",
+                             receiver.alac_ready, receiver.decode_buffer);
                     logged_missing = true;
                 }
             }
@@ -725,13 +731,38 @@ void audio_receiver_set_format(const audio_format_t *format)
     // Initialize ALAC decoder if needed
     if (strcmp(format->codec, "AppleLossless") == 0 ||
         strcmp(format->codec, "ALAC") == 0) {
-        if (receiver.alac) {
-            alac_free(receiver.alac);
+        int32_t fmtp[12] = {0};
+        fmtp[0] = 96;
+        fmtp[1] = format->max_samples_per_frame ? (int32_t)format->max_samples_per_frame :
+                  (format->frame_size > 0 ? format->frame_size : 352);
+        fmtp[2] = 0;
+        fmtp[3] = format->sample_size ? format->sample_size :
+                  (format->bits_per_sample ? format->bits_per_sample : 16);
+        fmtp[4] = format->rice_history_mult ? format->rice_history_mult : 40;
+        fmtp[5] = format->rice_initial_history ? format->rice_initial_history : 10;
+        fmtp[6] = format->rice_limit ? format->rice_limit : 14;
+        fmtp[7] = format->num_channels ? format->num_channels :
+                  (format->channels ? format->channels : 2);
+        fmtp[8] = format->max_run ? format->max_run : 255;
+        fmtp[9] = format->max_coded_frame_size ? (int32_t)format->max_coded_frame_size : 0;
+        fmtp[10] = format->avg_bit_rate ? (int32_t)format->avg_bit_rate : 0;
+        fmtp[11] = format->sample_rate_config ? (int32_t)format->sample_rate_config :
+                   (format->sample_rate ? format->sample_rate : 44100);
+
+        if (receiver.alac_ready) {
+            apple_alac_terminate();
+            receiver.alac_ready = false;
         }
-        receiver.alac = alac_create(format);
-        if (!receiver.alac) {
-            ESP_LOGE(TAG, "Failed to create ALAC decoder");
+
+        int ret = apple_alac_init(fmtp);
+        if (ret != 0) {
+            ESP_LOGE(TAG, "Failed to init Apple ALAC decoder: %d", ret);
+        } else {
+            receiver.alac_ready = true;
         }
+    } else if (receiver.alac_ready) {
+        apple_alac_terminate();
+        receiver.alac_ready = false;
     }
 }
 
@@ -861,9 +892,9 @@ void audio_receiver_stop(void)
     }
 
     // Free ALAC decoder
-    if (receiver.alac) {
-        alac_free(receiver.alac);
-        receiver.alac = NULL;
+    if (receiver.alac_ready) {
+        apple_alac_terminate();
+        receiver.alac_ready = false;
     }
 
     // Clear encryption state
