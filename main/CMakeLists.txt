@@ -11,6 +11,7 @@ idf_component_register(
         "hap.c"
         "srp.c"
         "audio_receiver.c"
+        "ptp_clock.c"
         "apple_alac.cpp"
         "${ALAC_DIR}/ALACDecoder.cpp"
         "${ALAC_DIR}/ALACBitUtilities.c"
@@ -26,4 +27,5 @@ idf_component_register(
         esp_event
         esp_ringbuf
         esp_driver_i2s
+        esp_timer
 )
