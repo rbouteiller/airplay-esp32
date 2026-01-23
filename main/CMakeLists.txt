@@ -1,4 +1,4 @@
-set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/apple_alac")
+set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../alac/codec")
 
 idf_component_register(
     SRCS
