@@ -15,7 +15,7 @@ static const char *TAG = "mdns_airplay";
 
 // AirPlay 2 feature flags (matching shairport-sync)
 // Bit definitions from: https://openairplay.github.io/airplay-spec/features.html
-// Key bits for encryption:
+// Key bits:
 //   Bit 38: SupportsCoreUtilsPairingAndEncryption
 //   Bit 46: SupportsHKPairingAndAccessControl
 //   Bit 48: SupportsTransientPairing

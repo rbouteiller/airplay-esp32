@@ -465,6 +465,37 @@ static bool bplist_read_int(const uint8_t *plist, size_t plist_len, uint64_t off
     return false;
 }
 
+// Read real/float at given offset
+static bool bplist_read_real(const uint8_t *plist, size_t plist_len, uint64_t offset,
+                              double *out)
+{
+    if (offset >= plist_len) return false;
+
+    uint8_t marker = plist[offset];
+    uint8_t type = marker & 0xF0;
+
+    if (type == BPLIST_REAL) {
+        size_t len = 1 << (marker & 0x0F);
+        if (offset + 1 + len > plist_len) return false;
+
+        if (len == 4) {
+            // 32-bit float (big-endian)
+            uint32_t bits = (uint32_t)read_be_int(plist + offset + 1, 4);
+            float f;
+            memcpy(&f, &bits, sizeof(f));
+            *out = (double)f;
+            return true;
+        } else if (len == 8) {
+            // 64-bit double (big-endian)
+            uint64_t bits = read_be_int(plist + offset + 1, 8);
+            memcpy(out, &bits, sizeof(*out));
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool bplist_parse_count(const uint8_t *plist, size_t plist_len, uint64_t offset,
                                size_t *count, size_t *header_len)
 {
@@ -1103,6 +1134,75 @@ bool bplist_find_int(const uint8_t *plist, size_t plist_len,
                 uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
                 uint64_t val_offset = bplist_get_offset(plist, offset_table_offset, offset_size, val_idx);
                 return bplist_read_int(plist, plist_len, val_offset, out_value);
+            }
+        }
+    }
+
+    return false;
+}
+
+bool bplist_find_real(const uint8_t *plist, size_t plist_len,
+                      const char *key, double *out_value)
+{
+    // Check header
+    if (plist_len < 40 || memcmp(plist, "bplist00", 8) != 0) {
+        return false;
+    }
+
+    // Parse trailer
+    uint8_t offset_size, ref_size;
+    uint64_t num_objects, top_object, offset_table_offset;
+    if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
+                               &num_objects, &top_object, &offset_table_offset)) {
+        return false;
+    }
+
+    // Get top object (should be dict)
+    uint64_t top_offset = bplist_get_offset(plist, offset_table_offset, offset_size, top_object);
+    if (top_offset >= plist_len) return false;
+
+    uint8_t marker = plist[top_offset];
+    if ((marker & 0xF0) != BPLIST_DICT) {
+        return false;
+    }
+
+    size_t dict_size = marker & 0x0F;
+    size_t pos = top_offset + 1;
+
+    if (dict_size == 0x0F) {
+        if (pos >= plist_len) return false;
+        uint8_t len_marker = plist[pos++];
+        size_t len_bytes = 1 << (len_marker & 0x0F);
+        if (pos + len_bytes > plist_len) return false;
+        dict_size = (size_t)read_be_int(plist + pos, len_bytes);
+        pos += len_bytes;
+    }
+
+    if (pos + dict_size * 2 * ref_size > plist_len) return false;
+
+    const uint8_t *key_refs = plist + pos;
+    const uint8_t *val_refs = plist + pos + dict_size * ref_size;
+
+    for (size_t i = 0; i < dict_size; i++) {
+        uint64_t key_idx = read_be_int(key_refs + i * ref_size, ref_size);
+        uint64_t key_offset = bplist_get_offset(plist, offset_table_offset, offset_size, key_idx);
+
+        char found_key[64];
+        if (bplist_read_string(plist, plist_len, key_offset, found_key, sizeof(found_key))) {
+            if (strcmp(found_key, key) == 0) {
+                uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
+                uint64_t val_offset = bplist_get_offset(plist, offset_table_offset, offset_size, val_idx);
+                // Try reading as real first, fall back to int
+                if (bplist_read_real(plist, plist_len, val_offset, out_value)) {
+                    return true;
+                }
+                // Try as integer and convert to double
+                int64_t int_val;
+                if (bplist_read_int(plist, plist_len, val_offset, &int_val)) {
+                    *out_value = (double)int_val;
+                    return true;
+                }
+                return false;
             }
         }
     }

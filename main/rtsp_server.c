@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -40,7 +41,7 @@ static hap_session_t *current_session = NULL;
 static bool encrypted_mode = false;
 
 // AirPlay 2 features flags (matching shairport-sync)
-// Key bits for encryption:
+// Key bits:
 //   Bit 38: SupportsCoreUtilsPairingAndEncryption
 //   Bit 46: SupportsHKPairingAndAccessControl
 //   Bit 48: SupportsTransientPairing
@@ -115,20 +116,29 @@ static const uint8_t fp_header[] = {
 // Audio streaming state
 typedef struct {
     bool active;
+    bool paused;             // True when paused but session should persist
     int64_t stream_type;     // 96 = realtime/UDP, 103 = buffered/TCP
     uint16_t data_port;      // UDP port for audio data (type 96)
     uint16_t control_port;   // UDP port for control (retransmit requests)
     uint16_t timing_port;    // UDP port for timing
+    uint16_t event_port;     // TCP port for server->client events (AirPlay 2)
     uint16_t buffered_port;  // TCP port for buffered audio (type 103)
     int data_socket;
     int control_socket;
+    int event_socket;        // TCP listener for event port
     char codec[32];          // Audio codec from ANNOUNCE
     int sample_rate;
     int channels;
     int bits_per_sample;
 } audio_stream_t;
 
-static audio_stream_t audio_stream = {0};
+static audio_stream_t audio_stream = {
+    .active = false,
+    .paused = false,
+    .data_socket = -1,
+    .control_socket = -1,
+    .event_socket = -1,
+};
 
 static void get_device_id(char *device_id, size_t len)
 {
@@ -155,9 +165,10 @@ static size_t build_setup_bplist(uint8_t *out, size_t capacity,
                                  int64_t stream_type,
                                  uint16_t data_port,
                                  uint16_t control_port,
-                                 uint16_t timing_port)
+                                 uint16_t timing_port,
+                                 uint16_t event_port)
 {
-    if (capacity < 128) {
+    if (capacity < 160) {
         return 0;
     }
 
@@ -165,7 +176,7 @@ static size_t build_setup_bplist(uint8_t *out, size_t capacity,
     memcpy(out + pos, "bplist00", 8);
     pos += 8;
 
-    size_t offsets[12];
+    size_t offsets[16];
     size_t obj = 0;
 
     // 0: "streams"
@@ -174,75 +185,89 @@ static size_t build_setup_bplist(uint8_t *out, size_t capacity,
     memcpy(out + pos, "streams", 7);
     pos += 7;
 
-    // 1: "type"
+    // 1: "eventPort" (top-level key for AirPlay 2)
+    offsets[obj++] = pos;
+    out[pos++] = 0x59;  // len=9
+    memcpy(out + pos, "eventPort", 9);
+    pos += 9;
+
+    // 2: "type"
     offsets[obj++] = pos;
     out[pos++] = 0x54;  // len=4
     memcpy(out + pos, "type", 4);
     pos += 4;
 
-    // 2: "dataPort"
+    // 3: "dataPort"
     offsets[obj++] = pos;
     out[pos++] = 0x58;  // len=8
     memcpy(out + pos, "dataPort", 8);
     pos += 8;
 
-    // 3: "controlPort"
+    // 4: "controlPort"
     offsets[obj++] = pos;
     out[pos++] = 0x5B;  // len=11
     memcpy(out + pos, "controlPort", 11);
     pos += 11;
 
-    // 4: "timingPort"
+    // 5: "timingPort"
     offsets[obj++] = pos;
     out[pos++] = 0x5A;  // len=10
     memcpy(out + pos, "timingPort", 10);
     pos += 10;
 
-    // 5: int stream_type (96 or 103)
+    // 6: int stream_type (96 or 103)
     offsets[obj++] = pos;
     out[pos++] = 0x10;  // int, 1 byte
     out[pos++] = (uint8_t)stream_type;
 
-    // 6: int data_port
+    // 7: int data_port
     offsets[obj++] = pos;
     out[pos++] = 0x11;  // int, 2 bytes
     out[pos++] = (data_port >> 8) & 0xFF;
     out[pos++] = data_port & 0xFF;
 
-    // 7: int control_port
+    // 8: int control_port
     offsets[obj++] = pos;
     out[pos++] = 0x11;
     out[pos++] = (control_port >> 8) & 0xFF;
     out[pos++] = control_port & 0xFF;
 
-    // 8: int timing_port
+    // 9: int timing_port
     offsets[obj++] = pos;
     out[pos++] = 0x11;
     out[pos++] = (timing_port >> 8) & 0xFF;
     out[pos++] = timing_port & 0xFF;
 
-    // 9: stream dict (4 entries)
+    // 10: int event_port
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;
+    out[pos++] = (event_port >> 8) & 0xFF;
+    out[pos++] = event_port & 0xFF;
+
+    // 11: stream dict (4 entries: type, dataPort, controlPort, timingPort)
     offsets[obj++] = pos;
     out[pos++] = 0xD4;
-    out[pos++] = 1;  // key "type"
-    out[pos++] = 2;  // key "dataPort"
-    out[pos++] = 3;  // key "controlPort"
-    out[pos++] = 4;  // key "timingPort"
-    out[pos++] = 5;  // val stream_type
-    out[pos++] = 6;  // val data_port
-    out[pos++] = 7;  // val control_port
-    out[pos++] = 8;  // val timing_port
+    out[pos++] = 2;  // key "type"
+    out[pos++] = 3;  // key "dataPort"
+    out[pos++] = 4;  // key "controlPort"
+    out[pos++] = 5;  // key "timingPort"
+    out[pos++] = 6;  // val stream_type
+    out[pos++] = 7;  // val data_port
+    out[pos++] = 8;  // val control_port
+    out[pos++] = 9;  // val timing_port
 
-    // 10: streams array (1 element)
+    // 12: streams array (1 element)
     offsets[obj++] = pos;
     out[pos++] = 0xA1;
-    out[pos++] = 9;  // ref stream dict
+    out[pos++] = 11;  // ref stream dict
 
-    // 11: top dict (1 entry)
+    // 13: top dict (2 entries: streams, eventPort)
     offsets[obj++] = pos;
-    out[pos++] = 0xD1;
+    out[pos++] = 0xD2;  // dict with 2 entries
     out[pos++] = 0;   // key "streams"
-    out[pos++] = 10;  // value streams array
+    out[pos++] = 1;   // key "eventPort"
+    out[pos++] = 12;  // value streams array
+    out[pos++] = 10;  // value event_port
 
     size_t offset_table_offset = pos;
     for (size_t i = 0; i < obj; i++) {
@@ -262,9 +287,9 @@ static size_t build_setup_bplist(uint8_t *out, size_t capacity,
     out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
     out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = (uint8_t)obj;
 
-    // top object index (8 bytes)
+    // top object index (8 bytes) - now index 13
     out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
-    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 11;
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 13;
 
     // offset table offset (8 bytes)
     out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
@@ -1056,6 +1081,144 @@ static int create_udp_socket(uint16_t *port)
     return sock;
 }
 
+// Create TCP listening socket for event port (AirPlay 2 session persistence)
+static int create_event_socket(uint16_t *port)
+{
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create event TCP socket");
+        return -1;
+    }
+
+    int opt = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = 0;  // Let system assign port
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        ESP_LOGE(TAG, "Failed to bind event socket");
+        close(sock);
+        return -1;
+    }
+
+    if (listen(sock, 1) < 0) {
+        ESP_LOGE(TAG, "Failed to listen on event socket");
+        close(sock);
+        return -1;
+    }
+
+    // Get assigned port
+    socklen_t addr_len = sizeof(addr);
+    getsockname(sock, (struct sockaddr *)&addr, &addr_len);
+    *port = ntohs(addr.sin_port);
+
+    ESP_LOGI(TAG, "Event port created: %d", *port);
+    return sock;
+}
+
+// Event port client connection (for AirPlay 2 session persistence)
+static int event_client_socket = -1;
+static TaskHandle_t event_task_handle = NULL;
+
+static void event_port_task(void *pvParameters)
+{
+    int listen_socket = (int)(intptr_t)pvParameters;
+    ESP_LOGI(TAG, "Event port task started, listening on socket %d", listen_socket);
+
+    while (audio_stream.event_socket >= 0) {
+        // Set up select with timeout to allow task to exit
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(listen_socket, &read_fds);
+
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        int ret = select(listen_socket + 1, &read_fds, NULL, NULL, &tv);
+
+        if (ret < 0) {
+            if (errno != EINTR) {
+                ESP_LOGE(TAG, "Event port select error: %d", errno);
+            }
+            break;
+        }
+
+        if (ret == 0) {
+            continue;  // Timeout, check if we should exit
+        }
+
+        if (FD_ISSET(listen_socket, &read_fds)) {
+            struct sockaddr_in client_addr;
+            socklen_t addr_len = sizeof(client_addr);
+            int client = accept(listen_socket, (struct sockaddr *)&client_addr, &addr_len);
+            if (client < 0) {
+                ESP_LOGE(TAG, "Event port accept error: %d", errno);
+                continue;
+            }
+
+            ESP_LOGI(TAG, "Event port client connected from %s:%d",
+                     inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+
+            // Close any previous event client
+            if (event_client_socket >= 0) {
+                close(event_client_socket);
+            }
+            event_client_socket = client;
+
+            // Keep connection alive - just monitor for disconnection
+            while (event_client_socket >= 0 && audio_stream.event_socket >= 0) {
+                fd_set cfds;
+                FD_ZERO(&cfds);
+                FD_SET(event_client_socket, &cfds);
+                struct timeval ctv = { .tv_sec = 1, .tv_usec = 0 };
+
+                ret = select(event_client_socket + 1, &cfds, NULL, NULL, &ctv);
+                if (ret < 0) {
+                    break;
+                }
+                if (ret > 0 && FD_ISSET(event_client_socket, &cfds)) {
+                    // Check if connection closed
+                    char buf[16];
+                    int n = recv(event_client_socket, buf, sizeof(buf), MSG_PEEK);
+                    if (n <= 0) {
+                        ESP_LOGI(TAG, "Event port client disconnected");
+                        close(event_client_socket);
+                        event_client_socket = -1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Cleanup
+    if (event_client_socket >= 0) {
+        close(event_client_socket);
+        event_client_socket = -1;
+    }
+    ESP_LOGI(TAG, "Event port task ended");
+    event_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void start_event_port_task(int listen_socket)
+{
+    if (event_task_handle != NULL) {
+        return;  // Already running
+    }
+    xTaskCreate(event_port_task, "event_port", 3072, (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+}
+
+static void stop_event_port_task(void)
+{
+    if (event_client_socket >= 0) {
+        close(event_client_socket);
+        event_client_socket = -1;
+    }
+    // Task will exit on its own when event_socket becomes -1
+}
+
 static void handle_setup_request(int client_socket, const char *request, size_t request_len)
 {
     ESP_LOGI(TAG, "Handling SETUP request");
@@ -1404,11 +1567,20 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
         }
     }
 
+    // Create event port for AirPlay 2 session persistence
+    if (audio_stream.event_port == 0) {
+        audio_stream.event_socket = create_event_socket(&audio_stream.event_port);
+        if (audio_stream.event_socket >= 0) {
+            start_event_port_task(audio_stream.event_socket);
+        }
+    }
+
     // For type 103, dataPort is the TCP buffered port
     uint16_t response_data_port = (stream_type == 103) ? audio_stream.buffered_port : audio_stream.data_port;
 
-    ESP_LOGI(TAG, "Server ports - data: %d, control: %d, timing: %d",
-             response_data_port, audio_stream.control_port, audio_stream.timing_port);
+    ESP_LOGI(TAG, "Server ports - data: %d, control: %d, timing: %d, event: %d",
+             response_data_port, audio_stream.control_port, audio_stream.timing_port,
+             audio_stream.event_port);
 
     if (is_bplist) {
         uint8_t plist_body[256];
@@ -1416,12 +1588,15 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                                               stream_type,
                                               response_data_port,
                                               audio_stream.control_port,
-                                              audio_stream.timing_port);
+                                              audio_stream.timing_port,
+                                              audio_stream.event_port);
         if (plist_len == 0) {
             ESP_LOGE(TAG, "Failed to build SETUP response plist");
             send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
             return;
         }
+        ESP_LOGI(TAG, "SETUP response bplist (%zu bytes):", plist_len);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, plist_body, plist_len > 128 ? 128 : plist_len, ESP_LOG_INFO);
         send_rtsp_response(client_socket, 200, "OK", cseq,
                           "Content-Type: application/x-apple-binary-plist\r\n",
                           (const char *)plist_body, plist_len);
@@ -1511,10 +1686,15 @@ static void handle_set_parameter_request(int client_socket, const char *request,
 
 static void handle_teardown_request(int client_socket, const char *request)
 {
-    ESP_LOGI(TAG, "Handling TEARDOWN request - stopping audio stream");
     int cseq = parse_cseq(request);
 
-    // Stop audio receiver
+    // Check if this is a soft teardown (paused state) or full disconnect
+    // In AirPlay 2, TEARDOWN during pause shouldn't destroy the session
+    bool was_paused = audio_stream.paused;
+
+    ESP_LOGI(TAG, "TEARDOWN request - paused=%d, active=%d", was_paused, audio_stream.active);
+
+    // Stop audio receiver and flush buffers
     audio_receiver_stop();
 
     // Log audio stats
@@ -1528,12 +1708,20 @@ static void handle_teardown_request(int client_socket, const char *request)
     audio_stream.control_port = 0;
     audio_stream.timing_port = 0;
     audio_stream.active = false;
+    audio_stream.paused = false;
 
-    // Clean up HAP session
-    if (current_session) {
-        hap_session_free(current_session);
-        current_session = NULL;
+    // Stop event port task and close socket
+    stop_event_port_task();
+    if (audio_stream.event_socket >= 0) {
+        close(audio_stream.event_socket);
+        audio_stream.event_socket = -1;
+        audio_stream.event_port = 0;
     }
+
+    // For AirPlay 2: Don't destroy HAP session on TEARDOWN
+    // The session should persist until the TCP connection is closed
+    // This allows quick reconnection without re-pairing
+    ESP_LOGI(TAG, "TEARDOWN complete - keeping HAP session for potential reconnect");
 
     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
 }
@@ -1656,7 +1844,29 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_
             handle_teardown_request(client_socket, request);
         } else if (strcmp(method, "SETRATEANCHORTIME") == 0) {
             int cseq = parse_cseq(request);
-            ESP_LOGI(TAG, "SetRateAnchorTime received (play/pause)");
+
+            // Parse the body to get rate (binary plist)
+            size_t body_len;
+            const uint8_t *body = get_body(request, total_len, &body_len);
+            double rate = 1.0;  // Default to playing
+            if (body && body_len > 0) {
+                if (!bplist_find_real(body, body_len, "rate", &rate)) {
+                    // Try as integer
+                    int64_t rate_int;
+                    if (bplist_find_int(body, body_len, "rate", &rate_int)) {
+                        rate = (double)rate_int;
+                    }
+                }
+            }
+
+            if (rate == 0.0) {
+                ESP_LOGI(TAG, "SETRATEANCHORTIME: PAUSE (rate=0)");
+                audio_stream.paused = true;
+                audio_receiver_flush();
+            } else {
+                ESP_LOGI(TAG, "SETRATEANCHORTIME: PLAY (rate=%.1f)", rate);
+                audio_stream.paused = false;
+            }
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
         } else if (strcmp(method, "SETPEERS") == 0 || strcmp(method, "SETPEERSX") == 0) {
             int cseq = parse_cseq(request);
@@ -1784,6 +1994,20 @@ cleanup:
     free(buffer);
     close(client_socket);
     ESP_LOGI(TAG, "Client disconnected");
+
+    // Stop event port task and clean up event socket
+    stop_event_port_task();
+    if (audio_stream.event_socket >= 0) {
+        close(audio_stream.event_socket);
+        audio_stream.event_socket = -1;
+        audio_stream.event_port = 0;
+    }
+
+    // Reset audio stream state
+    audio_stream.active = false;
+    audio_stream.paused = false;
+    audio_stream.data_socket = -1;
+    audio_stream.control_socket = -1;
 
     // Reset encryption state and session for next client
     encrypted_mode = false;

@@ -217,3 +217,15 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
  */
 bool bplist_find_int(const uint8_t *plist, size_t plist_len,
                      const char *key, int64_t *out_value);
+
+/**
+ * Find a real/float value by key in a binary plist
+ * Handles both real and integer values (converting int to double)
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param key Key to search for
+ * @param out_value Output for double value
+ * @return true if found, false otherwise
+ */
+bool bplist_find_real(const uint8_t *plist, size_t plist_len,
+                      const char *key, double *out_value);
