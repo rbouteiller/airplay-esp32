@@ -15,7 +15,7 @@
 #define SRP_PRIME_BYTES     (SRP_PRIME_BITS / 8)  // 384 bytes
 #define SRP_SALT_BYTES      16
 #define SRP_PROOF_BYTES     64
-#define SRP_SESSION_KEY_BYTES 128  // Apple fruit: 2 × SHA-512 output
+#define SRP_SESSION_KEY_BYTES 64   // SHA-512 output
 
 // SRP session context
 typedef struct srp_session {
