@@ -4,3 +4,6 @@
 [submodule "external/codec-alac"]
 	path = external/codec-alac
 	url = https://github.com/pschatzmann/codec-alac.git
+[submodule "alac"]
+	path = alac
+	url = https://github.com/macosforge/alac.git
