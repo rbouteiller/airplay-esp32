@@ -13,17 +13,13 @@
 
 static const char *TAG = "airplay2";
 
-// I2S configuration for ESP32-S3 - adjust pins for your DAC board
-// Common DAC boards (PCM5102, MAX98357, etc.):
-//   BCK/SCK/BCLK = Bit Clock
-//   LRCK/WS      = Word Select (Left/Right Clock)
-//   DIN/SD/DOUT  = Serial Data Out (from ESP32 to DAC)
-#define I2S_BCK_PIN     GPIO_NUM_5   // BCK/SCK - Bit Clock
-#define I2S_LRCK_PIN    GPIO_NUM_6   // LRCK/WS - Word Select
-#define I2S_DOUT_PIN    GPIO_NUM_7   // DIN/DOUT - Data to DAC
+#define I2S_BCK_PIN     GPIO_NUM_5
+#define I2S_LRCK_PIN    GPIO_NUM_6
+#define I2S_DOUT_PIN    GPIO_NUM_7
 #define I2S_SAMPLE_RATE 44100
+// Fixed output attenuation to prevent clipping (applied in addition to AirPlay volume)
 #define OUTPUT_ATTENUATION_DB 20
-#define OUTPUT_ATTENUATION_SCALE_Q15 3277  // -20 dB ~= 0.1 in Q1.15
+#define OUTPUT_ATTENUATION_SCALE_Q15 3277  // 10^(-20/20) * 32768 = 0.1 * 32768
 #if CONFIG_FREERTOS_UNICORE
 #define AUDIO_TASK_CORE 0
 #else
@@ -34,8 +30,15 @@ static i2s_chan_handle_t i2s_tx_handle = NULL;
 
 static void apply_output_attenuation(int16_t *buffer, size_t samples)
 {
+    // Get current AirPlay volume (Q15: 0=mute, 32768=unity)
+    int32_t airplay_vol = airplay_get_volume_q15();
+
+    // Combined scale: (OUTPUT_ATTENUATION * AIRPLAY_VOL) / 32768
+    // This gives us a Q15 result
+    int32_t combined_scale = ((int32_t)OUTPUT_ATTENUATION_SCALE_Q15 * airplay_vol) >> 15;
+
     for (size_t i = 0; i < samples; i++) {
-        int32_t scaled = (int32_t)buffer[i] * OUTPUT_ATTENUATION_SCALE_Q15;
+        int32_t scaled = (int32_t)buffer[i] * combined_scale;
         buffer[i] = (int16_t)(scaled >> 15);
     }
 }
@@ -81,18 +84,12 @@ static esp_err_t i2s_init(void)
         return ret;
     }
 
-    ESP_LOGI(TAG, "I2S initialized: BCK=GPIO%d, LRCK=GPIO%d, DOUT=GPIO%d, %d Hz",
-             I2S_BCK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, I2S_SAMPLE_RATE);
     return ESP_OK;
 }
 
-// Audio playback task - reads from audio_receiver and sends to I2S
 static void audio_playback_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "Audio playback task started");
-    ESP_LOGI(TAG, "Output attenuation: -%d dB", OUTPUT_ATTENUATION_DB);
 
-    // Buffer for PCM samples (352 samples/frame * 2 channels * 2 bytes = 1408 bytes)
     const size_t SAMPLES_PER_READ = 352;
     int16_t *pcm_buffer = malloc(SAMPLES_PER_READ * 2 * sizeof(int16_t));
     if (!pcm_buffer) {
@@ -101,7 +98,6 @@ static void audio_playback_task(void *pvParameters)
         return;
     }
 
-    // Silence buffer for when no audio is available
     int16_t *silence = calloc(SAMPLES_PER_READ * 2, sizeof(int16_t));
     if (!silence) {
         free(pcm_buffer);
@@ -110,9 +106,6 @@ static void audio_playback_task(void *pvParameters)
     }
 
     size_t bytes_written;
-    uint32_t samples_played = 0;
-
-    bool first_audio = true;
     uint32_t silence_count = 0;
 
     while (1) {
@@ -120,37 +113,14 @@ static void audio_playback_task(void *pvParameters)
         size_t samples = audio_receiver_read(pcm_buffer, SAMPLES_PER_READ);
 
         if (samples > 0) {
-            // Log first audio received
-            if (first_audio) {
-                ESP_LOGI(TAG, "First audio samples received: %zu samples", samples);
-                first_audio = false;
-            }
-
             apply_output_attenuation(pcm_buffer, samples * 2);
-
-            // Write samples to I2S
-            size_t bytes = samples * 2 * sizeof(int16_t);  // stereo, 16-bit
+            size_t bytes = samples * 2 * sizeof(int16_t);
             i2s_channel_write(i2s_tx_handle, pcm_buffer, bytes, &bytes_written, portMAX_DELAY);
-            samples_played += samples;
             silence_count = 0;
-
-            // Log periodically (every ~5 seconds of audio)
-            if (samples_played % (I2S_SAMPLE_RATE * 5) < SAMPLES_PER_READ) {
-                ESP_LOGI(TAG, "Audio playing: %lu samples output", samples_played);
-            }
         } else {
-            // No audio available - send silence to keep I2S running
             size_t bytes = SAMPLES_PER_READ * 2 * sizeof(int16_t);
             i2s_channel_write(i2s_tx_handle, silence, bytes, &bytes_written, pdMS_TO_TICKS(10));
             silence_count++;
-
-            // Log waiting state periodically
-            if (silence_count == 100) {
-                ESP_LOGI(TAG, "Waiting for audio data...");
-            } else if (silence_count % 1000 == 0 && silence_count > 0) {
-                ESP_LOGI(TAG, "Still waiting for audio (%lu silence frames)", silence_count);
-            }
-
             vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
@@ -162,9 +132,6 @@ static void audio_playback_task(void *pvParameters)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "AirPlay 2 Receiver starting...");
-
-    // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -172,41 +139,18 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize WiFi
     wifi_init_sta();
-
-    // Wait for WiFi connection
-    ESP_LOGI(TAG, "Waiting for WiFi connection...");
     wifi_wait_connected();
-
-    // Initialize HAP (generates/loads Ed25519 keypair)
-    ESP_LOGI(TAG, "Initializing HAP...");
     ESP_ERROR_CHECK(hap_init());
-
-    // Initialize audio receiver
-    ESP_LOGI(TAG, "Initializing audio receiver...");
     ESP_ERROR_CHECK(audio_receiver_init());
-
-    // Initialize I2S for audio output
-    ESP_LOGI(TAG, "Initializing I2S audio output...");
     ESP_ERROR_CHECK(i2s_init());
 
-    // Start audio playback task
     xTaskCreatePinnedToCore(audio_playback_task, "audio_play", 4096, NULL, 7, NULL,
                             AUDIO_TASK_CORE);
 
-    // Start mDNS AirPlay advertisement
-    ESP_LOGI(TAG, "Starting mDNS AirPlay service...");
     mdns_airplay_init();
-
-    // Start RTSP server for AirPlay connections
-    ESP_LOGI(TAG, "Starting RTSP server on port 7000...");
     ESP_ERROR_CHECK(rtsp_server_start());
 
-    ESP_LOGI(TAG, "AirPlay 2 Receiver ready!");
-    ESP_LOGI(TAG, "Device should now appear in AirPlay menu on iOS devices");
-
-    // Keep running
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
