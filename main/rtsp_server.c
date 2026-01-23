@@ -1,6 +1,5 @@
 #include <string.h>
 #include <stdlib.h>
-#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -50,16 +49,17 @@ void airplay_set_volume(float volume_db)
 {
     g_volume_db = volume_db;
 
-    // AirPlay volume: 0 dB = max, -144 dB = mute
-    // Clamp to valid range
-    if (volume_db <= -144.0f) {
-        g_volume_q15 = 0;  // Mute
+    // AirPlay volume: 0 dB = max, -30 dB = mute
+    // Use linear mapping with squared curve for better perceptual control
+    if (volume_db <= -30.0f) {
+        g_volume_q15 = 0;
     } else if (volume_db >= 0.0f) {
-        g_volume_q15 = 32768;  // Unity gain
+        g_volume_q15 = 32768;
     } else {
-        // Convert dB to linear: linear = 10^(dB/20)
-        float linear = powf(10.0f, volume_db / 20.0f);
-        g_volume_q15 = (int32_t)(linear * 32768.0f);
+        // Map -30..0 to 0..1, then square for perceptual curve
+        float normalized = (volume_db + 30.0f) / 30.0f;
+        float curved = normalized * normalized;
+        g_volume_q15 = (int32_t)(curved * 32768.0f);
     }
 }
 
@@ -1196,16 +1196,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
 
                         if (bplist_get_stream_kv_info(body, body_len, i, kv, 16, &kv_count)) {
                             for (size_t k = 0; k < kv_count; k++) {
-                                const char *type_str = "unknown";
-                                switch (kv[k].value_type) {
-                                    case BPLIST_VALUE_INT: type_str = "int"; break;
-                                    case BPLIST_VALUE_DATA: type_str = "data"; break;
-                                    case BPLIST_VALUE_STRING: type_str = "string"; break;
-                                    case BPLIST_VALUE_UID: type_str = "uid"; break;
-                                    case BPLIST_VALUE_ARRAY: type_str = "array"; break;
-                                    case BPLIST_VALUE_DICT: type_str = "dict"; break;
-                                    default: break;
-                                }
                                 if (kv[k].value_type == BPLIST_VALUE_INT) {
                                     if (strcmp(kv[k].key, "ct") == 0) {
                                         codec_type = kv[k].int_value;
@@ -1366,23 +1356,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
         }
     }
 
-    // Parse Transport header to get client ports
-    // Transport: RTP/AVP/UDP;unicast;mode=record;timing_port=50466;control_port=50465
-    const char *transport = strstr(request, "Transport:");
-    uint16_t client_control_port = 0;
-    uint16_t client_timing_port = 0;
-
-    if (transport) {
-        const char *cp = strstr(transport, "control_port=");
-        if (cp) {
-            client_control_port = atoi(cp + 13);
-        }
-        const char *tp = strstr(transport, "timing_port=");
-        if (tp) {
-            client_timing_port = atoi(tp + 12);
-        }
-    }
-
     int64_t stream_type = audio_stream.stream_type;
     if (stream_type == 0) {
         stream_type = 96;
@@ -1527,10 +1500,6 @@ static void handle_set_parameter_request(int client_socket, const char *request,
 static void handle_teardown_request(int client_socket, const char *request)
 {
     int cseq = parse_cseq(request);
-
-    // Check if this is a soft teardown (paused state) or full disconnect
-    // In AirPlay 2, TEARDOWN during pause shouldn't destroy the session
-    bool was_paused = audio_stream.paused;
 
     audio_receiver_stop();
 
