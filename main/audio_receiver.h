@@ -104,3 +104,29 @@ bool audio_receiver_has_data(void);
  * Flush audio buffer
  */
 void audio_receiver_flush(void);
+
+/**
+ * Stream types for AirPlay 2
+ */
+typedef enum {
+    AUDIO_STREAM_NONE = 0,
+    AUDIO_STREAM_REALTIME = 96,    // UDP, ALAC
+    AUDIO_STREAM_BUFFERED = 103    // TCP, AAC-ELD
+} audio_stream_type_t;
+
+/**
+ * Start buffered audio receiver (type=103) on TCP port
+ * @param tcp_port Port to listen on for TCP connections
+ * @return ESP_OK on success
+ */
+esp_err_t audio_receiver_start_buffered(uint16_t tcp_port);
+
+/**
+ * Get the TCP port for buffered audio (after start_buffered)
+ */
+uint16_t audio_receiver_get_buffered_port(void);
+
+/**
+ * Set the stream type (realtime vs buffered)
+ */
+void audio_receiver_set_stream_type(audio_stream_type_t type);

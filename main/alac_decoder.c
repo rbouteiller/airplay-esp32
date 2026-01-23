@@ -243,62 +243,97 @@ int alac_decode_frame(alac_decoder_t *decoder,
     (void)mix_res;
 
     // Read predictor info for each channel
+    int16_t coefs[2][32];  // Predictor coefficients per channel
+    int num_coefs_ch[2] = {0, 0};
+    int quant_shift_ch[2] = {0, 0};
+
     for (int ch = 0; ch < decoder->channels; ch++) {
         uint8_t mode = bitreader_read(&br, 4);
         (void)mode;
 
-        // Skip predictor coefficients for simplicity
-        // A full implementation would read and apply them
-        uint8_t quant_shift = bitreader_read(&br, 4);
+        quant_shift_ch[ch] = bitreader_read(&br, 4);
         uint8_t rice_modifier = bitreader_read(&br, 3);
-        uint8_t num_coefs = bitreader_read(&br, 5);
-        (void)quant_shift;
         (void)rice_modifier;
+        num_coefs_ch[ch] = bitreader_read(&br, 5);
 
-        // Skip coefficient values
-        for (int i = 0; i < num_coefs; i++) {
-            bitreader_read(&br, 16);
+        // Read coefficient values
+        for (int i = 0; i < num_coefs_ch[ch]; i++) {
+            coefs[ch][i] = (int16_t)bitreader_read(&br, 16);
         }
     }
 
-    // Read rice-encoded residuals
-    // This is simplified - full ALAC has adaptive rice coding
+    // Read rice-encoded residuals - interleaved for stereo (L,R,L,R,...)
     int history = decoder->rice_initial_history;
     int rice_k = (int)log2(history) + ((history & (history - 1)) ? 1 : 0);
     if (rice_k > decoder->rice_limit) rice_k = decoder->rice_limit;
 
-    for (uint32_t i = 0; i < num_samples * decoder->channels; i++) {
-        // Simple rice decode
-        int32_t val = rice_decode(&br, 1 << rice_k, rice_k, decoder->sample_size);
+    // Temporary buffers for each channel
+    int32_t *left_buf = decoder->predictor_buf;
+    int32_t *right_buf = decoder->predictor_buf + decoder->frame_length;
 
-        // Unsign
-        if (val & 1) {
-            val = -((val + 1) >> 1);
-        } else {
-            val = val >> 1;
+    for (uint32_t i = 0; i < num_samples; i++) {
+        for (int ch = 0; ch < decoder->channels; ch++) {
+            // Rice decode
+            int32_t val = rice_decode(&br, 1 << rice_k, rice_k, decoder->sample_size);
+
+            // Unsign (zigzag decode)
+            if (val & 1) {
+                val = -((val + 1) >> 1);
+            } else {
+                val = val >> 1;
+            }
+
+            // Store in appropriate channel buffer
+            if (ch == 0) {
+                left_buf[i] = val;
+            } else {
+                right_buf[i] = val;
+            }
+
+            // Update history for adaptive rice
+            int abs_val = val < 0 ? -val : val;
+            history += abs_val * decoder->rice_history_mult - ((history * decoder->rice_history_mult) >> 9);
+            if (history < 0) history = 0;
+
+            rice_k = (int)log2(history + 1);
+            if (rice_k > decoder->rice_limit) rice_k = decoder->rice_limit;
         }
-
-        // Store to predictor buffer
-        decoder->predictor_buf[i] = val;
-
-        // Update history for adaptive rice
-        history += val * decoder->rice_history_mult - ((history * decoder->rice_history_mult) >> 9);
-        if (history < 0) history = 0;
-
-        rice_k = (int)log2(history + 1);
-        if (rice_k > decoder->rice_limit) rice_k = decoder->rice_limit;
     }
 
-    // For now, just copy the decoded residuals as samples
-    // A full implementation would apply the predictor
-    for (uint32_t i = 0; i < num_samples * decoder->channels && i < max_samples * decoder->channels; i++) {
-        int32_t sample = decoder->predictor_buf[i];
+    // Apply LPC predictor for each channel
+    for (int ch = 0; ch < decoder->channels; ch++) {
+        int32_t *channel_buf = (ch == 0) ? left_buf : right_buf;
+        int shift = quant_shift_ch[ch];
+        int nc = num_coefs_ch[ch];
 
-        // Clamp to 16-bit
-        if (sample > 32767) sample = 32767;
-        if (sample < -32768) sample = -32768;
+        for (uint32_t i = 0; i < num_samples; i++) {
+            int32_t prediction = 0;
 
-        output[i] = (int16_t)sample;
+            // Compute prediction from previous samples
+            for (int j = 0; j < nc && j < (int)i; j++) {
+                prediction += (int32_t)coefs[ch][j] * channel_buf[i - 1 - j];
+            }
+
+            // Add quantized prediction to residual
+            prediction >>= shift;
+            channel_buf[i] += prediction;
+
+            // Clamp to sample range
+            if (channel_buf[i] > 32767) channel_buf[i] = 32767;
+            if (channel_buf[i] < -32768) channel_buf[i] = -32768;
+        }
+    }
+
+    // Interleave channels to output
+    if (decoder->channels == 2) {
+        for (uint32_t i = 0; i < num_samples && i < max_samples; i++) {
+            output[i * 2] = (int16_t)left_buf[i];
+            output[i * 2 + 1] = (int16_t)right_buf[i];
+        }
+    } else {
+        for (uint32_t i = 0; i < num_samples && i < max_samples; i++) {
+            output[i] = (int16_t)left_buf[i];
+        }
     }
 
     return num_samples;

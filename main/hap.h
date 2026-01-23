@@ -18,6 +18,9 @@
 #define HAP_CHACHA20_NONCE_SIZE      12
 #define HAP_POLY1305_TAG_SIZE        16
 
+// Forward declaration
+struct srp_session;
+
 // Session state
 typedef struct {
     // Device long-term Ed25519 keypair
@@ -44,7 +47,12 @@ typedef struct {
 
     // Session state
     int pair_verify_state;
+    int pair_setup_state;
+    bool pair_setup_transient;
     bool session_established;
+
+    // SRP session for pair-setup
+    struct srp_session *srp;
 } hap_session_t;
 
 /**
@@ -136,3 +144,55 @@ esp_err_t hap_encrypt(hap_session_t *session,
 esp_err_t hap_decrypt(hap_session_t *session,
                       const uint8_t *ciphertext, size_t ciphertext_len,
                       uint8_t *plaintext, size_t *plaintext_len);
+
+/**
+ * Derive audio encryption key from pair-verify shared secret
+ * Uses HKDF-SHA512 with AirPlay 2 audio-specific parameters
+ * @param session HAP session (must be established)
+ * @param audio_key Output buffer for audio key
+ * @param key_len Length of audio key to generate (typically 16 or 32 bytes)
+ * @return ESP_OK on success
+ */
+esp_err_t hap_derive_audio_key(hap_session_t *session, uint8_t *audio_key, size_t key_len);
+
+/**
+ * Handle pair-setup M1 (client initiates SRP)
+ * @param session HAP session
+ * @param input Input TLV (method, state, flags)
+ * @param input_len Length of input
+ * @param output Output buffer for M2 (salt, public key)
+ * @param output_capacity Capacity of output buffer
+ * @param output_len Actual output length
+ * @return ESP_OK on success
+ */
+esp_err_t hap_pair_setup_m1(hap_session_t *session,
+                            const uint8_t *input, size_t input_len,
+                            uint8_t *output, size_t output_capacity, size_t *output_len);
+
+/**
+ * Handle pair-setup M3 (client sends A and proof)
+ * @param session HAP session
+ * @param input Input TLV (public key, proof)
+ * @param input_len Length of input
+ * @param output Output buffer for M4 (server proof)
+ * @param output_capacity Capacity of output buffer
+ * @param output_len Actual output length
+ * @return ESP_OK on success
+ */
+esp_err_t hap_pair_setup_m3(hap_session_t *session,
+                            const uint8_t *input, size_t input_len,
+                            uint8_t *output, size_t output_capacity, size_t *output_len);
+
+/**
+ * Handle pair-setup M5 (client sends encrypted data)
+ * @param session HAP session
+ * @param input Input TLV (encrypted data)
+ * @param input_len Length of input
+ * @param output Output buffer for M6 (encrypted response)
+ * @param output_capacity Capacity of output buffer
+ * @param output_len Actual output length
+ * @return ESP_OK on success
+ */
+esp_err_t hap_pair_setup_m5(hap_session_t *session,
+                            const uint8_t *input, size_t input_len,
+                            uint8_t *output, size_t output_capacity, size_t *output_len);

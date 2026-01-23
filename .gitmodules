@@ -1,0 +1,6 @@
+[submodule "external/pair_ap"]
+	path = external/pair_ap
+	url = https://github.com/ejurgensen/pair_ap.git
+[submodule "external/codec-alac"]
+	path = external/codec-alac
+	url = https://github.com/pschatzmann/codec-alac.git

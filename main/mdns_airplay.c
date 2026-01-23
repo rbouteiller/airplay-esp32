@@ -13,12 +13,14 @@ static const char *TAG = "mdns_airplay";
 // Device name that appears in AirPlay menu
 #define AIRPLAY_DEVICE_NAME CONFIG_AIRPLAY_DEVICE_NAME
 
-// AirPlay 2 feature flags
+// AirPlay 2 feature flags (matching shairport-sync)
 // Bit definitions from: https://openairplay.github.io/airplay-spec/features.html
-// 0x5A7FFFF7 enables: Video, Photo, Screen, Audio, etc.
-// Higher 32 bits 0x1E enables AirPlay 2 features
-#define AIRPLAY_FEATURES_HI  0x1E
-#define AIRPLAY_FEATURES_LO  0x5A7FFFF7
+// Key bits for encryption:
+//   Bit 38: SupportsCoreUtilsPairingAndEncryption
+//   Bit 46: SupportsHKPairingAndAccessControl
+//   Bit 48: SupportsTransientPairing
+#define AIRPLAY_FEATURES_HI  0x1C340
+#define AIRPLAY_FEATURES_LO  0x405C4A00
 
 // Protocol version
 #define AIRPLAY_PROTOCOL_VERSION "2"

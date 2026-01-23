@@ -9,6 +9,9 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
+
+#include "sodium.h"
 
 #include "rtsp_server.h"
 #include "plist.h"
@@ -19,8 +22,12 @@
 static const char *TAG = "rtsp_server";
 
 #define RTSP_PORT 7000
-#define RTSP_MAX_REQUEST_SIZE 4096
+// Small buffer for normal RTSP messages
+#define RTSP_BUFFER_INITIAL 4096
+// Large buffer for buffered audio data (up to 256KB)
+#define RTSP_BUFFER_LARGE (256 * 1024)
 #define RTSP_MAX_RESPONSE_SIZE 8192
+#define ENCRYPTED_BLOCK_MAX 0x400
 
 static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
@@ -29,9 +36,16 @@ static bool server_running = false;
 // Current HAP session (one client at a time for now)
 static hap_session_t *current_session = NULL;
 
-// AirPlay 2 features flags
-#define FEATURES_HI 0x1E
-#define FEATURES_LO 0x5A7FFFF7
+// Encrypted communication state
+static bool encrypted_mode = false;
+
+// AirPlay 2 features flags (matching shairport-sync)
+// Key bits for encryption:
+//   Bit 38: SupportsCoreUtilsPairingAndEncryption
+//   Bit 46: SupportsHKPairingAndAccessControl
+//   Bit 48: SupportsTransientPairing
+#define FEATURES_HI 0x1C340
+#define FEATURES_LO 0x405C4A00
 
 // FairPlay pre-computed responses (from shairport-sync)
 // These static tables handle the FairPlay handshake
@@ -101,9 +115,11 @@ static const uint8_t fp_header[] = {
 // Audio streaming state
 typedef struct {
     bool active;
-    uint16_t data_port;      // UDP port for audio data
+    int64_t stream_type;     // 96 = realtime/UDP, 103 = buffered/TCP
+    uint16_t data_port;      // UDP port for audio data (type 96)
     uint16_t control_port;   // UDP port for control (retransmit requests)
     uint16_t timing_port;    // UDP port for timing
+    uint16_t buffered_port;  // TCP port for buffered audio (type 103)
     int data_socket;
     int control_socket;
     char codec[32];          // Audio codec from ANNOUNCE
@@ -122,6 +138,271 @@ static void get_device_id(char *device_id, size_t len)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+static int send_all(int socket, const uint8_t *data, size_t len)
+{
+    size_t sent = 0;
+    while (sent < len) {
+        int r = send(socket, data + sent, len - sent, 0);
+        if (r <= 0) {
+            return -1;
+        }
+        sent += (size_t)r;
+    }
+    return 0;
+}
+
+static size_t build_setup_bplist(uint8_t *out, size_t capacity,
+                                 int64_t stream_type,
+                                 uint16_t data_port,
+                                 uint16_t control_port,
+                                 uint16_t timing_port)
+{
+    if (capacity < 128) {
+        return 0;
+    }
+
+    size_t pos = 0;
+    memcpy(out + pos, "bplist00", 8);
+    pos += 8;
+
+    size_t offsets[12];
+    size_t obj = 0;
+
+    // 0: "streams"
+    offsets[obj++] = pos;
+    out[pos++] = 0x57;  // ASCII string, len=7
+    memcpy(out + pos, "streams", 7);
+    pos += 7;
+
+    // 1: "type"
+    offsets[obj++] = pos;
+    out[pos++] = 0x54;  // len=4
+    memcpy(out + pos, "type", 4);
+    pos += 4;
+
+    // 2: "dataPort"
+    offsets[obj++] = pos;
+    out[pos++] = 0x58;  // len=8
+    memcpy(out + pos, "dataPort", 8);
+    pos += 8;
+
+    // 3: "controlPort"
+    offsets[obj++] = pos;
+    out[pos++] = 0x5B;  // len=11
+    memcpy(out + pos, "controlPort", 11);
+    pos += 11;
+
+    // 4: "timingPort"
+    offsets[obj++] = pos;
+    out[pos++] = 0x5A;  // len=10
+    memcpy(out + pos, "timingPort", 10);
+    pos += 10;
+
+    // 5: int stream_type (96 or 103)
+    offsets[obj++] = pos;
+    out[pos++] = 0x10;  // int, 1 byte
+    out[pos++] = (uint8_t)stream_type;
+
+    // 6: int data_port
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;  // int, 2 bytes
+    out[pos++] = (data_port >> 8) & 0xFF;
+    out[pos++] = data_port & 0xFF;
+
+    // 7: int control_port
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;
+    out[pos++] = (control_port >> 8) & 0xFF;
+    out[pos++] = control_port & 0xFF;
+
+    // 8: int timing_port
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;
+    out[pos++] = (timing_port >> 8) & 0xFF;
+    out[pos++] = timing_port & 0xFF;
+
+    // 9: stream dict (4 entries)
+    offsets[obj++] = pos;
+    out[pos++] = 0xD4;
+    out[pos++] = 1;  // key "type"
+    out[pos++] = 2;  // key "dataPort"
+    out[pos++] = 3;  // key "controlPort"
+    out[pos++] = 4;  // key "timingPort"
+    out[pos++] = 5;  // val stream_type
+    out[pos++] = 6;  // val data_port
+    out[pos++] = 7;  // val control_port
+    out[pos++] = 8;  // val timing_port
+
+    // 10: streams array (1 element)
+    offsets[obj++] = pos;
+    out[pos++] = 0xA1;
+    out[pos++] = 9;  // ref stream dict
+
+    // 11: top dict (1 entry)
+    offsets[obj++] = pos;
+    out[pos++] = 0xD1;
+    out[pos++] = 0;   // key "streams"
+    out[pos++] = 10;  // value streams array
+
+    size_t offset_table_offset = pos;
+    for (size_t i = 0; i < obj; i++) {
+        if (offsets[i] > 0xFF) {
+            return 0;
+        }
+        out[pos++] = (uint8_t)offsets[i];
+    }
+
+    // Trailer
+    memset(out + pos, 0, 6);
+    pos += 6;
+    out[pos++] = 1;  // offset size
+    out[pos++] = 1;  // ref size
+
+    // num objects (8 bytes)
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = (uint8_t)obj;
+
+    // top object index (8 bytes)
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 11;
+
+    // offset table offset (8 bytes)
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = 0;
+    out[pos++] = 0; out[pos++] = 0; out[pos++] = 0; out[pos++] = (uint8_t)offset_table_offset;
+
+    return pos;
+}
+
+// Read encrypted block from socket
+// Format: [2-byte length (little-endian)][encrypted data + 16-byte tag]
+// Returns decrypted length on success, -1 on error
+static int read_encrypted_block(int socket, uint8_t *buffer, size_t buffer_size)
+{
+    if (!current_session || !encrypted_mode) {
+        ESP_LOGE(TAG, "Cannot read encrypted frame: encryption not enabled");
+        return -1;
+    }
+
+    // Read 2-byte length header (little-endian)
+    uint8_t len_buf[2];
+    int received = 0;
+    while (received < 2) {
+        int r = recv(socket, len_buf + received, 2 - received, 0);
+        if (r <= 0) {
+            return -1;
+        }
+        received += r;
+    }
+
+    uint16_t block_len = (uint16_t)len_buf[0] | ((uint16_t)len_buf[1] << 8);
+    ESP_LOGD(TAG, "Encrypted block length: %d", block_len);
+
+    if (block_len == 0 || block_len > ENCRYPTED_BLOCK_MAX || block_len > buffer_size) {
+        ESP_LOGE(TAG, "Invalid encrypted block length: %d", block_len);
+        return -1;
+    }
+
+    // Allocate temporary buffer for encrypted data
+    size_t encrypted_len = block_len + 16;
+    uint8_t *encrypted = malloc(encrypted_len);
+    if (!encrypted) {
+        ESP_LOGE(TAG, "Failed to allocate encrypted buffer");
+        return -1;
+    }
+
+    received = 0;
+    while ((size_t)received < encrypted_len) {
+        int r = recv(socket, encrypted + received, encrypted_len - received, 0);
+        if (r <= 0) {
+            free(encrypted);
+            return -1;
+        }
+        received += r;
+    }
+
+    // Decrypt
+    uint8_t nonce[12] = {0};
+    memcpy(nonce + 4, &current_session->decrypt_nonce, 8);
+
+    unsigned long long plaintext_len;
+    if (crypto_aead_chacha20poly1305_ietf_decrypt(
+            buffer, &plaintext_len,
+            NULL,
+            encrypted, encrypted_len,
+            len_buf, sizeof(len_buf),
+            nonce,
+            current_session->decrypt_key) != 0) {
+        free(encrypted);
+        ESP_LOGE(TAG, "Failed to decrypt frame");
+        return -1;
+    }
+    free(encrypted);
+
+    current_session->decrypt_nonce++;
+
+    ESP_LOGD(TAG, "Decrypted block: %llu bytes", plaintext_len);
+    return (int)plaintext_len;
+}
+
+// Write encrypted frame to socket
+// Format: [2-byte length (little-endian)][encrypted data + 16-byte tag]
+static int write_encrypted_frame(int socket, const uint8_t *data, size_t data_len)
+{
+    if (!current_session || !encrypted_mode) {
+        ESP_LOGE(TAG, "Cannot write encrypted frame: encryption not enabled");
+        return -1;
+    }
+
+    size_t offset = 0;
+    while (offset < data_len) {
+        uint16_t block_len = (data_len - offset) > ENCRYPTED_BLOCK_MAX
+            ? ENCRYPTED_BLOCK_MAX
+            : (uint16_t)(data_len - offset);
+
+        uint8_t len_buf[2];
+        len_buf[0] = block_len & 0xFF;
+        len_buf[1] = (block_len >> 8) & 0xFF;
+
+        uint8_t nonce[12] = {0};
+        memcpy(nonce + 4, &current_session->encrypt_nonce, 8);
+
+        size_t encrypted_len = block_len + 16;
+        uint8_t *encrypted = malloc(encrypted_len);
+        if (!encrypted) {
+            ESP_LOGE(TAG, "Failed to allocate encrypted buffer");
+            return -1;
+        }
+
+        unsigned long long ct_len;
+        crypto_aead_chacha20poly1305_ietf_encrypt(
+            encrypted, &ct_len,
+            data + offset, block_len,
+            len_buf, sizeof(len_buf),
+            NULL,
+            nonce,
+            current_session->encrypt_key);
+
+        if (ct_len != encrypted_len) {
+            ESP_LOGE(TAG, "Unexpected encrypted length: %llu", ct_len);
+            free(encrypted);
+            return -1;
+        }
+
+        if (send_all(socket, len_buf, sizeof(len_buf)) != 0 ||
+            send_all(socket, encrypted, encrypted_len) != 0) {
+            ESP_LOGE(TAG, "Failed to send encrypted block");
+            free(encrypted);
+            return -1;
+        }
+
+        free(encrypted);
+        current_session->encrypt_nonce++;
+        offset += block_len;
+    }
+
+    return 0;
+}
+
 static int send_response(int client_socket, int status_code, const char *status_text,
                          const char *content_type, const char *body, size_t body_len)
 {
@@ -135,19 +416,32 @@ static int send_response(int client_socket, int status_code, const char *status_
         "\r\n",
         status_code, status_text, content_type, body_len);
 
-    if (send(client_socket, header, header_len, 0) < 0) {
-        ESP_LOGE(TAG, "Failed to send header");
+    // Build complete response
+    size_t total_len = header_len + body_len;
+    uint8_t *response = malloc(total_len);
+    if (!response) {
+        ESP_LOGE(TAG, "Failed to allocate response buffer");
         return -1;
     }
 
+    memcpy(response, header, header_len);
     if (body && body_len > 0) {
-        if (send(client_socket, body, body_len, 0) < 0) {
-            ESP_LOGE(TAG, "Failed to send body");
-            return -1;
+        memcpy(response + header_len, body, body_len);
+    }
+
+    // Send encrypted or plain depending on mode
+    int result;
+    if (encrypted_mode) {
+        result = write_encrypted_frame(client_socket, response, total_len);
+    } else {
+        result = (send(client_socket, response, total_len, 0) < 0) ? -1 : 0;
+        if (result < 0) {
+            ESP_LOGE(TAG, "Failed to send response");
         }
     }
 
-    return 0;
+    free(response);
+    return result;
 }
 
 static int send_rtsp_response(int client_socket, int status_code, const char *status_text,
@@ -182,19 +476,32 @@ static int send_rtsp_response(int client_socket, int status_code, const char *st
             status_code, status_text, cseq);
     }
 
-    if (send(client_socket, header, header_len, 0) < 0) {
-        ESP_LOGE(TAG, "Failed to send RTSP header");
+    // Build complete response
+    size_t total_len = header_len + body_len;
+    uint8_t *response = malloc(total_len);
+    if (!response) {
+        ESP_LOGE(TAG, "Failed to allocate response buffer");
         return -1;
     }
 
+    memcpy(response, header, header_len);
     if (body && body_len > 0) {
-        if (send(client_socket, body, body_len, 0) < 0) {
-            ESP_LOGE(TAG, "Failed to send RTSP body");
-            return -1;
+        memcpy(response + header_len, body, body_len);
+    }
+
+    // Send encrypted or plain depending on mode
+    int result;
+    if (encrypted_mode) {
+        result = write_encrypted_frame(client_socket, response, total_len);
+    } else {
+        result = (send(client_socket, response, total_len, 0) < 0) ? -1 : 0;
+        if (result < 0) {
+            ESP_LOGE(TAG, "Failed to send RTSP response");
         }
     }
 
-    return 0;
+    free(response);
+    return result;
 }
 
 static int parse_cseq(const char *request)
@@ -204,6 +511,17 @@ static int parse_cseq(const char *request)
         return atoi(cseq + 5);
     }
     return 1;
+}
+
+static const uint8_t *find_header_end(const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i + 3 < len; i++) {
+        if (data[i] == '\r' && data[i + 1] == '\n' &&
+            data[i + 2] == '\r' && data[i + 3] == '\n') {
+            return data + i;
+        }
+    }
+    return NULL;
 }
 
 static void handle_info_request(int client_socket, const char *request)
@@ -315,27 +633,80 @@ static void handle_post_request(int client_socket, const char *request, size_t r
             ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_INFO);
         }
 
-        // AirPlay 2 simplified pair-setup:
-        // - Client sends 32-byte Ed25519 public key (or encrypted blob)
-        // - Server responds with its 32-byte Ed25519 public key
-        // This establishes identity for transient pairing
-        if (body_len == 32) {
-            // Client sent their public key, respond with ours
-            const uint8_t *our_pk = hap_get_public_key();
-            ESP_LOGI(TAG, "Pair-setup: responding with our Ed25519 public key");
-            send_rtsp_response(client_socket, 200, "OK", cseq,
-                              "Content-Type: application/octet-stream\r\n",
-                              (const char *)our_pk, 32);
-        } else {
-            // Unknown format - try TLV response
-            ESP_LOGW(TAG, "Pair-setup: unexpected body size %zu, trying TLV response", body_len);
-            static const uint8_t pair_setup_m2[] = {
-                0x06, 0x01, 0x02  // State = 2 (M2)
-            };
-            send_rtsp_response(client_socket, 200, "OK", cseq,
-                              "Content-Type: application/octet-stream\r\n",
-                              (const char *)pair_setup_m2, sizeof(pair_setup_m2));
+        // Create session if needed
+        if (!current_session) {
+            current_session = hap_session_create();
+            if (!current_session) {
+                ESP_LOGE(TAG, "Failed to create HAP session");
+                send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
+                return;
+            }
         }
+
+        uint8_t *response = malloc(2048);
+        if (!response) {
+            ESP_LOGE(TAG, "Failed to allocate response buffer");
+            send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
+            return;
+        }
+
+        size_t response_len = 0;
+        esp_err_t err = ESP_FAIL;
+
+        if (body && body_len > 0) {
+            // Parse TLV to get state
+            size_t state_len;
+            const uint8_t *state = tlv8_find(body, body_len, TLV_TYPE_STATE, &state_len);
+
+            if (state && state_len == 1) {
+                switch (state[0]) {
+                    case 1:  // M1
+                        ESP_LOGI(TAG, "Pair-setup M1");
+                        err = hap_pair_setup_m1(current_session, body, body_len,
+                                                response, 2048, &response_len);
+                        break;
+                    case 3:  // M3
+                        ESP_LOGI(TAG, "Pair-setup M3");
+                        err = hap_pair_setup_m3(current_session, body, body_len,
+                                                response, 2048, &response_len);
+                        break;
+                    case 5:  // M5
+                        ESP_LOGI(TAG, "Pair-setup M5");
+                        err = hap_pair_setup_m5(current_session, body, body_len,
+                                                response, 2048, &response_len);
+                        break;
+                    default:
+                        ESP_LOGW(TAG, "Pair-setup: unknown state %d", state[0]);
+                        break;
+                }
+            } else {
+                ESP_LOGW(TAG, "Pair-setup: no valid state TLV found");
+            }
+        }
+
+        if (err == ESP_OK && response_len > 0) {
+            ESP_LOGI(TAG, "Pair-setup response: %zu bytes", response_len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, response, response_len > 32 ? 32 : response_len, ESP_LOG_DEBUG);
+            send_rtsp_response(client_socket, 200, "OK", cseq,
+                              "Content-Type: application/octet-stream\r\n",
+                              (const char *)response, response_len);
+
+            // Enable encrypted mode after M4 is sent (pair-setup complete)
+            if (current_session && current_session->pair_setup_state == 4 &&
+                current_session->session_established) {
+                ESP_LOGI(TAG, "Pair-setup complete - enabling encrypted mode");
+                encrypted_mode = true;
+            }
+        } else {
+            ESP_LOGE(TAG, "Pair-setup failed: err=%d, response_len=%zu", err, response_len);
+            // Return error TLV
+            static const uint8_t error_response[] = {0x06, 0x01, 0x02, 0x07, 0x01, 0x02};
+            send_rtsp_response(client_socket, 200, "OK", cseq,
+                              "Content-Type: application/octet-stream\r\n",
+                              (const char *)error_response, sizeof(error_response));
+        }
+
+        free(response);
     } else if (strstr(path, "/pair-verify")) {
         ESP_LOGI(TAG, "Pair-verify requested, body_len=%zu", body_len);
 
@@ -354,7 +725,13 @@ static void handle_post_request(int client_socket, const char *request, size_t r
             }
         }
 
-        uint8_t response[1024];
+        uint8_t *response = malloc(1024);
+        if (!response) {
+            ESP_LOGE(TAG, "Failed to allocate response buffer");
+            send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
+            return;
+        }
+
         size_t response_len = 0;
         esp_err_t err = ESP_FAIL;
 
@@ -364,15 +741,17 @@ static void handle_post_request(int client_socket, const char *request, size_t r
             const uint8_t *state = tlv8_find(body, body_len, TLV_TYPE_STATE, &state_len);
 
             if (state && state_len == 1) {
-                // TLV format
+                // TLV format - use proper TLV handlers which return TLV responses
                 if (state[0] == 0x01) {
                     ESP_LOGI(TAG, "Pair-verify M1 (TLV format)");
+                    // Use TLV handler which creates TLV M2 response
                     err = hap_pair_verify_m1(current_session, body, body_len,
-                                            response, sizeof(response), &response_len);
+                                             response, 1024, &response_len);
                 } else if (state[0] == 0x03) {
                     ESP_LOGI(TAG, "Pair-verify M3 (TLV format)");
+                    // Use TLV handler for M3
                     err = hap_pair_verify_m3(current_session, body, body_len,
-                                            response, sizeof(response), &response_len);
+                                             response, 1024, &response_len);
                 } else {
                     ESP_LOGE(TAG, "Unexpected TLV state: %d", state[0]);
                     err = ESP_ERR_INVALID_ARG;
@@ -383,12 +762,12 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                     // First message - M1 raw (68 bytes: 32 pubkey + 36 encrypted)
                     ESP_LOGI(TAG, "Pair-verify M1 (raw format)");
                     err = hap_pair_verify_m1_raw(current_session, body, body_len,
-                                                 response, sizeof(response), &response_len);
+                                                 response, 1024, &response_len);
                 } else if (current_session->pair_verify_state == PAIR_VERIFY_STATE_M2) {
                     // Second message - M3 raw (encrypted data)
                     ESP_LOGI(TAG, "Pair-verify M3 (raw format)");
                     err = hap_pair_verify_m3_raw(current_session, body, body_len,
-                                                 response, sizeof(response), &response_len);
+                                                 response, 1024, &response_len);
                 } else {
                     ESP_LOGE(TAG, "Unexpected state for raw format: %d", current_session->pair_verify_state);
                     err = ESP_ERR_INVALID_STATE;
@@ -400,15 +779,20 @@ static void handle_post_request(int client_socket, const char *request, size_t r
         }
 
         if (err == ESP_OK && response_len > 0) {
+            ESP_LOGI(TAG, "Sending pair-verify M2/M4 response, len=%zu", response_len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, response, response_len > 32 ? 32 : response_len, ESP_LOG_DEBUG);
             send_rtsp_response(client_socket, 200, "OK", cseq,
                               "Content-Type: application/octet-stream\r\n",
                               (const char *)response, response_len);
         } else {
+            ESP_LOGE(TAG, "Pair-verify failed, err=%d, response_len=%zu", err, response_len);
             // Return error
             send_rtsp_response(client_socket, 200, "OK", cseq,
                               "Content-Type: application/octet-stream\r\n",
                               "\x06\x01\x04\x07\x01\x02", 6);  // State=4, Error=2 (auth)
         }
+
+        free(response);
     } else if (strstr(path, "/fp-setup")) {
         ESP_LOGI(TAG, "FairPlay setup requested, body_len=%zu", body_len);
 
@@ -468,14 +852,45 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                               "\x00", 1);
         }
     } else if (strstr(path, "/command")) {
-        ESP_LOGI(TAG, "Command received");
+        ESP_LOGI(TAG, "Command received, body_len=%zu", body_len);
+        if (body && body_len > 0) {
+            // Log body for debugging
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_INFO);
+
+            // Check if it's a binary plist
+            if (body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+                ESP_LOGI(TAG, "Command is binary plist");
+                // Try to extract command type
+                int64_t cmd_type = 0;
+                if (bplist_find_int(body, body_len, "type", &cmd_type)) {
+                    ESP_LOGI(TAG, "Command type: %lld", cmd_type);
+                }
+            }
+        }
+        // Return 200 OK - some commands don't need a response body
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else if (strstr(path, "/feedback")) {
         ESP_LOGI(TAG, "Feedback received");
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
+    } else if (strstr(path, "/audio") || strstr(path, "/stream")) {
+        // Buffered audio data - can be very large (100KB+)
+        ESP_LOGI(TAG, "Audio/stream data received: %zu bytes", body_len);
+        if (body && body_len > 0) {
+            // Log header for debugging
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 32 ? 32 : body_len, ESP_LOG_DEBUG);
+            // TODO: Process buffered audio data
+            // The body contains encrypted audio frames
+        }
+        send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else {
-        ESP_LOGW(TAG, "Unknown POST path: %s", path);
-        send_rtsp_response(client_socket, 404, "Not Found", cseq, NULL, NULL, 0);
+        // Log unknown POST paths with their body size for debugging
+        ESP_LOGW(TAG, "Unknown POST path: %s (body_len=%zu)", path, body_len);
+        if (body_len > 1024) {
+            // Large body on unknown endpoint - might be audio data
+            ESP_LOGI(TAG, "Large payload on unknown POST - first 32 bytes:");
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 32 ? 32 : body_len, ESP_LOG_INFO);
+        }
+        send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     }
 }
 
@@ -648,10 +1063,14 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
 
     // Log Content-Type if present (might be application/x-apple-binary-plist for AirPlay 2)
     const char *content_type = strstr(request, "Content-Type:");
+    bool is_bplist = false;
     if (content_type) {
         char ct[64] = {0};
         sscanf(content_type, "Content-Type: %63s", ct);
         ESP_LOGI(TAG, "SETUP Content-Type: %s", ct);
+        if (strcmp(ct, "application/x-apple-binary-plist") == 0) {
+            is_bplist = true;
+        }
     }
 
     // Check for body (AirPlay 2 sends binary plist with stream config)
@@ -659,20 +1078,260 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
     const uint8_t *body = get_body(request, request_len, &body_len);
     if (body && body_len > 0) {
         ESP_LOGI(TAG, "SETUP body: %zu bytes", body_len);
-        // Log first 128 bytes to look for encryption keys
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 128 ? 128 : body_len, ESP_LOG_INFO);
+        // Log first 64 bytes for debugging
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_DEBUG);
 
-        // Look for "ekey" or "eiv" in binary plist (encryption key/iv)
-        for (size_t i = 0; i < body_len - 4; i++) {
-            if (memcmp(body + i, "ekey", 4) == 0) {
-                ESP_LOGI(TAG, "Found 'ekey' at offset %zu", i);
+        if (is_bplist) {
+            size_t stream_count = 0;
+            if (bplist_get_streams_count(body, body_len, &stream_count)) {
+                ESP_LOGI(TAG, "SETUP bplist streams count: %zu", stream_count);
+                for (size_t i = 0; i < stream_count; i++) {
+                    int64_t stream_type = -1;
+                    size_t ekey_len_dbg = 0;
+                    size_t eiv_len_dbg = 0;
+                    size_t shk_len_dbg = 0;
+                    if (bplist_get_stream_info(body, body_len, i, &stream_type,
+                                               &ekey_len_dbg, &eiv_len_dbg, &shk_len_dbg)) {
+                        ESP_LOGI(TAG,
+                                 "SETUP stream[%zu]: type=%lld ekey=%zu eiv=%zu shk=%zu",
+                                 i, (long long)stream_type,
+                                 ekey_len_dbg, eiv_len_dbg, shk_len_dbg);
+
+                        // Track the first stream type for later handling
+                        if (i == 0) {
+                            audio_stream.stream_type = stream_type;
+                        }
+                        bplist_kv_info_t kv[16];
+                        size_t kv_count = 0;
+
+                        // Variables to collect audio format info
+                        int64_t codec_type = -1;  // ct: 2 = ALAC
+                        int64_t sample_rate = 44100;  // sr: default 44100
+                        int64_t samples_per_frame = 352;  // spf: default 352
+
+                        if (bplist_get_stream_kv_info(body, body_len, i, kv, 16, &kv_count)) {
+                            for (size_t k = 0; k < kv_count; k++) {
+                                const char *type_str = "unknown";
+                                switch (kv[k].value_type) {
+                                    case BPLIST_VALUE_INT: type_str = "int"; break;
+                                    case BPLIST_VALUE_DATA: type_str = "data"; break;
+                                    case BPLIST_VALUE_STRING: type_str = "string"; break;
+                                    case BPLIST_VALUE_UID: type_str = "uid"; break;
+                                    case BPLIST_VALUE_ARRAY: type_str = "array"; break;
+                                    case BPLIST_VALUE_DICT: type_str = "dict"; break;
+                                    default: break;
+                                }
+                                if (kv[k].value_type == BPLIST_VALUE_INT) {
+                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s value=%lld",
+                                             i, kv[k].key, type_str, (long long)kv[k].int_value);
+
+                                    // Extract audio format parameters
+                                    if (strcmp(kv[k].key, "ct") == 0) {
+                                        codec_type = kv[k].int_value;
+                                    } else if (strcmp(kv[k].key, "sr") == 0) {
+                                        sample_rate = kv[k].int_value;
+                                    } else if (strcmp(kv[k].key, "spf") == 0) {
+                                        samples_per_frame = kv[k].int_value;
+                                    }
+                                } else if (kv[k].value_len > 0) {
+                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s len=%zu",
+                                             i, kv[k].key, type_str, kv[k].value_len);
+                                } else {
+                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s",
+                                             i, kv[k].key, type_str);
+                                }
+                            }
+
+                            // Set audio format based on extracted parameters
+                            audio_format_t format = {0};
+                            if (codec_type == 2) {
+                                strcpy(format.codec, "ALAC");
+                            } else if (codec_type == 8) {
+                                strcpy(format.codec, "AAC-ELD");
+                            } else {
+                                strcpy(format.codec, "ALAC");  // Default to ALAC
+                            }
+                            format.sample_rate = (int)sample_rate;
+                            format.channels = 2;  // Stereo
+                            format.bits_per_sample = 16;
+                            format.frame_size = (int)samples_per_frame;
+                            format.max_samples_per_frame = (uint32_t)samples_per_frame;
+                            format.sample_size = 16;
+                            format.num_channels = 2;
+                            format.sample_rate_config = (uint32_t)sample_rate;
+
+                            ESP_LOGI(TAG, "Setting audio format from SETUP: %s, %d Hz, %d samples/frame",
+                                     format.codec, format.sample_rate, format.frame_size);
+                            audio_receiver_set_format(&format);
+                        }
+                    } else {
+                        ESP_LOGI(TAG, "SETUP stream[%zu]: unreadable", i);
+                    }
+                }
+            } else {
+                ESP_LOGI(TAG, "SETUP bplist has no streams array");
             }
-            if (memcmp(body + i, "eiv", 3) == 0) {
-                ESP_LOGI(TAG, "Found 'eiv' at offset %zu", i);
+        }
+
+        // Try to extract encryption key from binary plist
+        uint8_t ekey_encrypted[64];  // Encrypted key (typically 16 or 32 bytes + 16 tag)
+        size_t ekey_len = 0;
+        uint8_t eiv[16];
+        size_t eiv_len = 0;
+        uint8_t shk[32];  // Shared key (if present, unencrypted)
+        size_t shk_len = 0;
+
+        // Parse binary plist to extract encryption parameters
+        bool has_stream_crypto = bplist_find_stream_crypto(
+            body, body_len, 96,
+            ekey_encrypted, sizeof(ekey_encrypted), &ekey_len,
+            eiv, sizeof(eiv), &eiv_len,
+            shk, sizeof(shk), &shk_len);
+
+        bool has_ekey = ekey_len > 0;
+        bool has_eiv = eiv_len > 0;
+        bool has_shk = shk_len > 0;
+
+        if (!has_stream_crypto || (!has_ekey && !has_shk)) {
+            has_ekey = bplist_find_data_deep(body, body_len, "ekey", ekey_encrypted, sizeof(ekey_encrypted), &ekey_len);
+            has_eiv = bplist_find_data_deep(body, body_len, "eiv", eiv, sizeof(eiv), &eiv_len);
+            has_shk = bplist_find_data_deep(body, body_len, "shk", shk, sizeof(shk), &shk_len);
+        }
+
+        if (has_ekey) {
+            ESP_LOGI(TAG, "Found 'ekey' in binary plist: %zu bytes", ekey_len);
+        }
+        if (has_eiv) {
+            ESP_LOGI(TAG, "Found 'eiv' in binary plist: %zu bytes", eiv_len);
+        }
+        if (has_shk) {
+            ESP_LOGI(TAG, "Found 'shk' (shared key) in binary plist: %zu bytes", shk_len);
+        }
+
+        // Set up audio encryption
+        bool encryption_set = false;
+        audio_encrypt_t audio_encrypt = {0};
+
+        if (has_shk && shk_len >= 16) {
+            // Direct shared key (unencrypted) - used in some AirPlay 2 modes
+            ESP_LOGI(TAG, "Using direct shared key for audio decryption");
+            audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
+            memcpy(audio_encrypt.key, shk, shk_len > 32 ? 32 : shk_len);
+            audio_encrypt.key_len = shk_len > 32 ? 32 : shk_len;
+            if (has_eiv && eiv_len >= 16) {
+                memcpy(audio_encrypt.iv, eiv, 16);
             }
-            if (memcmp(body + i, "shk", 3) == 0) {
-                ESP_LOGI(TAG, "Found 'shk' (shared key) at offset %zu", i);
+            audio_receiver_set_encryption(&audio_encrypt);
+            encryption_set = true;
+        } else if (has_ekey && ekey_len > 16 && current_session && current_session->session_established) {
+            // Encrypted key - decrypt using session key from pair-verify
+            ESP_LOGI(TAG, "Decrypting ekey using pair-verify session key");
+
+            // The ekey is encrypted with ChaCha20-Poly1305
+            // Nonce is typically "ekey" padded to 12 bytes or all zeros
+            uint8_t nonce[12] = {0};
+
+            uint8_t decrypted_key[32];
+            unsigned long long decrypted_len;
+
+            int ret = crypto_aead_chacha20poly1305_ietf_decrypt(
+                decrypted_key, &decrypted_len,
+                NULL,
+                ekey_encrypted, ekey_len,
+                NULL, 0,  // No additional data
+                nonce,
+                current_session->shared_secret);  // Use shared secret from pair-verify
+
+            if (ret == 0 && decrypted_len >= 16) {
+                ESP_LOGI(TAG, "ekey decrypted successfully: %llu bytes", decrypted_len);
+                audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
+                memcpy(audio_encrypt.key, decrypted_key, decrypted_len > 32 ? 32 : decrypted_len);
+                audio_encrypt.key_len = decrypted_len > 32 ? 32 : decrypted_len;
+                if (has_eiv && eiv_len >= 16) {
+                    memcpy(audio_encrypt.iv, eiv, 16);
+                }
+                audio_receiver_set_encryption(&audio_encrypt);
+                encryption_set = true;
+            } else {
+                // Try with encrypt_key instead of shared_secret
+                ret = crypto_aead_chacha20poly1305_ietf_decrypt(
+                    decrypted_key, &decrypted_len,
+                    NULL,
+                    ekey_encrypted, ekey_len,
+                    NULL, 0,
+                    nonce,
+                    current_session->encrypt_key);
+
+                if (ret == 0 && decrypted_len >= 16) {
+                    ESP_LOGI(TAG, "ekey decrypted with encrypt_key: %llu bytes", decrypted_len);
+                    audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
+                    memcpy(audio_encrypt.key, decrypted_key, decrypted_len > 32 ? 32 : decrypted_len);
+                    audio_encrypt.key_len = decrypted_len > 32 ? 32 : decrypted_len;
+                    if (has_eiv && eiv_len >= 16) {
+                        memcpy(audio_encrypt.iv, eiv, 16);
+                    }
+                    audio_receiver_set_encryption(&audio_encrypt);
+                    encryption_set = true;
+                } else {
+                    ESP_LOGW(TAG, "Failed to decrypt ekey with session keys");
+                }
             }
+        } else if (has_ekey) {
+            ESP_LOGW(TAG, "Have ekey but no session for decryption");
+        }
+
+        // NEW CODE: If no encryption set and we have an established session, derive audio key
+        if (!encryption_set && current_session && current_session->session_established) {
+            // Check if encryption was already set above
+            // If we get here and encryption wasn't set yet, derive from session
+
+            // Derive audio encryption key from pair-verify shared secret
+            audio_encrypt_t audio_encrypt = {0};
+            audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
+
+            esp_err_t err = hap_derive_audio_key(current_session,
+                                                  audio_encrypt.key,
+                                                  sizeof(audio_encrypt.key));
+            if (err == ESP_OK) {
+                audio_encrypt.key_len = 32;
+
+                // Set IV if provided, otherwise zeros (some implementations use packet-derived nonces only)
+                if (has_eiv && eiv_len >= 16) {
+                    memcpy(audio_encrypt.iv, eiv, 16);
+                    ESP_LOGI(TAG, "Using eiv from SETUP body");
+                }
+
+                ESP_LOGI(TAG, "Derived audio encryption key from pair-verify session");
+                audio_receiver_set_encryption(&audio_encrypt);
+            } else {
+                ESP_LOGW(TAG, "Failed to derive audio encryption key: %d", err);
+            }
+        } else if (!current_session) {
+            ESP_LOGW(TAG, "No pair-verify session available for audio key derivation");
+        } else if (!current_session->session_established) {
+            ESP_LOGW(TAG, "Pair-verify session not yet established");
+        }
+    } else {
+        ESP_LOGI(TAG, "SETUP has no body - will derive audio key from pair-verify session");
+        // No SETUP body - derive audio key from pair-verify session if available
+        if (current_session && current_session->session_established) {
+            audio_encrypt_t audio_encrypt = {0};
+            audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
+
+            esp_err_t err = hap_derive_audio_key(current_session,
+                                                  audio_encrypt.key,
+                                                  sizeof(audio_encrypt.key));
+            if (err == ESP_OK) {
+                audio_encrypt.key_len = 32;
+                ESP_LOGI(TAG, "Derived audio encryption key from pair-verify session");
+                audio_receiver_set_encryption(&audio_encrypt);
+            } else {
+                ESP_LOGW(TAG, "Failed to derive audio encryption key: %d", err);
+            }
+        } else if (!current_session) {
+            ESP_LOGW(TAG, "No pair-verify session available for audio key derivation");
+        } else if (!current_session->session_established) {
+            ESP_LOGW(TAG, "Pair-verify session not yet established");
         }
     }
 
@@ -695,35 +1354,88 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                  client_control_port, client_timing_port);
     }
 
-    // Allocate UDP ports for audio streaming
-    // We just need the port numbers to tell the client - audio_receiver will bind later
-    int temp_socket;
+    // Handle different stream types
+    int64_t stream_type = audio_stream.stream_type;
+    if (stream_type == 0) {
+        stream_type = 96;  // Default to realtime/UDP
+    }
 
-    if (audio_stream.data_port == 0) {
-        temp_socket = create_udp_socket(&audio_stream.data_port);
-        if (temp_socket > 0) close(temp_socket);  // Close after getting port
+    ESP_LOGI(TAG, "SETUP for stream type: %lld", (long long)stream_type);
+
+    if (stream_type == 103) {
+        // Type 103 = buffered audio over TCP
+        // Start buffered audio receiver which creates TCP listener
+        esp_err_t err = audio_receiver_start_buffered(0);  // Let system choose port
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start buffered audio receiver");
+            send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
+            return;
+        }
+        audio_stream.buffered_port = audio_receiver_get_buffered_port();
+        ESP_LOGI(TAG, "Buffered audio (type 103) TCP port: %d", audio_stream.buffered_port);
+
+        // Still allocate control and timing ports for type 103
+        int temp_socket;
+        if (audio_stream.control_port == 0) {
+            temp_socket = create_udp_socket(&audio_stream.control_port);
+            if (temp_socket > 0) close(temp_socket);
+        }
+        if (audio_stream.timing_port == 0) {
+            temp_socket = create_udp_socket(&audio_stream.timing_port);
+            if (temp_socket > 0) close(temp_socket);
+        }
+    } else {
+        // Type 96 = realtime audio over UDP
+        // Allocate UDP ports for audio streaming
+        // We just need the port numbers to tell the client - audio_receiver will bind later
+        int temp_socket;
+
+        if (audio_stream.data_port == 0) {
+            temp_socket = create_udp_socket(&audio_stream.data_port);
+            if (temp_socket > 0) close(temp_socket);  // Close after getting port
+        }
+        if (audio_stream.control_port == 0) {
+            temp_socket = create_udp_socket(&audio_stream.control_port);
+            if (temp_socket > 0) close(temp_socket);
+        }
+        if (audio_stream.timing_port == 0) {
+            temp_socket = create_udp_socket(&audio_stream.timing_port);
+            if (temp_socket > 0) close(temp_socket);
+        }
     }
-    if (audio_stream.control_port == 0) {
-        temp_socket = create_udp_socket(&audio_stream.control_port);
-        if (temp_socket > 0) close(temp_socket);
-    }
-    if (audio_stream.timing_port == 0) {
-        temp_socket = create_udp_socket(&audio_stream.timing_port);
-        if (temp_socket > 0) close(temp_socket);
-    }
+
+    // For type 103, dataPort is the TCP buffered port
+    uint16_t response_data_port = (stream_type == 103) ? audio_stream.buffered_port : audio_stream.data_port;
 
     ESP_LOGI(TAG, "Server ports - data: %d, control: %d, timing: %d",
-             audio_stream.data_port, audio_stream.control_port, audio_stream.timing_port);
+             response_data_port, audio_stream.control_port, audio_stream.timing_port);
 
-    // Build Transport response header
-    char transport_response[256];
-    snprintf(transport_response, sizeof(transport_response),
-             "Transport: RTP/AVP/UDP;unicast;mode=record;"
-             "server_port=%d;control_port=%d;timing_port=%d\r\n"
-             "Session: 1\r\n",
-             audio_stream.data_port, audio_stream.control_port, audio_stream.timing_port);
+    if (is_bplist) {
+        uint8_t plist_body[256];
+        size_t plist_len = build_setup_bplist(plist_body, sizeof(plist_body),
+                                              stream_type,
+                                              response_data_port,
+                                              audio_stream.control_port,
+                                              audio_stream.timing_port);
+        if (plist_len == 0) {
+            ESP_LOGE(TAG, "Failed to build SETUP response plist");
+            send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
+            return;
+        }
+        send_rtsp_response(client_socket, 200, "OK", cseq,
+                          "Content-Type: application/x-apple-binary-plist\r\n",
+                          (const char *)plist_body, plist_len);
+    } else {
+        // Build Transport response header
+        char transport_response[256];
+        snprintf(transport_response, sizeof(transport_response),
+                 "Transport: RTP/AVP/UDP;unicast;mode=record;"
+                 "server_port=%d;control_port=%d;timing_port=%d\r\n"
+                 "Session: 1\r\n",
+                 audio_stream.data_port, audio_stream.control_port, audio_stream.timing_port);
 
-    send_rtsp_response(client_socket, 200, "OK", cseq, transport_response, NULL, 0);
+        send_rtsp_response(client_socket, 200, "OK", cseq, transport_response, NULL, 0);
+    }
     audio_stream.active = true;
 }
 
@@ -738,13 +1450,18 @@ static void handle_record_request(int client_socket, const char *request)
         ESP_LOGI(TAG, "RTP-Info received");
     }
 
-    // Start audio receiver on the data port
-    if (audio_stream.data_port > 0) {
+    // Start audio receiver based on stream type
+    // Type 103 (buffered) is already started during SETUP
+    // Type 96 (realtime) starts here during RECORD
+    if (audio_stream.stream_type == 103) {
+        ESP_LOGI(TAG, "Buffered audio (type 103) already started on TCP port %d",
+                 audio_stream.buffered_port);
+    } else if (audio_stream.data_port > 0) {
         esp_err_t err = audio_receiver_start(audio_stream.data_port, audio_stream.control_port);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start audio receiver");
         } else {
-            ESP_LOGI(TAG, "Audio receiver started on port %d", audio_stream.data_port);
+            ESP_LOGI(TAG, "Audio receiver started on UDP port %d", audio_stream.data_port);
         }
     }
 
@@ -821,42 +1538,70 @@ static void handle_teardown_request(int client_socket, const char *request)
     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
 }
 
-static void handle_client(int client_socket)
+static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_len)
 {
-    char *request = malloc(RTSP_MAX_REQUEST_SIZE);
-    if (!request) {
-        ESP_LOGE(TAG, "Failed to allocate request buffer");
-        close(client_socket);
-        return;
-    }
-
-    while (server_running) {
-        memset(request, 0, RTSP_MAX_REQUEST_SIZE);
-
-        int recv_len = recv(client_socket, request, RTSP_MAX_REQUEST_SIZE - 1, 0);
-        if (recv_len <= 0) {
-            if (recv_len < 0) {
-                ESP_LOGE(TAG, "recv error: %d", errno);
-            }
+    while (*buf_len > 0) {
+        const uint8_t *header_end = find_header_end(buffer, *buf_len);
+        if (!header_end) {
             break;
         }
 
-        request[recv_len] = '\0';
+        size_t header_len = (size_t)(header_end - buffer) + 4;
+        char *header_str = malloc(header_len + 1);
+        if (!header_str) {
+            ESP_LOGE(TAG, "Failed to allocate header buffer");
+            *buf_len = 0;
+            break;
+        }
+        memcpy(header_str, buffer, header_len);
+        header_str[header_len] = '\0';
+
+        int content_len = parse_content_length(header_str);
+        if (content_len < 0) {
+            content_len = 0;
+        }
+        size_t total_len = header_len + (size_t)content_len;
+        if (total_len > RTSP_BUFFER_LARGE) {
+            ESP_LOGE(TAG, "RTSP message too large: %zu bytes (max %d)", total_len, RTSP_BUFFER_LARGE);
+            free(header_str);
+            *buf_len = 0;
+            break;
+        }
+        if (*buf_len < total_len) {
+            free(header_str);
+            break;
+        }
+
+        char *request = malloc(total_len + 1);
+        if (!request) {
+            ESP_LOGE(TAG, "Failed to allocate request buffer");
+            free(header_str);
+            *buf_len = 0;
+            break;
+        }
+        memcpy(request, buffer, total_len);
+        request[total_len] = '\0';
 
         // Log first line of request
-        char *first_line_end = strstr(request, "\r\n");
+        char *first_line_end = strstr(header_str, "\r\n");
         if (first_line_end) {
             *first_line_end = '\0';
-            ESP_LOGI(TAG, "Request: %s", request);
+            ESP_LOGI(TAG, "Request: %s", header_str);
             *first_line_end = '\r';
+        } else {
+            ESP_LOGW(TAG, "Request without CRLF (len=%zu)", header_len);
         }
 
         // Parse request method and path
         char method[16] = {0};
         char path[256] = {0};
-        sscanf(request, "%15s %255s", method, path);
+        int parsed = sscanf(header_str, "%15s %255s", method, path);
 
-        if (strcmp(method, "GET") == 0) {
+        // Debug: log what we parsed
+        if (parsed < 1 || method[0] == '\0') {
+            ESP_LOGW(TAG, "Failed to parse method (parsed=%d, recv_len=%zu)", parsed, total_len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, request, total_len > 64 ? 64 : total_len, ESP_LOG_WARN);
+        } else if (strcmp(method, "GET") == 0) {
             if (strcmp(path, "/info") == 0) {
                 handle_info_request(client_socket, request);
             } else {
@@ -866,22 +1611,22 @@ static void handle_client(int client_socket)
         } else if (strcmp(method, "OPTIONS") == 0) {
             handle_options_request(client_socket, request);
         } else if (strcmp(method, "POST") == 0) {
-            handle_post_request(client_socket, request, recv_len, path);
+            handle_post_request(client_socket, request, total_len, path);
         } else if (strcmp(method, "ANNOUNCE") == 0) {
-            handle_announce_request(client_socket, request, recv_len);
+            handle_announce_request(client_socket, request, total_len);
         } else if (strcmp(method, "SETUP") == 0) {
-            handle_setup_request(client_socket, request, recv_len);
+            handle_setup_request(client_socket, request, total_len);
         } else if (strcmp(method, "RECORD") == 0) {
             handle_record_request(client_socket, request);
         } else if (strcmp(method, "SET_PARAMETER") == 0) {
-            handle_set_parameter_request(client_socket, request, recv_len);
+            handle_set_parameter_request(client_socket, request, total_len);
         } else if (strcmp(method, "GET_PARAMETER") == 0) {
             int cseq = parse_cseq(request);
             ESP_LOGI(TAG, "GET_PARAMETER received");
 
             // Check what parameter is being requested (in body)
             size_t body_len;
-            const uint8_t *body = get_body(request, recv_len, &body_len);
+            const uint8_t *body = get_body(request, total_len, &body_len);
             if (body && body_len > 0) {
                 ESP_LOGI(TAG, "GET_PARAMETER query: %.*s", (int)body_len, (char*)body);
 
@@ -917,19 +1662,135 @@ static void handle_client(int client_socket)
             int cseq = parse_cseq(request);
             ESP_LOGI(TAG, "SetPeers received (PTP timing)");
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
-        } else if (method[0] == '\0') {
-            // Empty method - might be partial data or keep-alive
-            ESP_LOGD(TAG, "Empty method received, skipping");
-            continue;
         } else {
             ESP_LOGW(TAG, "Unknown method: %s", method);
             send_response(client_socket, 501, "Not Implemented", "text/plain", "Not Implemented", 15);
         }
+
+        free(request);
+        free(header_str);
+
+        if (*buf_len > total_len) {
+            memmove(buffer, buffer + total_len, *buf_len - total_len);
+        }
+        *buf_len -= total_len;
+    }
+}
+
+// Helper to grow buffer using PSRAM if possible
+static uint8_t *grow_buffer(uint8_t *old_buf, size_t old_size, size_t new_size, size_t data_len)
+{
+    uint8_t *new_buf = heap_caps_malloc(new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!new_buf) {
+        // Fallback to regular RAM
+        new_buf = malloc(new_size);
+    }
+    if (!new_buf) {
+        return NULL;
+    }
+    if (old_buf && data_len > 0) {
+        memcpy(new_buf, old_buf, data_len);
+    }
+    if (old_buf) {
+        free(old_buf);
+    }
+    return new_buf;
+}
+
+static void handle_client(int client_socket)
+{
+    // Start with small buffer, grow if needed for large messages (buffered audio)
+    size_t buf_capacity = RTSP_BUFFER_INITIAL;
+    uint8_t *buffer = malloc(buf_capacity);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate request buffer");
+        close(client_socket);
+        return;
     }
 
-    free(request);
+    size_t buf_len = 0;
+
+    while (server_running) {
+        // Check if we should switch to encrypted mode
+        if (encrypted_mode) {
+            ESP_LOGI(TAG, "Switched to encrypted communication mode");
+
+            // Read encrypted blocks and process them as a stream
+            while (server_running && encrypted_mode) {
+                // Check if buffer is getting full
+                if (buf_len >= buf_capacity - 1024) {
+                    // Need more space - grow the buffer
+                    size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE) ? RTSP_BUFFER_LARGE : buf_capacity * 2;
+                    if (new_capacity > RTSP_BUFFER_LARGE) {
+                        ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
+                        goto cleanup;
+                    }
+                    ESP_LOGI(TAG, "Growing RTSP buffer: %zu -> %zu bytes", buf_capacity, new_capacity);
+                    uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
+                    if (!new_buf) {
+                        ESP_LOGE(TAG, "Failed to grow RTSP buffer to %zu bytes", new_capacity);
+                        goto cleanup;
+                    }
+                    buffer = new_buf;
+                    buf_capacity = new_capacity;
+                }
+
+                int block_len = read_encrypted_block(client_socket,
+                                                     buffer + buf_len,
+                                                     buf_capacity - buf_len);
+                if (block_len <= 0) {
+                    ESP_LOGI(TAG, "Encrypted connection closed");
+                    goto cleanup;
+                }
+
+                buf_len += (size_t)block_len;
+                process_rtsp_buffer(client_socket, buffer, &buf_len);
+            }
+
+            goto cleanup;
+        }
+
+        // Plain-text mode (before encryption is enabled)
+        if (buf_len >= buf_capacity - 1024) {
+            // Grow buffer if needed
+            size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE) ? RTSP_BUFFER_LARGE : buf_capacity * 2;
+            if (new_capacity > RTSP_BUFFER_LARGE) {
+                ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
+                break;
+            }
+            ESP_LOGI(TAG, "Growing RTSP buffer: %zu -> %zu bytes", buf_capacity, new_capacity);
+            uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
+            if (!new_buf) {
+                ESP_LOGE(TAG, "Failed to grow RTSP buffer to %zu bytes", new_capacity);
+                break;
+            }
+            buffer = new_buf;
+            buf_capacity = new_capacity;
+        }
+
+        int recv_len = recv(client_socket, buffer + buf_len,
+                            buf_capacity - buf_len, 0);
+        if (recv_len <= 0) {
+            if (recv_len < 0) {
+                ESP_LOGE(TAG, "recv error: %d", errno);
+            }
+            break;
+        }
+        buf_len += (size_t)recv_len;
+        process_rtsp_buffer(client_socket, buffer, &buf_len);
+    }
+
+cleanup:
+    free(buffer);
     close(client_socket);
     ESP_LOGI(TAG, "Client disconnected");
+
+    // Reset encryption state and session for next client
+    encrypted_mode = false;
+    if (current_session) {
+        hap_session_free(current_session);
+        current_session = NULL;
+    }
 }
 
 static void server_task(void *pvParameters)

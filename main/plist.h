@@ -100,3 +100,120 @@ size_t plist_end(plist_t *p);
  * @return Number of bytes decoded, or -1 on error
  */
 int base64_decode(const char *input, size_t input_len, uint8_t *output, size_t output_capacity);
+
+// ========================================
+// Binary plist parser (for AirPlay 2 SETUP)
+// ========================================
+
+/**
+ * Find a data value by key in a binary plist
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param key Key to search for (e.g., "ekey", "eiv")
+ * @param out_data Output buffer for data value
+ * @param out_capacity Capacity of output buffer
+ * @param out_len Actual length of data found
+ * @return true if found, false otherwise
+ */
+bool bplist_find_data(const uint8_t *plist, size_t plist_len,
+                      const char *key, uint8_t *out_data, size_t out_capacity, size_t *out_len);
+
+/**
+ * Find a data value by key anywhere in a binary plist
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param key Key to search for (e.g., "ekey", "eiv")
+ * @param out_data Output buffer for data value
+ * @param out_capacity Capacity of output buffer
+ * @param out_len Actual length of data found
+ * @return true if found, false otherwise
+ */
+bool bplist_find_data_deep(const uint8_t *plist, size_t plist_len,
+                           const char *key, uint8_t *out_data, size_t out_capacity, size_t *out_len);
+
+/**
+ * Get number of stream entries in a binary plist "streams" array
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param count Output stream count
+ * @return true if streams array found and count read
+ */
+bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len, size_t *count);
+
+/**
+ * Get stream details by index from a binary plist "streams" array
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param index Stream index
+ * @param type Stream type (e.g., 96)
+ * @param ekey_len Length of ekey data if present
+ * @param eiv_len Length of eiv data if present
+ * @param shk_len Length of shk data if present
+ * @return true if stream entry parsed
+ */
+bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
+                            size_t index, int64_t *type,
+                            size_t *ekey_len, size_t *eiv_len, size_t *shk_len);
+
+// Stream key debug info
+typedef struct {
+    char key[64];
+    uint8_t value_type;  // See BPLIST_VALUE_*
+    size_t value_len;
+    int64_t int_value;
+} bplist_kv_info_t;
+
+#define BPLIST_VALUE_UNKNOWN 0
+#define BPLIST_VALUE_INT     1
+#define BPLIST_VALUE_DATA    2
+#define BPLIST_VALUE_STRING  3
+#define BPLIST_VALUE_UID     4
+#define BPLIST_VALUE_ARRAY   5
+#define BPLIST_VALUE_DICT    6
+
+/**
+ * Get key/value info for a stream dict (debug helper)
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param index Stream index
+ * @param out Output array for key/value info
+ * @param out_capacity Capacity of output array
+ * @param out_count Number of items written
+ * @return true if stream entry parsed
+ */
+bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
+                               size_t index, bplist_kv_info_t *out,
+                               size_t out_capacity, size_t *out_count);
+
+/**
+ * Find stream-specific crypto fields in a binary plist
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param stream_type Stream "type" to match (e.g., 96 for audio)
+ * @param ekey Output buffer for encrypted key (optional)
+ * @param ekey_capacity Capacity of ekey buffer
+ * @param ekey_len Length of ekey found
+ * @param eiv Output buffer for IV (optional)
+ * @param eiv_capacity Capacity of eiv buffer
+ * @param eiv_len Length of eiv found
+ * @param shk Output buffer for shared key (optional)
+ * @param shk_capacity Capacity of shk buffer
+ * @param shk_len Length of shk found
+ * @return true if any crypto field was found for the stream, false otherwise
+ */
+bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
+                               int64_t stream_type,
+                               uint8_t *ekey, size_t ekey_capacity, size_t *ekey_len,
+                               uint8_t *eiv, size_t eiv_capacity, size_t *eiv_len,
+                               uint8_t *shk, size_t shk_capacity, size_t *shk_len);
+
+/**
+ * Find an integer value by key in a binary plist
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param key Key to search for
+ * @param out_value Output for integer value
+ * @return true if found, false otherwise
+ */
+bool bplist_find_int(const uint8_t *plist, size_t plist_len,
+                     const char *key, int64_t *out_value);
