@@ -1,4 +1,4 @@
-set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../alac/codec")
+set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/alac/codec")
 
 idf_component_register(
     SRCS

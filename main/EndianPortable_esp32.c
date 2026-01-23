@@ -6,4 +6,4 @@
 #include <endian.h>  // This defines __BYTE_ORDER and __LITTLE_ENDIAN on ESP-IDF
 
 // Now include the original implementation
-#include "../alac/codec/EndianPortable.c"
+#include "../external/alac/codec/EndianPortable.c"
