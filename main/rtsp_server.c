@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -39,6 +40,33 @@ static hap_session_t *current_session = NULL;
 
 // Encrypted communication state
 static bool encrypted_mode = false;
+
+// Volume control: stored as Q15 fixed-point (0-32768)
+// 32768 = 0 dB (unity), 0 = mute
+static volatile int32_t g_volume_q15 = 32768;  // Default to full volume
+static float g_volume_db = 0.0f;  // Current volume in dB
+
+void airplay_set_volume(float volume_db)
+{
+    g_volume_db = volume_db;
+
+    // AirPlay volume: 0 dB = max, -144 dB = mute
+    // Clamp to valid range
+    if (volume_db <= -144.0f) {
+        g_volume_q15 = 0;  // Mute
+    } else if (volume_db >= 0.0f) {
+        g_volume_q15 = 32768;  // Unity gain
+    } else {
+        // Convert dB to linear: linear = 10^(dB/20)
+        float linear = powf(10.0f, volume_db / 20.0f);
+        g_volume_q15 = (int32_t)(linear * 32768.0f);
+    }
+}
+
+int32_t airplay_get_volume_q15(void)
+{
+    return g_volume_q15;
+}
 
 // AirPlay 2 features flags (matching shairport-sync)
 // Key bits:
@@ -320,7 +348,6 @@ static int read_encrypted_block(int socket, uint8_t *buffer, size_t buffer_size)
     }
 
     uint16_t block_len = (uint16_t)len_buf[0] | ((uint16_t)len_buf[1] << 8);
-    ESP_LOGD(TAG, "Encrypted block length: %d", block_len);
 
     if (block_len == 0 || block_len > ENCRYPTED_BLOCK_MAX || block_len > buffer_size) {
         ESP_LOGE(TAG, "Invalid encrypted block length: %d", block_len);
@@ -365,7 +392,6 @@ static int read_encrypted_block(int socket, uint8_t *buffer, size_t buffer_size)
 
     current_session->decrypt_nonce++;
 
-    ESP_LOGD(TAG, "Decrypted block: %llu bytes", plaintext_len);
     return (int)plaintext_len;
 }
 
@@ -551,7 +577,6 @@ static const uint8_t *find_header_end(const uint8_t *data, size_t len)
 
 static void handle_info_request(int client_socket, const char *request)
 {
-    ESP_LOGI(TAG, "Handling /info request");
 
     char device_id[18];
     static char body[4096];
@@ -609,7 +634,6 @@ static void handle_info_request(int client_socket, const char *request)
 
 static void handle_options_request(int client_socket, const char *request)
 {
-    ESP_LOGI(TAG, "Handling OPTIONS request");
 
     int cseq = parse_cseq(request);
 
@@ -644,19 +668,12 @@ static const uint8_t *get_body(const char *request, size_t request_len, size_t *
 
 static void handle_post_request(int client_socket, const char *request, size_t request_len, const char *path)
 {
-    ESP_LOGI(TAG, "Handling POST %s", path);
 
     int cseq = parse_cseq(request);
     size_t body_len;
     const uint8_t *body = get_body(request, request_len, &body_len);
 
     if (strstr(path, "/pair-setup")) {
-        ESP_LOGI(TAG, "Pair-setup requested, body_len=%zu", body_len);
-
-        // Log body to debug
-        if (body && body_len > 0) {
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_INFO);
-        }
 
         // Create session if needed
         if (!current_session) {
@@ -685,41 +702,31 @@ static void handle_post_request(int client_socket, const char *request, size_t r
 
             if (state && state_len == 1) {
                 switch (state[0]) {
-                    case 1:  // M1
-                        ESP_LOGI(TAG, "Pair-setup M1");
+                    case 1:
                         err = hap_pair_setup_m1(current_session, body, body_len,
                                                 response, 2048, &response_len);
                         break;
-                    case 3:  // M3
-                        ESP_LOGI(TAG, "Pair-setup M3");
+                    case 3:
                         err = hap_pair_setup_m3(current_session, body, body_len,
                                                 response, 2048, &response_len);
                         break;
-                    case 5:  // M5
-                        ESP_LOGI(TAG, "Pair-setup M5");
+                    case 5:
                         err = hap_pair_setup_m5(current_session, body, body_len,
                                                 response, 2048, &response_len);
                         break;
                     default:
-                        ESP_LOGW(TAG, "Pair-setup: unknown state %d", state[0]);
                         break;
                 }
-            } else {
-                ESP_LOGW(TAG, "Pair-setup: no valid state TLV found");
             }
         }
 
         if (err == ESP_OK && response_len > 0) {
-            ESP_LOGI(TAG, "Pair-setup response: %zu bytes", response_len);
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, response, response_len > 32 ? 32 : response_len, ESP_LOG_DEBUG);
             send_rtsp_response(client_socket, 200, "OK", cseq,
                               "Content-Type: application/octet-stream\r\n",
                               (const char *)response, response_len);
 
-            // Enable encrypted mode after M4 is sent (pair-setup complete)
             if (current_session && current_session->pair_setup_state == 4 &&
                 current_session->session_established) {
-                ESP_LOGI(TAG, "Pair-setup complete - enabling encrypted mode");
                 encrypted_mode = true;
             }
         } else {
@@ -733,12 +740,6 @@ static void handle_post_request(int client_socket, const char *request, size_t r
 
         free(response);
     } else if (strstr(path, "/pair-verify")) {
-        ESP_LOGI(TAG, "Pair-verify requested, body_len=%zu", body_len);
-
-        // Log first bytes for debugging
-        if (body && body_len > 0) {
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 32 ? 32 : body_len, ESP_LOG_INFO);
-        }
 
         // Create session if needed
         if (!current_session) {
@@ -766,15 +767,10 @@ static void handle_post_request(int client_socket, const char *request, size_t r
             const uint8_t *state = tlv8_find(body, body_len, TLV_TYPE_STATE, &state_len);
 
             if (state && state_len == 1) {
-                // TLV format - use proper TLV handlers which return TLV responses
                 if (state[0] == 0x01) {
-                    ESP_LOGI(TAG, "Pair-verify M1 (TLV format)");
-                    // Use TLV handler which creates TLV M2 response
                     err = hap_pair_verify_m1(current_session, body, body_len,
                                              response, 1024, &response_len);
                 } else if (state[0] == 0x03) {
-                    ESP_LOGI(TAG, "Pair-verify M3 (TLV format)");
-                    // Use TLV handler for M3
                     err = hap_pair_verify_m3(current_session, body, body_len,
                                              response, 1024, &response_len);
                 } else {
@@ -782,15 +778,10 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                     err = ESP_ERR_INVALID_ARG;
                 }
             } else {
-                // Raw format (AirPlay 2 simplified)
                 if (current_session->pair_verify_state == 0) {
-                    // First message - M1 raw (68 bytes: 32 pubkey + 36 encrypted)
-                    ESP_LOGI(TAG, "Pair-verify M1 (raw format)");
                     err = hap_pair_verify_m1_raw(current_session, body, body_len,
                                                  response, 1024, &response_len);
                 } else if (current_session->pair_verify_state == PAIR_VERIFY_STATE_M2) {
-                    // Second message - M3 raw (encrypted data)
-                    ESP_LOGI(TAG, "Pair-verify M3 (raw format)");
                     err = hap_pair_verify_m3_raw(current_session, body, body_len,
                                                  response, 1024, &response_len);
                 } else {
@@ -804,8 +795,6 @@ static void handle_post_request(int client_socket, const char *request, size_t r
         }
 
         if (err == ESP_OK && response_len > 0) {
-            ESP_LOGI(TAG, "Sending pair-verify M2/M4 response, len=%zu", response_len);
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, response, response_len > 32 ? 32 : response_len, ESP_LOG_DEBUG);
             send_rtsp_response(client_socket, 200, "OK", cseq,
                               "Content-Type: application/octet-stream\r\n",
                               (const char *)response, response_len);
@@ -819,16 +808,11 @@ static void handle_post_request(int client_socket, const char *request, size_t r
 
         free(response);
     } else if (strstr(path, "/fp-setup")) {
-        ESP_LOGI(TAG, "FairPlay setup requested, body_len=%zu", body_len);
-
         if (body && body_len >= 16) {
             uint8_t version = body[4];
             uint8_t type = body[5];
             uint8_t seq = body[6];
             uint8_t mode = body[14];
-
-            ESP_LOGI(TAG, "FairPlay: version=%d, type=%d, seq=%d, mode=%d",
-                     version, type, seq, mode);
 
             const uint8_t *response = NULL;
             size_t response_len = 0;
@@ -844,7 +828,6 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                         case 3: response = fp_reply4; break;
                         default: response = fp_reply1; break;
                     }
-                    ESP_LOGI(TAG, "FairPlay setup1 response, mode=%d", mode);
                 } else if (seq == 3) {
                     response_len = FP_HEADER_SIZE + FP_SETUP2_SUFFIX_LEN;
                     dynamic_response = malloc(response_len);
@@ -856,7 +839,6 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                                    FP_SETUP2_SUFFIX_LEN);
                         }
                         response = dynamic_response;
-                        ESP_LOGI(TAG, "FairPlay setup2 response");
                     }
                 }
             }
@@ -877,43 +859,22 @@ static void handle_post_request(int client_socket, const char *request, size_t r
                               "\x00", 1);
         }
     } else if (strstr(path, "/command")) {
-        ESP_LOGI(TAG, "Command received, body_len=%zu", body_len);
         if (body && body_len > 0) {
-            // Log body for debugging
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_INFO);
-
-            // Check if it's a binary plist
             if (body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
-                ESP_LOGI(TAG, "Command is binary plist");
-                // Try to extract command type
                 int64_t cmd_type = 0;
                 if (bplist_find_int(body, body_len, "type", &cmd_type)) {
-                    ESP_LOGI(TAG, "Command type: %lld", cmd_type);
                 }
             }
         }
-        // Return 200 OK - some commands don't need a response body
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else if (strstr(path, "/feedback")) {
-        ESP_LOGI(TAG, "Feedback received");
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else if (strstr(path, "/audio") || strstr(path, "/stream")) {
-        // Buffered audio data - can be very large (100KB+)
-        ESP_LOGI(TAG, "Audio/stream data received: %zu bytes", body_len);
         if (body && body_len > 0) {
-            // Log header for debugging
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 32 ? 32 : body_len, ESP_LOG_DEBUG);
-            // TODO: Process buffered audio data
-            // The body contains encrypted audio frames
         }
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else {
-        // Log unknown POST paths with their body size for debugging
-        ESP_LOGW(TAG, "Unknown POST path: %s (body_len=%zu)", path, body_len);
         if (body_len > 1024) {
-            // Large body on unknown endpoint - might be audio data
-            ESP_LOGI(TAG, "Large payload on unknown POST - first 32 bytes:");
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 32 ? 32 : body_len, ESP_LOG_INFO);
         }
         send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     }
@@ -940,14 +901,11 @@ static void parse_sdp(const char *sdp, size_t len)
 
     const char *media = strstr(sdp, "m=audio");
     if (media) {
-        ESP_LOGI(TAG, "Found audio media in SDP");
     }
 
     const char *rtpmap = strstr(sdp, "a=rtpmap:");
     if (rtpmap) {
-        // Extract codec name
         if (sscanf(rtpmap, "a=rtpmap:%*d %31s", format.codec) == 1) {
-            ESP_LOGI(TAG, "Audio codec: %s", format.codec);
         }
     }
 
@@ -977,8 +935,6 @@ static void parse_sdp(const char *sdp, size_t len)
                 format.sample_rate_config = rate;
                 format.sample_rate = rate;
             }
-            ESP_LOGI(TAG, "ALAC config: %u samples, %u bit, %u ch, %d Hz",
-                     frame_len, bit_depth, num_ch, format.sample_rate);
         }
     }
 
@@ -989,11 +945,6 @@ static void parse_sdp(const char *sdp, size_t len)
     const char *aesiv = strstr(sdp, "a=aesiv:");
 
     if (rsaaeskey && aesiv) {
-        ESP_LOGI(TAG, "Found encryption params in SDP (RAOP mode)");
-
-        // Note: rsaaeskey is RSA-encrypted with device's private key
-        // For AirPlay 1, we would need to RSA-decrypt the key
-        // For now, just parse and store the IV
         encrypt.type = AUDIO_ENCRYPT_AES_CBC;
 
         // Parse IV (base64 encoded, typically 16 bytes -> ~24 base64 chars)
@@ -1010,14 +961,10 @@ static void parse_sdp(const char *sdp, size_t len)
         if (aesiv_len > 0 && aesiv_len < 64) {
             int decoded = base64_decode(aesiv, aesiv_len, encrypt.iv, 16);
             if (decoded == 16) {
-                ESP_LOGI(TAG, "AES IV parsed successfully");
             } else {
-                ESP_LOGW(TAG, "Failed to decode AES IV (got %d bytes)", decoded);
             }
         }
 
-        // Note: For real RAOP support, we need RSA private key to decrypt rsaaeskey
-        // For AirPlay 2, encryption key is derived from pair-verify shared secret
         ESP_LOGW(TAG, "RAOP RSA key decryption not implemented - audio may be encrypted");
     }
 
@@ -1038,16 +985,13 @@ static void parse_sdp(const char *sdp, size_t len)
 
 static void handle_announce_request(int client_socket, const char *request, size_t request_len)
 {
-    ESP_LOGI(TAG, "Handling ANNOUNCE request");
     int cseq = parse_cseq(request);
 
     size_t body_len;
     const uint8_t *body = get_body(request, request_len, &body_len);
 
     if (body && body_len > 0) {
-        // Parse SDP content
         parse_sdp((const char *)body, body_len);
-        ESP_LOGI(TAG, "ANNOUNCE SDP parsed, codec=%s", audio_stream.codec);
     }
 
     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
@@ -1115,7 +1059,6 @@ static int create_event_socket(uint16_t *port)
     getsockname(sock, (struct sockaddr *)&addr, &addr_len);
     *port = ntohs(addr.sin_port);
 
-    ESP_LOGI(TAG, "Event port created: %d", *port);
     return sock;
 }
 
@@ -1126,7 +1069,6 @@ static TaskHandle_t event_task_handle = NULL;
 static void event_port_task(void *pvParameters)
 {
     int listen_socket = (int)(intptr_t)pvParameters;
-    ESP_LOGI(TAG, "Event port task started, listening on socket %d", listen_socket);
 
     while (audio_stream.event_socket >= 0) {
         // Set up select with timeout to allow task to exit
@@ -1157,10 +1099,6 @@ static void event_port_task(void *pvParameters)
                 continue;
             }
 
-            ESP_LOGI(TAG, "Event port client connected from %s:%d",
-                     inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-            // Close any previous event client
             if (event_client_socket >= 0) {
                 close(event_client_socket);
             }
@@ -1182,7 +1120,6 @@ static void event_port_task(void *pvParameters)
                     char buf[16];
                     int n = recv(event_client_socket, buf, sizeof(buf), MSG_PEEK);
                     if (n <= 0) {
-                        ESP_LOGI(TAG, "Event port client disconnected");
                         close(event_client_socket);
                         event_client_socket = -1;
                         break;
@@ -1197,7 +1134,6 @@ static void event_port_task(void *pvParameters)
         close(event_client_socket);
         event_client_socket = -1;
     }
-    ESP_LOGI(TAG, "Event port task ended");
     event_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -1221,33 +1157,25 @@ static void stop_event_port_task(void)
 
 static void handle_setup_request(int client_socket, const char *request, size_t request_len)
 {
-    ESP_LOGI(TAG, "Handling SETUP request");
     int cseq = parse_cseq(request);
 
-    // Log Content-Type if present (might be application/x-apple-binary-plist for AirPlay 2)
     const char *content_type = strstr(request, "Content-Type:");
     bool is_bplist = false;
     if (content_type) {
         char ct[64] = {0};
         sscanf(content_type, "Content-Type: %63s", ct);
-        ESP_LOGI(TAG, "SETUP Content-Type: %s", ct);
         if (strcmp(ct, "application/x-apple-binary-plist") == 0) {
             is_bplist = true;
         }
     }
 
-    // Check for body (AirPlay 2 sends binary plist with stream config)
     size_t body_len;
     const uint8_t *body = get_body(request, request_len, &body_len);
     if (body && body_len > 0) {
-        ESP_LOGI(TAG, "SETUP body: %zu bytes", body_len);
-        // Log first 64 bytes for debugging
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, body, body_len > 64 ? 64 : body_len, ESP_LOG_DEBUG);
 
         if (is_bplist) {
             size_t stream_count = 0;
             if (bplist_get_streams_count(body, body_len, &stream_count)) {
-                ESP_LOGI(TAG, "SETUP bplist streams count: %zu", stream_count);
                 for (size_t i = 0; i < stream_count; i++) {
                     int64_t stream_type = -1;
                     size_t ekey_len_dbg = 0;
@@ -1255,12 +1183,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                     size_t shk_len_dbg = 0;
                     if (bplist_get_stream_info(body, body_len, i, &stream_type,
                                                &ekey_len_dbg, &eiv_len_dbg, &shk_len_dbg)) {
-                        ESP_LOGI(TAG,
-                                 "SETUP stream[%zu]: type=%lld ekey=%zu eiv=%zu shk=%zu",
-                                 i, (long long)stream_type,
-                                 ekey_len_dbg, eiv_len_dbg, shk_len_dbg);
-
-                        // Track the first stream type for later handling
                         if (i == 0) {
                             audio_stream.stream_type = stream_type;
                         }
@@ -1285,10 +1207,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                                     default: break;
                                 }
                                 if (kv[k].value_type == BPLIST_VALUE_INT) {
-                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s value=%lld",
-                                             i, kv[k].key, type_str, (long long)kv[k].int_value);
-
-                                    // Extract audio format parameters
                                     if (strcmp(kv[k].key, "ct") == 0) {
                                         codec_type = kv[k].int_value;
                                     } else if (strcmp(kv[k].key, "sr") == 0) {
@@ -1296,12 +1214,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                                     } else if (strcmp(kv[k].key, "spf") == 0) {
                                         samples_per_frame = kv[k].int_value;
                                     }
-                                } else if (kv[k].value_len > 0) {
-                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s len=%zu",
-                                             i, kv[k].key, type_str, kv[k].value_len);
-                                } else {
-                                    ESP_LOGI(TAG, "SETUP stream[%zu] key=%s type=%s",
-                                             i, kv[k].key, type_str);
                                 }
                             }
 
@@ -1323,16 +1235,10 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                             format.num_channels = 2;
                             format.sample_rate_config = (uint32_t)sample_rate;
 
-                            ESP_LOGI(TAG, "Setting audio format from SETUP: %s, %d Hz, %d samples/frame",
-                                     format.codec, format.sample_rate, format.frame_size);
                             audio_receiver_set_format(&format);
                         }
-                    } else {
-                        ESP_LOGI(TAG, "SETUP stream[%zu]: unreadable", i);
                     }
                 }
-            } else {
-                ESP_LOGI(TAG, "SETUP bplist has no streams array");
             }
         }
 
@@ -1362,22 +1268,16 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
         }
 
         if (has_ekey) {
-            ESP_LOGI(TAG, "Found 'ekey' in binary plist: %zu bytes", ekey_len);
         }
         if (has_eiv) {
-            ESP_LOGI(TAG, "Found 'eiv' in binary plist: %zu bytes", eiv_len);
         }
         if (has_shk) {
-            ESP_LOGI(TAG, "Found 'shk' (shared key) in binary plist: %zu bytes", shk_len);
         }
 
-        // Set up audio encryption
         bool encryption_set = false;
         audio_encrypt_t audio_encrypt = {0};
 
         if (has_shk && shk_len >= 16) {
-            // Direct shared key (unencrypted) - used in some AirPlay 2 modes
-            ESP_LOGI(TAG, "Using direct shared key for audio decryption");
             audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
             memcpy(audio_encrypt.key, shk, shk_len > 32 ? 32 : shk_len);
             audio_encrypt.key_len = shk_len > 32 ? 32 : shk_len;
@@ -1387,11 +1287,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
             audio_receiver_set_encryption(&audio_encrypt);
             encryption_set = true;
         } else if (has_ekey && ekey_len > 16 && current_session && current_session->session_established) {
-            // Encrypted key - decrypt using session key from pair-verify
-            ESP_LOGI(TAG, "Decrypting ekey using pair-verify session key");
-
-            // The ekey is encrypted with ChaCha20-Poly1305
-            // Nonce is typically "ekey" padded to 12 bytes or all zeros
             uint8_t nonce[12] = {0};
 
             uint8_t decrypted_key[32];
@@ -1401,12 +1296,11 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                 decrypted_key, &decrypted_len,
                 NULL,
                 ekey_encrypted, ekey_len,
-                NULL, 0,  // No additional data
+                NULL, 0,
                 nonce,
-                current_session->shared_secret);  // Use shared secret from pair-verify
+                current_session->shared_secret);
 
             if (ret == 0 && decrypted_len >= 16) {
-                ESP_LOGI(TAG, "ekey decrypted successfully: %llu bytes", decrypted_len);
                 audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
                 memcpy(audio_encrypt.key, decrypted_key, decrypted_len > 32 ? 32 : decrypted_len);
                 audio_encrypt.key_len = decrypted_len > 32 ? 32 : decrypted_len;
@@ -1426,7 +1320,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                     current_session->encrypt_key);
 
                 if (ret == 0 && decrypted_len >= 16) {
-                    ESP_LOGI(TAG, "ekey decrypted with encrypt_key: %llu bytes", decrypted_len);
                     audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
                     memcpy(audio_encrypt.key, decrypted_key, decrypted_len > 32 ? 32 : decrypted_len);
                     audio_encrypt.key_len = decrypted_len > 32 ? 32 : decrypted_len;
@@ -1436,19 +1329,12 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                     audio_receiver_set_encryption(&audio_encrypt);
                     encryption_set = true;
                 } else {
-                    ESP_LOGW(TAG, "Failed to decrypt ekey with session keys");
                 }
             }
         } else if (has_ekey) {
-            ESP_LOGW(TAG, "Have ekey but no session for decryption");
         }
 
-        // NEW CODE: If no encryption set and we have an established session, derive audio key
         if (!encryption_set && current_session && current_session->session_established) {
-            // Check if encryption was already set above
-            // If we get here and encryption wasn't set yet, derive from session
-
-            // Derive audio encryption key from pair-verify shared secret
             audio_encrypt_t audio_encrypt = {0};
             audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
 
@@ -1458,25 +1344,14 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
             if (err == ESP_OK) {
                 audio_encrypt.key_len = 32;
 
-                // Set IV if provided, otherwise zeros (some implementations use packet-derived nonces only)
                 if (has_eiv && eiv_len >= 16) {
                     memcpy(audio_encrypt.iv, eiv, 16);
-                    ESP_LOGI(TAG, "Using eiv from SETUP body");
                 }
 
-                ESP_LOGI(TAG, "Derived audio encryption key from pair-verify session");
                 audio_receiver_set_encryption(&audio_encrypt);
-            } else {
-                ESP_LOGW(TAG, "Failed to derive audio encryption key: %d", err);
             }
-        } else if (!current_session) {
-            ESP_LOGW(TAG, "No pair-verify session available for audio key derivation");
-        } else if (!current_session->session_established) {
-            ESP_LOGW(TAG, "Pair-verify session not yet established");
         }
     } else {
-        ESP_LOGI(TAG, "SETUP has no body - will derive audio key from pair-verify session");
-        // No SETUP body - derive audio key from pair-verify session if available
         if (current_session && current_session->session_established) {
             audio_encrypt_t audio_encrypt = {0};
             audio_encrypt.type = AUDIO_ENCRYPT_CHACHA20_POLY1305;
@@ -1486,15 +1361,8 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
                                                   sizeof(audio_encrypt.key));
             if (err == ESP_OK) {
                 audio_encrypt.key_len = 32;
-                ESP_LOGI(TAG, "Derived audio encryption key from pair-verify session");
                 audio_receiver_set_encryption(&audio_encrypt);
-            } else {
-                ESP_LOGW(TAG, "Failed to derive audio encryption key: %d", err);
             }
-        } else if (!current_session) {
-            ESP_LOGW(TAG, "No pair-verify session available for audio key derivation");
-        } else if (!current_session->session_established) {
-            ESP_LOGW(TAG, "Pair-verify session not yet established");
         }
     }
 
@@ -1513,17 +1381,12 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
         if (tp) {
             client_timing_port = atoi(tp + 12);
         }
-        ESP_LOGI(TAG, "Client ports - control: %d, timing: %d",
-                 client_control_port, client_timing_port);
     }
 
-    // Handle different stream types
     int64_t stream_type = audio_stream.stream_type;
     if (stream_type == 0) {
-        stream_type = 96;  // Default to realtime/UDP
+        stream_type = 96;
     }
-
-    ESP_LOGI(TAG, "SETUP for stream type: %lld", (long long)stream_type);
 
     if (stream_type == 103) {
         // Type 103 = buffered audio over TCP
@@ -1535,9 +1398,7 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
             return;
         }
         audio_stream.buffered_port = audio_receiver_get_buffered_port();
-        ESP_LOGI(TAG, "Buffered audio (type 103) TCP port: %d", audio_stream.buffered_port);
 
-        // Still allocate control and timing ports for type 103
         int temp_socket;
         if (audio_stream.control_port == 0) {
             temp_socket = create_udp_socket(&audio_stream.control_port);
@@ -1578,10 +1439,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
     // For type 103, dataPort is the TCP buffered port
     uint16_t response_data_port = (stream_type == 103) ? audio_stream.buffered_port : audio_stream.data_port;
 
-    ESP_LOGI(TAG, "Server ports - data: %d, control: %d, timing: %d, event: %d",
-             response_data_port, audio_stream.control_port, audio_stream.timing_port,
-             audio_stream.event_port);
-
     if (is_bplist) {
         uint8_t plist_body[256];
         size_t plist_len = build_setup_bplist(plist_body, sizeof(plist_body),
@@ -1595,8 +1452,6 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
             send_rtsp_response(client_socket, 500, "Internal Error", cseq, NULL, NULL, 0);
             return;
         }
-        ESP_LOGI(TAG, "SETUP response bplist (%zu bytes):", plist_len);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, plist_body, plist_len > 128 ? 128 : plist_len, ESP_LOG_INFO);
         send_rtsp_response(client_socket, 200, "OK", cseq,
                           "Content-Type: application/x-apple-binary-plist\r\n",
                           (const char *)plist_body, plist_len);
@@ -1616,27 +1471,17 @@ static void handle_setup_request(int client_socket, const char *request, size_t 
 
 static void handle_record_request(int client_socket, const char *request)
 {
-    ESP_LOGI(TAG, "Handling RECORD request - starting audio stream");
     int cseq = parse_cseq(request);
 
-    // Parse RTP-Info header if present
     const char *rtp_info = strstr(request, "RTP-Info:");
     if (rtp_info) {
-        ESP_LOGI(TAG, "RTP-Info received");
     }
 
-    // Start audio receiver based on stream type
-    // Type 103 (buffered) is already started during SETUP
-    // Type 96 (realtime) starts here during RECORD
     if (audio_stream.stream_type == 103) {
-        ESP_LOGI(TAG, "Buffered audio (type 103) already started on TCP port %d",
-                 audio_stream.buffered_port);
     } else if (audio_stream.data_port > 0) {
         esp_err_t err = audio_receiver_start(audio_stream.data_port, audio_stream.control_port);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start audio receiver");
-        } else {
-            ESP_LOGI(TAG, "Audio receiver started on UDP port %d", audio_stream.data_port);
         }
     }
 
@@ -1666,19 +1511,14 @@ static void handle_set_parameter_request(int client_socket, const char *request,
                 const char *vol = strstr((const char *)body, "volume:");
                 if (vol) {
                     float volume = atof(vol + 7);
-                    ESP_LOGI(TAG, "Volume set to: %.2f dB", volume);
-                    // Convert from dB to linear: 0dB = max, -144dB = min
-                    // volume_linear = 10^(volume/20)
+                    airplay_set_volume(volume);
                 }
             }
             if (strstr((const char *)body, "progress:")) {
-                ESP_LOGI(TAG, "Progress update received");
             }
         }
     } else if (content_type && strstr(content_type, "image/")) {
-        ESP_LOGI(TAG, "Album art received");
     } else if (content_type && strstr(content_type, "application/x-dmap-tagged")) {
-        ESP_LOGI(TAG, "DMAP metadata received");
     }
 
     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
@@ -1692,18 +1532,11 @@ static void handle_teardown_request(int client_socket, const char *request)
     // In AirPlay 2, TEARDOWN during pause shouldn't destroy the session
     bool was_paused = audio_stream.paused;
 
-    ESP_LOGI(TAG, "TEARDOWN request - paused=%d, active=%d", was_paused, audio_stream.active);
-
-    // Stop audio receiver and flush buffers
     audio_receiver_stop();
 
-    // Log audio stats
     audio_stats_t stats;
     audio_receiver_get_stats(&stats);
-    ESP_LOGI(TAG, "Audio stats: recv=%lu, decoded=%lu, dropped=%lu",
-             stats.packets_received, stats.packets_decoded, stats.packets_dropped);
 
-    // Reset audio stream state (sockets are managed by audio_receiver)
     audio_stream.data_port = 0;
     audio_stream.control_port = 0;
     audio_stream.timing_port = 0;
@@ -1721,7 +1554,6 @@ static void handle_teardown_request(int client_socket, const char *request)
     // For AirPlay 2: Don't destroy HAP session on TEARDOWN
     // The session should persist until the TCP connection is closed
     // This allows quick reconnection without re-pairing
-    ESP_LOGI(TAG, "TEARDOWN complete - keeping HAP session for potential reconnect");
 
     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
 }
@@ -1774,21 +1606,15 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_
         char *first_line_end = strstr(header_str, "\r\n");
         if (first_line_end) {
             *first_line_end = '\0';
-            ESP_LOGI(TAG, "Request: %s", header_str);
             *first_line_end = '\r';
-        } else {
-            ESP_LOGW(TAG, "Request without CRLF (len=%zu)", header_len);
         }
 
-        // Parse request method and path
         char method[16] = {0};
         char path[256] = {0};
         int parsed = sscanf(header_str, "%15s %255s", method, path);
 
-        // Debug: log what we parsed
         if (parsed < 1 || method[0] == '\0') {
             ESP_LOGW(TAG, "Failed to parse method (parsed=%d, recv_len=%zu)", parsed, total_len);
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, request, total_len > 64 ? 64 : total_len, ESP_LOG_WARN);
         } else if (strcmp(method, "GET") == 0) {
             if (strcmp(path, "/info") == 0) {
                 handle_info_request(client_socket, request);
@@ -1810,20 +1636,16 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_
             handle_set_parameter_request(client_socket, request, total_len);
         } else if (strcmp(method, "GET_PARAMETER") == 0) {
             int cseq = parse_cseq(request);
-            ESP_LOGI(TAG, "GET_PARAMETER received");
 
-            // Check what parameter is being requested (in body)
             size_t body_len;
             const uint8_t *body = get_body(request, total_len, &body_len);
             if (body && body_len > 0) {
-                ESP_LOGI(TAG, "GET_PARAMETER query: %.*s", (int)body_len, (char*)body);
-
-                // Check for volume query
                 if (strstr((const char*)body, "volume")) {
-                    // Return current volume (0 dB = max)
+                    char vol_response[32];
+                    int vol_len = snprintf(vol_response, sizeof(vol_response), "volume: %.2f\r\n", g_volume_db);
                     send_rtsp_response(client_socket, 200, "OK", cseq,
                                       "Content-Type: text/parameters\r\n",
-                                      "volume: 0.0\r\n", 13);
+                                      vol_response, vol_len);
                 } else {
                     send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
                 }
@@ -1832,12 +1654,10 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_
             }
         } else if (strcmp(method, "PAUSE") == 0) {
             int cseq = parse_cseq(request);
-            ESP_LOGI(TAG, "Pause request received - flushing audio");
             audio_receiver_flush();
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
         } else if (strcmp(method, "FLUSH") == 0 || strcmp(method, "FLUSHBUFFERED") == 0) {
             int cseq = parse_cseq(request);
-            ESP_LOGI(TAG, "Flush request received");
             audio_receiver_flush();
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
         } else if (strcmp(method, "TEARDOWN") == 0) {
@@ -1860,17 +1680,14 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer, size_t *buf_
             }
 
             if (rate == 0.0) {
-                ESP_LOGI(TAG, "SETRATEANCHORTIME: PAUSE (rate=0)");
                 audio_stream.paused = true;
                 audio_receiver_flush();
             } else {
-                ESP_LOGI(TAG, "SETRATEANCHORTIME: PLAY (rate=%.1f)", rate);
                 audio_stream.paused = false;
             }
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
         } else if (strcmp(method, "SETPEERS") == 0 || strcmp(method, "SETPEERSX") == 0) {
             int cseq = parse_cseq(request);
-            ESP_LOGI(TAG, "SetPeers received (PTP timing)");
             send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
         } else {
             ESP_LOGW(TAG, "Unknown method: %s", method);
@@ -1923,19 +1740,13 @@ static void handle_client(int client_socket)
     while (server_running) {
         // Check if we should switch to encrypted mode
         if (encrypted_mode) {
-            ESP_LOGI(TAG, "Switched to encrypted communication mode");
-
-            // Read encrypted blocks and process them as a stream
             while (server_running && encrypted_mode) {
-                // Check if buffer is getting full
                 if (buf_len >= buf_capacity - 1024) {
-                    // Need more space - grow the buffer
                     size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE) ? RTSP_BUFFER_LARGE : buf_capacity * 2;
                     if (new_capacity > RTSP_BUFFER_LARGE) {
                         ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
                         goto cleanup;
                     }
-                    ESP_LOGI(TAG, "Growing RTSP buffer: %zu -> %zu bytes", buf_capacity, new_capacity);
                     uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
                     if (!new_buf) {
                         ESP_LOGE(TAG, "Failed to grow RTSP buffer to %zu bytes", new_capacity);
@@ -1949,7 +1760,6 @@ static void handle_client(int client_socket)
                                                      buffer + buf_len,
                                                      buf_capacity - buf_len);
                 if (block_len <= 0) {
-                    ESP_LOGI(TAG, "Encrypted connection closed");
                     goto cleanup;
                 }
 
@@ -1968,7 +1778,6 @@ static void handle_client(int client_socket)
                 ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
                 break;
             }
-            ESP_LOGI(TAG, "Growing RTSP buffer: %zu -> %zu bytes", buf_capacity, new_capacity);
             uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
             if (!new_buf) {
                 ESP_LOGE(TAG, "Failed to grow RTSP buffer to %zu bytes", new_capacity);
@@ -1993,9 +1802,7 @@ static void handle_client(int client_socket)
 cleanup:
     free(buffer);
     close(client_socket);
-    ESP_LOGI(TAG, "Client disconnected");
 
-    // Stop event port task and clean up event socket
     stop_event_port_task();
     if (audio_stream.event_socket >= 0) {
         close(audio_stream.event_socket);
@@ -2053,7 +1860,6 @@ static void server_task(void *pvParameters)
         return;
     }
 
-    ESP_LOGI(TAG, "RTSP server listening on port %d", RTSP_PORT);
     server_running = true;
 
     while (server_running) {
@@ -2065,13 +1871,6 @@ static void server_task(void *pvParameters)
             continue;
         }
 
-        ESP_LOGI(TAG, "Client connected from %d.%d.%d.%d",
-                 (client_addr.sin_addr.s_addr >> 0) & 0xFF,
-                 (client_addr.sin_addr.s_addr >> 8) & 0xFF,
-                 (client_addr.sin_addr.s_addr >> 16) & 0xFF,
-                 (client_addr.sin_addr.s_addr >> 24) & 0xFF);
-
-        // Handle client in same task (single client for now)
         handle_client(client_socket);
     }
 

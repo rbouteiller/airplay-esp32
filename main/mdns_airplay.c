@@ -62,11 +62,6 @@ void mdns_airplay_init(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
              AIRPLAY_DEVICE_NAME);
 
-    ESP_LOGI(TAG, "Initializing mDNS...");
-    ESP_LOGI(TAG, "Device ID: %s", device_id);
-    ESP_LOGI(TAG, "Device Name: %s", AIRPLAY_DEVICE_NAME);
-    ESP_LOGI(TAG, "Features: %s", features_str);
-
     // Initialize mDNS
     ESP_ERROR_CHECK(mdns_init());
 
@@ -93,8 +88,6 @@ void mdns_airplay_init(void)
                                      sizeof(airplay_txt) / sizeof(airplay_txt[0]));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add _airplay._tcp service: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Added _airplay._tcp service on port 7000");
     }
 
     // ========================================
@@ -122,10 +115,5 @@ void mdns_airplay_init(void)
                            sizeof(raop_txt) / sizeof(raop_txt[0]));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add _raop._tcp service: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Added _raop._tcp service: %s", service_name);
     }
-
-    ESP_LOGI(TAG, "mDNS AirPlay services started");
-    ESP_LOGI(TAG, "Device '%s' should now appear in AirPlay menu", AIRPLAY_DEVICE_NAME);
 }

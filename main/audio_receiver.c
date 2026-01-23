@@ -220,12 +220,6 @@ static int decrypt_payload(const uint8_t *input, size_t input_len,
         );
 
         if (ret != 0) {
-            // Log first few failures for debugging
-            static int fail_count = 0;
-            if (fail_count++ < 5) {
-                ESP_LOGW(TAG, "ChaCha20 decrypt failed for seq %d, pkt_len=%zu, payload_len=%zu",
-                         seq, full_packet_len, input_len);
-            }
             return -1;
         }
 
@@ -288,10 +282,6 @@ static int decrypt_buffered_payload(const uint8_t *packet, size_t packet_len,
     );
 
     if (ret != 0) {
-        static int fail_count = 0;
-        if (fail_count++ < 5) {
-            ESP_LOGW(TAG, "Buffered audio decrypt failed, pkt_len=%zu", packet_len);
-        }
         return -1;
     }
 
@@ -306,7 +296,6 @@ static ssize_t read_exact(int sock, uint8_t *buf, size_t len)
         ssize_t n = recv(sock, buf + total, len - total, 0);
         if (n <= 0) {
             if (n == 0) {
-                ESP_LOGI(TAG, "Buffered audio: client disconnected");
             } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ESP_LOGE(TAG, "Buffered audio recv error: %d", errno);
             }
@@ -320,9 +309,6 @@ static ssize_t read_exact(int sock, uint8_t *buf, size_t len)
 // Buffered audio receiver task (type=103 over TCP)
 static void buffered_audio_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "Buffered audio task started on port %d", receiver.buffered_port);
-
-    // Accept loop
     while (receiver.buffered_running) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
@@ -338,7 +324,6 @@ static void buffered_audio_task(void *pvParameters)
             continue;
         }
 
-        ESP_LOGI(TAG, "Buffered audio client connected");
         receiver.buffered_client_socket = client_sock;
 
         // Set receive timeout
@@ -407,26 +392,10 @@ static void buffered_audio_task(void *pvParameters)
             receiver.stats.packets_decoded++;
             receiver.stats.last_seq = seq_no & 0xFFFF;
             receiver.stats.last_timestamp = timestamp;
-
-            // Log progress periodically
-            if (receiver.stats.packets_decoded % 100 == 1) {
-                ESP_LOGI(TAG, "Buffered audio: decoded %lu packets, seq=%lu, ts=%lu",
-                         receiver.stats.packets_decoded, (unsigned long)seq_no,
-                         (unsigned long)timestamp);
-            }
-
-            // TODO: AAC decode and write to PCM buffer
-            // For now, just track that we're receiving data successfully
         }
-
-        ESP_LOGI(TAG, "Buffered audio client disconnected");
         close(client_sock);
         receiver.buffered_client_socket = -1;
     }
-
-    ESP_LOGI(TAG, "Buffered audio task stopped. Stats: recv=%lu, decoded=%lu, dropped=%lu, decrypt_err=%lu",
-             receiver.stats.packets_received, receiver.stats.packets_decoded,
-             receiver.stats.packets_dropped, receiver.stats.decrypt_errors);
     vTaskDelete(NULL);
 }
 
@@ -483,8 +452,6 @@ static void receiver_task(void *pvParameters)
         return;
     }
 
-    ESP_LOGI(TAG, "Audio receiver task started");
-
     struct sockaddr_in src_addr;
     socklen_t addr_len = sizeof(src_addr);
 
@@ -509,22 +476,12 @@ static void receiver_task(void *pvParameters)
 
         receiver.stats.packets_received++;
 
-        // Log first packet and every 100th packet for debugging
-        if (receiver.stats.packets_received == 1 ||
-            receiver.stats.packets_received % 100 == 0) {
-            ESP_LOGI(TAG, "RTP packet #%lu: len=%d, first bytes: %02x %02x %02x %02x",
-                     receiver.stats.packets_received, len,
-                     packet[0], packet[1], packet[2], packet[3]);
-        }
-
-        // Parse RTP header
         uint16_t seq;
         uint32_t timestamp;
         size_t payload_len;
         const uint8_t *payload = parse_rtp(packet, len, &seq, &timestamp, &payload_len);
 
         if (!payload || payload_len == 0) {
-            ESP_LOGW(TAG, "Invalid RTP packet");
             receiver.stats.packets_dropped++;
             continue;
         }
@@ -536,8 +493,6 @@ static void receiver_task(void *pvParameters)
                 int gap = (int)seq - (int)expected_seq;
                 if (gap < 0) gap += 65536;
                 if (gap > 0 && gap < 100) {
-                    ESP_LOGW(TAG, "Sequence gap: expected %d, got %d (gap=%d)",
-                             expected_seq, seq, gap);
                     receiver.stats.packets_dropped += gap;
                 }
             }
@@ -556,22 +511,9 @@ static void receiver_task(void *pvParameters)
                                                 seq, timestamp,
                                                 packet, len);  // Pass full packet for nonce extraction
             if (decrypted_len < 0) {
-                // Log first few failures with more detail
-                if (receiver.stats.decrypt_errors < 5) {
-                    ESP_LOGW(TAG, "Decryption failed for seq %d, payload_len=%zu, packet_len=%d",
-                             seq, payload_len, len);
-                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, payload, payload_len > 32 ? 32 : payload_len, ESP_LOG_WARN);
-                }
                 receiver.stats.decrypt_errors++;
                 receiver.stats.packets_dropped++;
                 continue;
-            }
-            // Log first successful decryption (use static flag since packets_decoded updates later)
-            static bool first_decrypt_logged = false;
-            if (!first_decrypt_logged) {
-                ESP_LOGI(TAG, "First packet decrypted: seq=%d, payload_len=%zu -> %d bytes",
-                         seq, payload_len, decrypted_len);
-                first_decrypt_logged = true;
             }
             audio_data = receiver.decrypt_buffer;
             audio_len = decrypted_len;
@@ -593,27 +535,7 @@ static void receiver_task(void *pvParameters)
                         out_samples = MAX_SAMPLES_PER_FRAME;
                     }
                     decoded_samples = (size_t)out_samples;
-                    // Log first successful decode with sample values
-                    static int decode_log_count = 0;
-                    if (decode_log_count < 3) {
-                        // Show first few samples to verify decoder output
-                        size_t total = (size_t)out_samples * receiver.format.channels;
-                        size_t mid = (out_samples / 2) * receiver.format.channels;
-                        int16_t first_l = total > 0 ? receiver.decode_buffer[0] : 0;
-                        int16_t first_r = total > 1 ? receiver.decode_buffer[1] : first_l;
-                        int16_t mid_l = total > mid ? receiver.decode_buffer[mid] : first_l;
-                        int16_t mid_r = total > (mid + 1) ? receiver.decode_buffer[mid + 1] : mid_l;
-                        ESP_LOGI(TAG, "ALAC decode: %d samples, first: L=%d R=%d, mid: L=%d R=%d",
-                                 out_samples, first_l, first_r, mid_l, mid_r);
-                        decode_log_count++;
-                    }
                 } else {
-                    // Log first few failures
-                    static int decode_fails = 0;
-                    if (decode_fails < 5) {
-                        ESP_LOGW(TAG, "ALAC decode failed: %d (input %zu bytes)", ret, audio_len);
-                        decode_fails++;
-                    }
                     receiver.stats.packets_dropped++;
                     continue;
                 }
@@ -665,18 +587,11 @@ static void receiver_task(void *pvParameters)
                 }
             } else {
                 receiver.stats.packets_decoded++;
-                // Log first write to ring buffer
-                static bool first_write_logged = false;
-                if (!first_write_logged) {
-                    ESP_LOGI(TAG, "First audio to ring buffer: %zu bytes (%zu samples)", bytes, decoded_samples);
-                    first_write_logged = true;
-                }
             }
         }
     }
 
     free(packet);
-    ESP_LOGI(TAG, "Audio receiver task stopped");
     vTaskDelete(NULL);
 }
 
@@ -718,17 +633,13 @@ esp_err_t audio_receiver_init(void)
     receiver.format.frame_size = 352;
     strcpy(receiver.format.codec, "AppleLossless");
 
-    ESP_LOGI(TAG, "Audio receiver initialized");
     return ESP_OK;
 }
 
 void audio_receiver_set_format(const audio_format_t *format)
 {
     memcpy(&receiver.format, format, sizeof(audio_format_t));
-    ESP_LOGI(TAG, "Audio format set: %s, %d Hz, %d ch, %d bits",
-             format->codec, format->sample_rate, format->channels, format->bits_per_sample);
 
-    // Initialize ALAC decoder if needed
     if (strcmp(format->codec, "AppleLossless") == 0 ||
         strcmp(format->codec, "ALAC") == 0) {
         int32_t fmtp[12] = {0};
@@ -770,16 +681,8 @@ void audio_receiver_set_encryption(const audio_encrypt_t *encrypt)
 {
     if (encrypt) {
         memcpy(&receiver.encrypt, encrypt, sizeof(audio_encrypt_t));
-        const char *type_str = "none";
-        switch (encrypt->type) {
-            case AUDIO_ENCRYPT_AES_CBC: type_str = "AES-CBC"; break;
-            case AUDIO_ENCRYPT_CHACHA20_POLY1305: type_str = "ChaCha20-Poly1305"; break;
-            default: break;
-        }
-        ESP_LOGI(TAG, "Audio encryption set: %s, key_len=%d", type_str, encrypt->key_len);
     } else {
         memset(&receiver.encrypt, 0, sizeof(audio_encrypt_t));
-        ESP_LOGI(TAG, "Audio encryption disabled");
     }
 }
 
@@ -833,7 +736,6 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Audio receiver started on port %d", data_port);
     return ESP_OK;
 }
 
@@ -902,12 +804,6 @@ void audio_receiver_stop(void)
 
     // Flush buffer
     audio_receiver_flush();
-
-    ESP_LOGI(TAG, "Audio receiver stopped. Stats: recv=%lu, decoded=%lu, dropped=%lu, decrypt_err=%lu",
-             receiver.stats.packets_received,
-             receiver.stats.packets_decoded,
-             receiver.stats.packets_dropped,
-             receiver.stats.decrypt_errors);
 }
 
 void audio_receiver_get_stats(audio_stats_t *stats)
@@ -962,9 +858,6 @@ void audio_receiver_flush(void)
 void audio_receiver_set_stream_type(audio_stream_type_t type)
 {
     receiver.stream_type = type;
-    ESP_LOGI(TAG, "Stream type set to %d (%s)", type,
-             type == AUDIO_STREAM_REALTIME ? "realtime/UDP" :
-             type == AUDIO_STREAM_BUFFERED ? "buffered/TCP" : "none");
 }
 
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port)
@@ -1027,7 +920,6 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port)
             receiver.buffered_recv_buffer = malloc(BUFFERED_AUDIO_PACKET_SIZE);
         }
         if (receiver.buffered_recv_buffer) {
-            ESP_LOGI(TAG, "Allocated %d byte buffer for buffered audio", BUFFERED_AUDIO_PACKET_SIZE);
         }
     }
 
@@ -1046,7 +938,6 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Buffered audio receiver started on TCP port %d", tcp_port);
     return ESP_OK;
 }
 
