@@ -116,7 +116,7 @@ void audio_receiver_set_output_latency_us(uint32_t latency_us);
 uint32_t audio_receiver_get_output_latency_us(void);
 
 /**
- * Provide anchor timing information from SETRATEANCHORTI.
+ * Provide anchor timing information from SETRATEANCHORTIME.
  * @param clock_id PTP clock ID (networkTimeTimelineID)
  * @param network_time_ns Anchor time in nanoseconds (PTP timeline)
  * @param rtp_time RTP timestamp for the anchor

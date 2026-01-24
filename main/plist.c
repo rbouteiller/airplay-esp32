@@ -1209,3 +1209,218 @@ bool bplist_find_real(const uint8_t *plist, size_t plist_len,
 
     return false;
 }
+
+// ========================================
+// Binary plist builders
+// ========================================
+
+size_t bplist_build_initial_setup(uint8_t *out, size_t capacity, uint16_t event_port)
+{
+    if (capacity < 100) {
+        return 0;
+    }
+
+    size_t pos = 0;
+    memcpy(out + pos, "bplist00", 8);
+    pos += 8;
+
+    size_t offsets[10];
+    size_t obj = 0;
+
+    // Object 0: "eventPort" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x59;  // ASCII string, length 9
+    memcpy(out + pos, "eventPort", 9);
+    pos += 9;
+
+    // Object 1: "timingPort" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x5A;  // ASCII string, length 10
+    memcpy(out + pos, "timingPort", 10);
+    pos += 10;
+
+    // Object 2: event port value (2-byte int)
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;  // 2-byte int
+    out[pos++] = (event_port >> 8) & 0xFF;
+    out[pos++] = event_port & 0xFF;
+
+    // Object 3: timing port value (0)
+    offsets[obj++] = pos;
+    out[pos++] = 0x10;  // 1-byte int
+    out[pos++] = 0;
+
+    // Object 4: root dict with 2 entries
+    offsets[obj++] = pos;
+    out[pos++] = 0xD2;  // dict with 2 entries
+    out[pos++] = 0;     // key ref: eventPort
+    out[pos++] = 1;     // key ref: timingPort
+    out[pos++] = 2;     // val ref: event port value
+    out[pos++] = 3;     // val ref: timing port value
+
+    // Offset table
+    size_t offset_table_offset = pos;
+    for (size_t i = 0; i < obj; i++) {
+        if (offsets[i] > 0xFF) {
+            return 0;
+        }
+        out[pos++] = (uint8_t)offsets[i];
+    }
+
+    // Trailer (32 bytes)
+    memset(out + pos, 0, 6);
+    pos += 6;
+    out[pos++] = 1;  // offset int size
+    out[pos++] = 1;  // object ref size
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = (uint8_t)obj;  // num objects
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = 4;  // top object (root dict)
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = (uint8_t)offset_table_offset;
+
+    return pos;
+}
+
+size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
+                                 int64_t stream_type, uint16_t data_port,
+                                 uint16_t control_port, uint32_t audio_buffer_size)
+{
+    if (capacity < 200) {
+        return 0;
+    }
+
+    size_t pos = 0;
+    memcpy(out + pos, "bplist00", 8);
+    pos += 8;
+
+    size_t offsets[16];
+    size_t obj = 0;
+
+    // Object 0: "streams" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x57;  // ASCII string, length 7
+    memcpy(out + pos, "streams", 7);
+    pos += 7;
+
+    // Object 1: "type" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x54;  // ASCII string, length 4
+    memcpy(out + pos, "type", 4);
+    pos += 4;
+
+    // Object 2: "dataPort" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x58;  // ASCII string, length 8
+    memcpy(out + pos, "dataPort", 8);
+    pos += 8;
+
+    // Object 3: "controlPort" string
+    offsets[obj++] = pos;
+    out[pos++] = 0x5B;  // ASCII string, length 11
+    memcpy(out + pos, "controlPort", 11);
+    pos += 11;
+
+    // Object 4: "audioBufferSize" string (extended length)
+    offsets[obj++] = pos;
+    out[pos++] = 0x5F;  // ASCII string, extended length
+    out[pos++] = 0x10;  // 1-byte length marker
+    out[pos++] = 15;    // length = 15
+    memcpy(out + pos, "audioBufferSize", 15);
+    pos += 15;
+
+    // Object 5: stream type value
+    offsets[obj++] = pos;
+    out[pos++] = 0x10;  // 1-byte int
+    out[pos++] = (uint8_t)stream_type;
+
+    // Object 6: data port value
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;  // 2-byte int
+    out[pos++] = (data_port >> 8) & 0xFF;
+    out[pos++] = data_port & 0xFF;
+
+    // Object 7: control port value
+    offsets[obj++] = pos;
+    out[pos++] = 0x11;  // 2-byte int
+    out[pos++] = (control_port >> 8) & 0xFF;
+    out[pos++] = control_port & 0xFF;
+
+    // Object 8: audio buffer size value
+    offsets[obj++] = pos;
+    out[pos++] = 0x12;  // 4-byte int
+    out[pos++] = (audio_buffer_size >> 24) & 0xFF;
+    out[pos++] = (audio_buffer_size >> 16) & 0xFF;
+    out[pos++] = (audio_buffer_size >> 8) & 0xFF;
+    out[pos++] = audio_buffer_size & 0xFF;
+
+    // Object 9: stream dict
+    offsets[obj++] = pos;
+    if (stream_type == 103) {
+        // Buffered stream: type, dataPort, audioBufferSize, controlPort
+        out[pos++] = 0xD4;  // dict with 4 entries
+        out[pos++] = 1;     // key: type
+        out[pos++] = 2;     // key: dataPort
+        out[pos++] = 4;     // key: audioBufferSize
+        out[pos++] = 3;     // key: controlPort
+        out[pos++] = 5;     // val: type
+        out[pos++] = 6;     // val: dataPort
+        out[pos++] = 8;     // val: audioBufferSize
+        out[pos++] = 7;     // val: controlPort
+    } else {
+        // Realtime stream: type, dataPort, controlPort
+        out[pos++] = 0xD3;  // dict with 3 entries
+        out[pos++] = 1;     // key: type
+        out[pos++] = 2;     // key: dataPort
+        out[pos++] = 3;     // key: controlPort
+        out[pos++] = 5;     // val: type
+        out[pos++] = 6;     // val: dataPort
+        out[pos++] = 7;     // val: controlPort
+    }
+
+    // Object 10: streams array with 1 element
+    offsets[obj++] = pos;
+    out[pos++] = 0xA1;  // array with 1 element
+    out[pos++] = 9;     // ref to stream dict
+
+    // Object 11: root dict
+    offsets[obj++] = pos;
+    out[pos++] = 0xD1;  // dict with 1 entry
+    out[pos++] = 0;     // key: streams
+    out[pos++] = 10;    // val: streams array
+
+    // Offset table
+    size_t offset_table_offset = pos;
+    for (size_t i = 0; i < obj; i++) {
+        if (offsets[i] > 0xFF) {
+            return 0;
+        }
+        out[pos++] = (uint8_t)offsets[i];
+    }
+
+    // Trailer (32 bytes)
+    memset(out + pos, 0, 6);
+    pos += 6;
+    out[pos++] = 1;  // offset int size
+    out[pos++] = 1;  // object ref size
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = (uint8_t)obj;  // num objects
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = 11;  // top object (root dict)
+
+    for (int i = 0; i < 7; i++)
+        out[pos++] = 0;
+    out[pos++] = (uint8_t)offset_table_offset;
+
+    return pos;
+}
