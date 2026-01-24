@@ -18,6 +18,7 @@
 #include "audio_receiver.h"
 #include "hap.h"
 #include "plist.h"
+#include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "tlv8.h"
 
@@ -1490,6 +1491,41 @@ static void handle_setup_request(int client_socket, const char *request,
     send_rtsp_response(client_socket, 200, "OK", cseq, transport_response, NULL,
                        0);
   }
+
+  // If SETUP body contains "streams" array, start/restart the audio receiver
+  // This handles both initial setup and resume from pause (like shairport-sync)
+  // Note: body and body_len already parsed earlier in function
+  {
+    bool has_streams = false;
+
+    if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+      size_t stream_count = 0;
+      if (bplist_get_streams_count(body, body_len, &stream_count)) {
+        has_streams = true;
+      }
+    }
+
+    if (has_streams) {
+      ESP_LOGI(TAG, "SETUP: streams array present, starting audio receiver (type=%lld)",
+               (long long)stream_type);
+      esp_err_t err = ESP_OK;
+
+      if (stream_type == 103) {
+        // Buffered audio over TCP
+        err = audio_receiver_start_buffered(audio_stream.buffered_port);
+      } else if (stream_type == 96 && audio_stream.data_port > 0) {
+        // Realtime audio over UDP
+        err = audio_receiver_start(audio_stream.data_port, audio_stream.control_port);
+      }
+
+      if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start audio receiver");
+      }
+      audio_receiver_set_playing(true);
+      audio_stream.paused = false;
+    }
+  }
+
   audio_stream.active = true;
 }
 
@@ -1585,33 +1621,68 @@ static void handle_set_parameter_request(int client_socket, const char *request,
   send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
 }
 
-static void handle_teardown_request(int client_socket, const char *request) {
+static void handle_teardown_request(int client_socket, const char *request,
+                                    size_t request_len) {
   int cseq = parse_cseq(request);
 
-  audio_receiver_stop();
+  // Check if this is a stream-only teardown (pause) or full teardown (disconnect)
+  // Like shairport-sync: if body contains "streams" array, only close stream
+  size_t body_len;
+  const uint8_t *body = get_body(request, request_len, &body_len);
+  bool has_streams = false;
 
-  audio_stats_t stats;
-  audio_receiver_get_stats(&stats);
-
-  audio_stream.data_port = 0;
-  audio_stream.control_port = 0;
-  audio_stream.timing_port = 0;
-  audio_stream.active = false;
-  audio_stream.paused = false;
-
-  // Stop event port task and close socket
-  stop_event_port_task();
-  if (audio_stream.event_socket >= 0) {
-    close(audio_stream.event_socket);
-    audio_stream.event_socket = -1;
-    audio_stream.event_port = 0;
+  if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+    size_t stream_count = 0;
+    if (bplist_get_streams_count(body, body_len, &stream_count)) {
+      has_streams = true;
+      ESP_LOGI(TAG, "TEARDOWN with streams array (count=%zu) - stream teardown",
+               stream_count);
+    }
   }
 
-  // For AirPlay 2: Don't destroy HAP session on TEARDOWN
-  // The session should persist until the TCP connection is closed
-  // This allows quick reconnection without re-pairing
+  if (has_streams) {
+    // Stream teardown (pause) - only stop audio, keep connection alive
+    ESP_LOGI(TAG, "TEARDOWN: closing stream only (pause)");
+    audio_receiver_stop();
 
-  send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
+    audio_stream.active = false;
+    audio_stream.paused = true;
+
+    // Don't clear PTP clock - we want to keep sync for quick resume
+    // Don't send Connection: close - connection stays open
+
+    send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
+  } else {
+    // Full teardown (disconnect)
+    ESP_LOGI(TAG, "TEARDOWN: full connection teardown");
+
+    audio_receiver_stop();
+
+    audio_stats_t stats;
+    audio_receiver_get_stats(&stats);
+
+    audio_stream.data_port = 0;
+    audio_stream.control_port = 0;
+    audio_stream.timing_port = 0;
+    audio_stream.active = false;
+    audio_stream.paused = false;
+
+    // Stop event port task and close socket
+    stop_event_port_task();
+    if (audio_stream.event_socket >= 0) {
+      close(audio_stream.event_socket);
+      audio_stream.event_socket = -1;
+      audio_stream.event_port = 0;
+    }
+
+    // Clear PTP clock synchronization state (like shairport-sync)
+    // This allows fresh re-sync on next session
+    ptp_clock_clear();
+
+    // Add Connection: close header (like shairport-sync)
+    send_rtsp_response(client_socket, 200, "OK", cseq, "Connection: close\r\n",
+                       NULL, 0);
+  }
 }
 
 static void process_rtsp_buffer(int client_socket, uint8_t *buffer,
@@ -1725,7 +1796,7 @@ static void process_rtsp_buffer(int client_socket, uint8_t *buffer,
       audio_receiver_flush();
       send_rtsp_response(client_socket, 200, "OK", cseq, NULL, NULL, 0);
     } else if (strcmp(method, "TEARDOWN") == 0) {
-      handle_teardown_request(client_socket, request);
+      handle_teardown_request(client_socket, request, total_len);
     } else if (strcasecmp(method, "SETRATEANCHORTI") == 0) {
       int cseq = parse_cseq(request);
       ESP_LOGI(TAG, "SETRATEANCHORTI received, body_len=%zu", total_len);

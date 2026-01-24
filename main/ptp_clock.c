@@ -490,6 +490,29 @@ void ptp_clock_stop(void) {
   }
 }
 
+void ptp_clock_clear(void) {
+  // Reset synchronization state without stopping the clock
+  // This allows re-sync on new AirPlay session
+  ESP_LOGI(TAG, "Clearing PTP clock synchronization state");
+
+  ptp.locked = false;
+  ptp.lock_start_ms = 0;
+  ptp.lock_candidate_start_ms = 0;
+  ptp.last_sync_ms = 0;
+  ptp.offset_ns = 0;
+  ptp.filtered_offset_ns = 0;
+  ptp.sample_count = 0;
+
+  // Reset two-step tracking
+  ptp.last_sync_seq = 0;
+  ptp.last_sync_local_ns = 0;
+  ptp.awaiting_followup = false;
+
+  // Reset statistics
+  ptp.sync_count = 0;
+  ptp.followup_count = 0;
+}
+
 void ntp_clock_stop(void) {
   if (!ntp.running) {
     return;

@@ -1025,8 +1025,9 @@ void audio_receiver_set_playing(bool playing) {
 
 esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   if (receiver.running) {
-    ESP_LOGW(TAG, "Already running");
-    return ESP_ERR_INVALID_STATE;
+    // Already running - this is fine (idempotent behavior for resume)
+    ESP_LOGI(TAG, "Audio receiver already running, continuing");
+    return ESP_OK;
   }
 
   // Create data socket
@@ -1512,8 +1513,9 @@ void audio_receiver_set_stream_type(audio_stream_type_t type) {
 
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   if (receiver.buffered_running) {
-    ESP_LOGW(TAG, "Buffered audio already running");
-    return ESP_ERR_INVALID_STATE;
+    // Already running - this is fine (idempotent behavior for resume)
+    ESP_LOGI(TAG, "Buffered audio already running, continuing");
+    return ESP_OK;
   }
 
   // Create TCP listening socket
