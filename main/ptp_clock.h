@@ -21,6 +21,13 @@ esp_err_t ptp_clock_init(void);
 void ptp_clock_stop(void);
 
 /**
+ * Clear PTP clock synchronization state.
+ * Resets offset and lock status without stopping the clock.
+ * Called during TEARDOWN to allow re-sync on new session.
+ */
+void ptp_clock_clear(void);
+
+/**
  * Initialize and start NTP clock synchronization.
  */
 esp_err_t ntp_clock_init(void);
