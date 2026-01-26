@@ -11,7 +11,6 @@
  * Inspired by shairport-sync's method_handlers pattern
  */
 
-// AirPlay 2 features flags (matching shairport-sync)
 // Key bits:
 //   Bit 38: SupportsCoreUtilsPairingAndEncryption
 //   Bit 46: SupportsHKPairingAndAccessControl
@@ -29,8 +28,8 @@
  * Codec registry entry
  */
 typedef struct {
-    const char *name;           // Codec name: "ALAC", "AAC", "OPUS"
-    int64_t type_id;            // bplist "ct" value (2=ALAC, 4=AAC, 8=AAC-ELD)
+  const char *name; // Codec name: "ALAC", "AAC", "OPUS"
+  int64_t type_id;  // bplist "ct" value (2=ALAC, 4=AAC, 8=AAC-ELD)
 } rtsp_codec_t;
 
 /**
@@ -49,15 +48,15 @@ bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
  * Handler function type
  */
 typedef void (*rtsp_handler_fn)(int socket, rtsp_conn_t *conn,
-                                 const rtsp_request_t *req,
-                                 const uint8_t *raw_request, size_t raw_len);
+                                const rtsp_request_t *req,
+                                const uint8_t *raw_request, size_t raw_len);
 
 /**
  * Method handler entry
  */
 typedef struct {
-    const char *method;
-    rtsp_handler_fn handler;
+  const char *method;
+  rtsp_handler_fn handler;
 } rtsp_method_handler_t;
 
 /**
@@ -68,8 +67,8 @@ typedef struct {
  * @param raw_len Length of raw request
  * @return 0 on success, -1 on error
  */
-int rtsp_dispatch(int socket, rtsp_conn_t *conn,
-                  const uint8_t *raw_request, size_t raw_len);
+int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
+                  size_t raw_len);
 
 /**
  * Get device ID string (MAC address format)

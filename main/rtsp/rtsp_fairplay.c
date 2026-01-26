@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// FairPlay pre-computed responses (from shairport-sync)
+// FairPlay pre-computed responses
 // These static tables handle the FairPlay handshake
 static const uint8_t fp_reply1[] = {
     0x46, 0x50, 0x4c, 0x59, 0x03, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x82,
@@ -61,71 +61,70 @@ static const uint8_t fp_reply4[] = {
     0xe5, 0xef, 0x72, 0xe8, 0x68, 0x62, 0x33, 0x72, 0x9c, 0x22, 0x7d, 0x82,
     0x0c, 0x99, 0x94, 0x45, 0xd8, 0x92, 0x46, 0xc8, 0xc3, 0x59};
 
-static const uint8_t fp_header[] = {
-    0x46, 0x50, 0x4c, 0x59, 0x03, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x14};
+static const uint8_t fp_header[] = {0x46, 0x50, 0x4c, 0x59, 0x03, 0x01,
+                                    0x04, 0x00, 0x00, 0x00, 0x00, 0x14};
 
 int rtsp_fairplay_handle(const uint8_t *body, size_t body_len,
                          uint8_t **response, size_t *response_len) {
-    *response = NULL;
-    *response_len = 0;
+  *response = NULL;
+  *response_len = 0;
 
-    if (!body || body_len < 16) {
-        return -1;
-    }
-
-    uint8_t version = body[4];
-    uint8_t type = body[5];
-    uint8_t seq = body[6];
-    uint8_t mode = body[14];
-
-    if (version != 3 || type != 1) {
-        return -1;
-    }
-
-    if (seq == 1) {
-        // First handshake - select response based on mode
-        const uint8_t *reply = NULL;
-        switch (mode) {
-        case 0:
-            reply = fp_reply1;
-            break;
-        case 1:
-            reply = fp_reply2;
-            break;
-        case 2:
-            reply = fp_reply3;
-            break;
-        case 3:
-            reply = fp_reply4;
-            break;
-        default:
-            reply = fp_reply1;
-            break;
-        }
-
-        *response = malloc(FP_REPLY_SIZE);
-        if (!*response) {
-            return -1;
-        }
-        memcpy(*response, reply, FP_REPLY_SIZE);
-        *response_len = FP_REPLY_SIZE;
-        return 0;
-
-    } else if (seq == 3) {
-        // Second handshake - echo suffix
-        *response_len = FP_HEADER_SIZE + FP_SETUP2_SUFFIX_LEN;
-        *response = malloc(*response_len);
-        if (!*response) {
-            return -1;
-        }
-        memcpy(*response, fp_header, FP_HEADER_SIZE);
-        if (body_len >= FP_SETUP2_SUFFIX_LEN) {
-            memcpy(*response + FP_HEADER_SIZE,
-                   body + body_len - FP_SETUP2_SUFFIX_LEN,
-                   FP_SETUP2_SUFFIX_LEN);
-        }
-        return 0;
-    }
-
+  if (!body || body_len < 16) {
     return -1;
+  }
+
+  uint8_t version = body[4];
+  uint8_t type = body[5];
+  uint8_t seq = body[6];
+  uint8_t mode = body[14];
+
+  if (version != 3 || type != 1) {
+    return -1;
+  }
+
+  if (seq == 1) {
+    // First handshake - select response based on mode
+    const uint8_t *reply = NULL;
+    switch (mode) {
+    case 0:
+      reply = fp_reply1;
+      break;
+    case 1:
+      reply = fp_reply2;
+      break;
+    case 2:
+      reply = fp_reply3;
+      break;
+    case 3:
+      reply = fp_reply4;
+      break;
+    default:
+      reply = fp_reply1;
+      break;
+    }
+
+    *response = malloc(FP_REPLY_SIZE);
+    if (!*response) {
+      return -1;
+    }
+    memcpy(*response, reply, FP_REPLY_SIZE);
+    *response_len = FP_REPLY_SIZE;
+    return 0;
+
+  } else if (seq == 3) {
+    // Second handshake - echo suffix
+    *response_len = FP_HEADER_SIZE + FP_SETUP2_SUFFIX_LEN;
+    *response = malloc(*response_len);
+    if (!*response) {
+      return -1;
+    }
+    memcpy(*response, fp_header, FP_HEADER_SIZE);
+    if (body_len >= FP_SETUP2_SUFFIX_LEN) {
+      memcpy(*response + FP_HEADER_SIZE, body + body_len - FP_SETUP2_SUFFIX_LEN,
+             FP_SETUP2_SUFFIX_LEN);
+    }
+    return 0;
+  }
+
+  return -1;
 }

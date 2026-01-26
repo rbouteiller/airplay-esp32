@@ -20,8 +20,8 @@
 #include "audio_stream.h"
 #include "hap.h"
 #include "plist.h"
-#include "socket_utils.h"
 #include "rtsp_fairplay.h"
+#include "socket_utils.h"
 #include "tlv8.h"
 
 static const char *TAG = "rtsp_handlers";
@@ -46,11 +46,8 @@ static void configure_codec(audio_format_t *fmt, const char *name, int64_t sr,
 
 // Codec registry - add new codecs here
 // ct values: 2=ALAC, 4=AAC, 8=AAC-ELD, 64=OPUS (based on AirPlay 2 protocol)
-static const rtsp_codec_t codec_registry[] = {{"ALAC", 2},
-                                              {"AAC", 4},
-                                              {"AAC-ELD", 8},
-                                              {"OPUS", 64},
-                                              {NULL, 0}};
+static const rtsp_codec_t codec_registry[] = {
+    {"ALAC", 2}, {"AAC", 4}, {"AAC-ELD", 8}, {"OPUS", 64}, {NULL, 0}};
 
 bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
                           int64_t sample_rate, int64_t samples_per_frame) {
@@ -252,7 +249,7 @@ static void handle_setpeers(int socket, rtsp_conn_t *conn,
                             const rtsp_request_t *req, const uint8_t *raw,
                             size_t raw_len);
 
-// Dispatch table - like shairport-sync method_handlers
+// Dispatch table
 static const rtsp_method_handler_t method_handlers[] = {
     {"OPTIONS", handle_options},
     {"GET", handle_get},
@@ -832,7 +829,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
   ensure_stream_ports(conn, buffered);
 
-  uint16_t response_data_port = buffered ? conn->buffered_port : conn->data_port;
+  uint16_t response_data_port =
+      buffered ? conn->buffered_port : conn->data_port;
 
   if (is_bplist) {
     uint8_t plist_body[256];

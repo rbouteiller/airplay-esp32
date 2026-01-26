@@ -20,7 +20,6 @@ Todo:
 - `main/plist/` - plist XML + binary parse/build, base64
 - `main/network/` - WiFi, mDNS, PTP/NTP clock, socket helpers
 - `main/` - app entry point, settings, ALAC magic cookie
-- `shairport-sync/` - upstream reference (not built into the firmware)
 
 ## Decoders
 - ALAC via `esp_alac_dec` from `espressif/esp_audio_codec`
