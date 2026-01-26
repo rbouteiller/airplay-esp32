@@ -22,25 +22,8 @@
 // Audio buffer size for buffered streams (type 103)
 #define AP2_AUDIO_BUFFER_SIZE (1 * 1024 * 1024)
 
-// ============================================================================
-// Codec Registry
-// ============================================================================
-// To add a new codec:
-// 1. Add an entry to the codec_registry[] array in rtsp_handlers.c
-// 2. Implement the configure function for your codec
-
 // Include for audio_format_t
 #include "audio_receiver.h"
-
-/**
- * Codec configure function type
- * @param fmt Audio format struct to fill
- * @param sample_rate Sample rate from bplist (sr)
- * @param samples_per_frame Samples per frame from bplist (spf)
- */
-typedef void (*codec_configure_fn)(audio_format_t *fmt,
-                                   int64_t sample_rate,
-                                   int64_t samples_per_frame);
 
 /**
  * Codec registry entry
@@ -48,7 +31,6 @@ typedef void (*codec_configure_fn)(audio_format_t *fmt,
 typedef struct {
     const char *name;           // Codec name: "ALAC", "AAC", "OPUS"
     int64_t type_id;            // bplist "ct" value (2=ALAC, 4=AAC, 8=AAC-ELD)
-    codec_configure_fn configure;
 } rtsp_codec_t;
 
 /**
@@ -99,7 +81,3 @@ void rtsp_get_device_id(char *device_id, size_t len);
 // Event port task management
 void rtsp_start_event_port_task(int listen_socket);
 void rtsp_stop_event_port_task(void);
-
-// Socket creation helpers
-int rtsp_create_udp_socket(uint16_t *port);
-int rtsp_create_event_socket(uint16_t *port);
