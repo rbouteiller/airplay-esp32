@@ -208,16 +208,15 @@ cleanup:
   free(buffer);
   close(slot->socket);
 
-  // Only do full cleanup if this is the old client being killed
-  // or if server is stopping
+  // Always stop event task before closing its socket
+  rtsp_stop_event_port_task();
+  if (conn->event_socket >= 0) {
+    close(conn->event_socket);
+    conn->event_socket = -1;
+  }
+
+  // Full audio cleanup if old client being killed or server stopping
   if (slot->is_old || !server_running) {
-    // Stop event task first (it will shutdown sockets internally)
-    rtsp_stop_event_port_task();
-    // Then close the listen socket
-    if (conn->event_socket >= 0) {
-      close(conn->event_socket);
-      conn->event_socket = -1;
-    }
     audio_receiver_stop();
   }
 

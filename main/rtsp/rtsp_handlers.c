@@ -154,6 +154,11 @@ static void event_port_task(void *pvParameters) {
       continue;
     }
 
+    // Check stop flag after select unblocks (shutdown() makes socket readable)
+    if (event_task_should_stop) {
+      break;
+    }
+
     if (FD_ISSET(listen_socket, &read_fds)) {
       struct sockaddr_in client_addr;
       socklen_t addr_len = sizeof(client_addr);
@@ -163,7 +168,7 @@ static void event_port_task(void *pvParameters) {
         if (!event_task_should_stop) {
           ESP_LOGE(TAG, "Event port accept error: %d", errno);
         }
-        continue;
+        break;  // Don't continue - socket is likely invalid
       }
 
       if (event_client_socket >= 0) {
@@ -180,7 +185,11 @@ static void event_port_task(void *pvParameters) {
         struct timeval ctv = {.tv_sec = 1, .tv_usec = 0};
 
         ret = select(event_client_socket + 1, &cfds, NULL, NULL, &ctv);
-        if (ret < 0 || event_task_should_stop) {
+        if (ret < 0) {
+          break;
+        }
+        // Check stop flag after select unblocks
+        if (event_task_should_stop) {
           break;
         }
         if (ret > 0 && FD_ISSET(event_client_socket, &cfds)) {
@@ -508,9 +517,15 @@ static void handle_post(int socket, rtsp_conn_t *conn,
         } else if (state[0] == 0x03) {
           err = hap_pair_verify_m3(conn->hap_session, body, body_len, response,
                                    1024, &response_len);
+          // TLV8 pair-verify M3 establishes RTSP channel encryption
+          if (err == ESP_OK &&
+              conn->hap_session->pair_verify_state == PAIR_VERIFY_STATE_M4) {
+            conn->encrypted_mode = true;
+            ESP_LOGI(TAG, "RTSP encryption enabled (TLV8 pair-verify)");
+          }
         }
       } else {
-        // Raw format
+        // Raw format - used for audio encryption keys, not RTSP encryption
         if (conn->hap_session->pair_verify_state == 0) {
           err = hap_pair_verify_m1_raw(conn->hap_session, body, body_len,
                                        response, 1024, &response_len);
@@ -518,6 +533,9 @@ static void handle_post(int socket, rtsp_conn_t *conn,
                    PAIR_VERIFY_STATE_M2) {
           err = hap_pair_verify_m3_raw(conn->hap_session, body, body_len,
                                        response, 1024, &response_len);
+          if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Raw pair-verify complete (RTSP unencrypted)");
+          }
         }
       }
     }
@@ -1008,26 +1026,19 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   const uint8_t *body = req->body;
   size_t body_len = req->body_len;
   bool has_streams = false;
+  size_t stream_count = 0;
 
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
-    size_t stream_count = 0;
     if (bplist_get_streams_count(body, body_len, &stream_count)) {
       has_streams = true;
-      ESP_LOGI(TAG, "TEARDOWN with streams array (count=%zu)", stream_count);
     }
   }
 
-  if (has_streams) {
-    ESP_LOGI(TAG, "TEARDOWN: closing stream only (pause)");
-    audio_receiver_stop();
-    conn->stream_active = false;
-    conn->stream_paused = true;
-  } else {
-    ESP_LOGI(TAG, "TEARDOWN: stopping audio");
-    audio_receiver_stop();
-    conn->stream_active = false;
-    conn->stream_paused = false;
-  }
+  // TEARDOWN with streams = stream teardown (may be followed by new SETUP)
+  // TEARDOWN without streams = full session teardown (disconnect)
+  audio_receiver_stop();
+  conn->stream_active = false;
+  conn->stream_paused = has_streams;  // Keep session ready if only streams torn down
 
   rtsp_send_ok(socket, conn, req->cseq);
 }
