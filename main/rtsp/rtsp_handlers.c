@@ -69,7 +69,9 @@ bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
 
 // Event port task state
 static int event_client_socket = -1;
+static int event_listen_socket = -1;
 static TaskHandle_t event_task_handle = NULL;
+static volatile bool event_task_should_stop = false;
 
 void rtsp_get_device_id(char *device_id, size_t len) {
   uint8_t mac[6];
@@ -127,8 +129,9 @@ static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
 // Event port task - handles AirPlay 2 session persistence
 static void event_port_task(void *pvParameters) {
   int listen_socket = (int)(intptr_t)pvParameters;
+  event_listen_socket = listen_socket;
 
-  while (listen_socket >= 0) {
+  while (!event_task_should_stop && listen_socket >= 0) {
     fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET(listen_socket, &read_fds);
@@ -136,8 +139,12 @@ static void event_port_task(void *pvParameters) {
     struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
     int ret = select(listen_socket + 1, &read_fds, NULL, NULL, &tv);
 
+    if (event_task_should_stop) {
+      break;
+    }
+
     if (ret < 0) {
-      if (errno != EINTR) {
+      if (errno != EINTR && !event_task_should_stop) {
         ESP_LOGE(TAG, "Event port select error: %d", errno);
       }
       break;
@@ -153,7 +160,9 @@ static void event_port_task(void *pvParameters) {
       int client =
           accept(listen_socket, (struct sockaddr *)&client_addr, &addr_len);
       if (client < 0) {
-        ESP_LOGE(TAG, "Event port accept error: %d", errno);
+        if (!event_task_should_stop) {
+          ESP_LOGE(TAG, "Event port accept error: %d", errno);
+        }
         continue;
       }
 
@@ -161,16 +170,17 @@ static void event_port_task(void *pvParameters) {
         close(event_client_socket);
       }
       event_client_socket = client;
+      ESP_LOGI(TAG, "Event client connected");
 
       // Monitor connection for disconnection
-      while (event_client_socket >= 0 && listen_socket >= 0) {
+      while (event_client_socket >= 0 && !event_task_should_stop) {
         fd_set cfds;
         FD_ZERO(&cfds);
         FD_SET(event_client_socket, &cfds);
         struct timeval ctv = {.tv_sec = 1, .tv_usec = 0};
 
         ret = select(event_client_socket + 1, &cfds, NULL, NULL, &ctv);
-        if (ret < 0) {
+        if (ret < 0 || event_task_should_stop) {
           break;
         }
         if (ret > 0 && FD_ISSET(event_client_socket, &cfds)) {
@@ -190,6 +200,7 @@ static void event_port_task(void *pvParameters) {
     close(event_client_socket);
     event_client_socket = -1;
   }
+  event_listen_socket = -1;
   event_task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -198,14 +209,33 @@ void rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
     return;
   }
+  event_task_should_stop = false;
+  event_listen_socket = -1;
   xTaskCreate(event_port_task, "event_port", 3072,
               (void *)(intptr_t)listen_socket, 5, &event_task_handle);
 }
 
 void rtsp_stop_event_port_task(void) {
+  if (event_task_handle == NULL) {
+    return;
+  }
+
+  // Signal task to stop
+  event_task_should_stop = true;
+
+  // Shutdown sockets to unblock select()
   if (event_client_socket >= 0) {
-    close(event_client_socket);
-    event_client_socket = -1;
+    shutdown(event_client_socket, SHUT_RDWR);
+  }
+  if (event_listen_socket >= 0) {
+    shutdown(event_listen_socket, SHUT_RDWR);
+  }
+
+  // Wait for task to exit
+  int timeout = 20;
+  while (event_task_handle != NULL && timeout > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+    timeout--;
   }
 }
 
