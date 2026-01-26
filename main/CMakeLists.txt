@@ -16,6 +16,7 @@ idf_component_register(
         "alac_magic_cookie.c"
         "audio_receiver.c"
         "ptp_clock.c"
+        "settings.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
