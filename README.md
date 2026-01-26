@@ -102,7 +102,7 @@ AirPlay device name.
 - I2S output is 16-bit stereo at 44.1 kHz by default; adjust in `main/main.c`.
 - Output attenuation is applied in `main/main.c` to reduce clipping.
 - Credentials are stored via `sdkconfig`; avoid committing secrets.
+- Based on shairport-sync [https://github.com/mikebrady/shairport-sync](https://github.com/mikebrady/shairport-sync)
 
 ## License
-Non-commercial; commercial use requires permission. See `LICENSE`. Third-party
-components carry their own licenses under `shairport-sync/`.
+Non-commercial; commercial use requires permission. See `LICENSE`.
