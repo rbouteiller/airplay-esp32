@@ -78,6 +78,12 @@ void audio_receiver_set_encryption(const audio_encrypt_t *encrypt);
 esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port);
 
 /**
+ * Start the active stream type using the provided ports.
+ */
+esp_err_t audio_receiver_start_stream(uint16_t data_port, uint16_t control_port,
+                                      uint16_t tcp_port);
+
+/**
  * Stop receiving audio
  */
 void audio_receiver_stop(void);
@@ -144,6 +150,11 @@ typedef enum {
  * @return ESP_OK on success
  */
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port);
+
+/**
+ * Get the active stream port (data or buffered).
+ */
+uint16_t audio_receiver_get_stream_port(void);
 
 /**
  * Get the TCP port for buffered audio (after start_buffered)

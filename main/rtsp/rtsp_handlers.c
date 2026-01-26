@@ -17,8 +17,10 @@
 #include "sodium.h"
 
 #include "audio_receiver.h"
+#include "audio_stream.h"
 #include "hap.h"
 #include "plist.h"
+#include "socket_utils.h"
 #include "rtsp_fairplay.h"
 #include "tlv8.h"
 
@@ -29,44 +31,9 @@ static const char *TAG = "rtsp_handlers";
 // ============================================================================
 // To add a new codec, add an entry to codec_registry[] below.
 
-static void configure_alac(audio_format_t *fmt, int64_t sr, int64_t spf) {
-  strcpy(fmt->codec, "ALAC");
-  fmt->sample_rate = (int)sr;
-  fmt->channels = 2;
-  fmt->bits_per_sample = 16;
-  fmt->frame_size = (int)spf;
-  fmt->max_samples_per_frame = (uint32_t)spf;
-  fmt->sample_size = 16;
-  fmt->num_channels = 2;
-  fmt->sample_rate_config = (uint32_t)sr;
-}
-
-static void configure_aac(audio_format_t *fmt, int64_t sr, int64_t spf) {
-  strcpy(fmt->codec, "AAC");
-  fmt->sample_rate = (int)sr;
-  fmt->channels = 2;
-  fmt->bits_per_sample = 16;
-  fmt->frame_size = (int)spf;
-  fmt->max_samples_per_frame = (uint32_t)spf;
-  fmt->sample_size = 16;
-  fmt->num_channels = 2;
-  fmt->sample_rate_config = (uint32_t)sr;
-}
-
-static void configure_aac_eld(audio_format_t *fmt, int64_t sr, int64_t spf) {
-  strcpy(fmt->codec, "AAC-ELD");
-  fmt->sample_rate = (int)sr;
-  fmt->channels = 2;
-  fmt->bits_per_sample = 16;
-  fmt->frame_size = (int)spf;
-  fmt->max_samples_per_frame = (uint32_t)spf;
-  fmt->sample_size = 16;
-  fmt->num_channels = 2;
-  fmt->sample_rate_config = (uint32_t)sr;
-}
-
-static void configure_opus(audio_format_t *fmt, int64_t sr, int64_t spf) {
-  strcpy(fmt->codec, "OPUS");
+static void configure_codec(audio_format_t *fmt, const char *name, int64_t sr,
+                            int64_t spf) {
+  strcpy(fmt->codec, name);
   fmt->sample_rate = (int)sr;
   fmt->channels = 2;
   fmt->bits_per_sample = 16;
@@ -79,17 +46,17 @@ static void configure_opus(audio_format_t *fmt, int64_t sr, int64_t spf) {
 
 // Codec registry - add new codecs here
 // ct values: 2=ALAC, 4=AAC, 8=AAC-ELD, 64=OPUS (based on AirPlay 2 protocol)
-static const rtsp_codec_t codec_registry[] = {{"ALAC", 2, configure_alac},
-                                              {"AAC", 4, configure_aac},
-                                              {"AAC-ELD", 8, configure_aac_eld},
-                                              {"OPUS", 64, configure_opus},
-                                              {NULL, 0, NULL}};
+static const rtsp_codec_t codec_registry[] = {{"ALAC", 2},
+                                              {"AAC", 4},
+                                              {"AAC-ELD", 8},
+                                              {"OPUS", 64},
+                                              {NULL, 0}};
 
 bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
                           int64_t sample_rate, int64_t samples_per_frame) {
   for (const rtsp_codec_t *codec = codec_registry; codec->name; codec++) {
     if (codec->type_id == type_id) {
-      codec->configure(fmt, sample_rate, samples_per_frame);
+      configure_codec(fmt, codec->name, sample_rate, samples_per_frame);
       ESP_LOGI(TAG, "Configured codec: %s (ct=%lld, sr=%lld, spf=%lld)",
                codec->name, (long long)type_id, (long long)sample_rate,
                (long long)samples_per_frame);
@@ -99,7 +66,7 @@ bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
   // Default to ALAC if unknown codec type
   ESP_LOGW(TAG, "Unknown codec type %lld, defaulting to ALAC",
            (long long)type_id);
-  configure_alac(fmt, sample_rate, samples_per_frame);
+  configure_codec(fmt, "ALAC", sample_rate, samples_per_frame);
   return false;
 }
 
@@ -114,64 +81,50 @@ void rtsp_get_device_id(char *device_id, size_t len) {
            mac[2], mac[3], mac[4], mac[5]);
 }
 
-int rtsp_create_udp_socket(uint16_t *port) {
-  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+static int rtsp_create_udp_socket(uint16_t *port) {
+  uint16_t bound_port = 0;
+  int sock = socket_utils_bind_udp(0, 0, 0, &bound_port);
   if (sock < 0) {
-    ESP_LOGE(TAG, "Failed to create UDP socket");
     return -1;
   }
-
-  struct sockaddr_in addr = {0};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = 0; // Let system assign port
-
-  if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    ESP_LOGE(TAG, "Failed to bind UDP socket");
-    close(sock);
-    return -1;
+  if (port) {
+    *port = bound_port;
   }
-
-  // Get assigned port
-  socklen_t addr_len = sizeof(addr);
-  getsockname(sock, (struct sockaddr *)&addr, &addr_len);
-  *port = ntohs(addr.sin_port);
-
   return sock;
 }
 
-int rtsp_create_event_socket(uint16_t *port) {
-  int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+static int rtsp_create_event_socket(uint16_t *port) {
+  uint16_t bound_port = 0;
+  int sock = socket_utils_bind_tcp_listener(0, 1, false, &bound_port);
   if (sock < 0) {
-    ESP_LOGE(TAG, "Failed to create event TCP socket");
     return -1;
   }
-
-  int opt = 1;
-  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  struct sockaddr_in addr = {0};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = 0;
-
-  if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    ESP_LOGE(TAG, "Failed to bind event socket");
-    close(sock);
-    return -1;
+  if (port) {
+    *port = bound_port;
   }
-
-  if (listen(sock, 1) < 0) {
-    ESP_LOGE(TAG, "Failed to listen on event socket");
-    close(sock);
-    return -1;
-  }
-
-  socklen_t addr_len = sizeof(addr);
-  getsockname(sock, (struct sockaddr *)&addr, &addr_len);
-  *port = ntohs(addr.sin_port);
-
   return sock;
+}
+
+static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
+  int temp_socket = 0;
+  if (!buffered && conn->data_port == 0) {
+    temp_socket = rtsp_create_udp_socket(&conn->data_port);
+    if (temp_socket > 0) {
+      close(temp_socket);
+    }
+  }
+  if (conn->control_port == 0) {
+    temp_socket = rtsp_create_udp_socket(&conn->control_port);
+    if (temp_socket > 0) {
+      close(temp_socket);
+    }
+  }
+  if (conn->timing_port == 0) {
+    temp_socket = rtsp_create_udp_socket(&conn->timing_port);
+    if (temp_socket > 0) {
+      close(temp_socket);
+    }
+  }
 }
 
 // Event port task - handles AirPlay 2 session persistence
@@ -866,7 +819,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "SETUP: Stream setup, stream_type=%lld",
            (long long)stream_type);
 
-  if (stream_type == 103) {
+  bool buffered = audio_stream_uses_buffer((audio_stream_type_t)stream_type);
+  if (buffered) {
     esp_err_t err = audio_receiver_start_buffered(0);
     if (err != ESP_OK) {
       rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
@@ -874,39 +828,11 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       return;
     }
     conn->buffered_port = audio_receiver_get_buffered_port();
-
-    int temp_socket;
-    if (conn->control_port == 0) {
-      temp_socket = rtsp_create_udp_socket(&conn->control_port);
-      if (temp_socket > 0)
-        close(temp_socket);
-    }
-    if (conn->timing_port == 0) {
-      temp_socket = rtsp_create_udp_socket(&conn->timing_port);
-      if (temp_socket > 0)
-        close(temp_socket);
-    }
-  } else {
-    int temp_socket;
-    if (conn->data_port == 0) {
-      temp_socket = rtsp_create_udp_socket(&conn->data_port);
-      if (temp_socket > 0)
-        close(temp_socket);
-    }
-    if (conn->control_port == 0) {
-      temp_socket = rtsp_create_udp_socket(&conn->control_port);
-      if (temp_socket > 0)
-        close(temp_socket);
-    }
-    if (conn->timing_port == 0) {
-      temp_socket = rtsp_create_udp_socket(&conn->timing_port);
-      if (temp_socket > 0)
-        close(temp_socket);
-    }
   }
 
-  uint16_t response_data_port =
-      (stream_type == 103) ? conn->buffered_port : conn->data_port;
+  ensure_stream_ports(conn, buffered);
+
+  uint16_t response_data_port = buffered ? conn->buffered_port : conn->data_port;
 
   if (is_bplist) {
     uint8_t plist_body[256];
@@ -936,12 +862,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
   // Start audio receiver
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
-
-  if (stream_type == 103) {
-    audio_receiver_start_buffered(conn->buffered_port);
-  } else if (conn->data_port > 0) {
-    audio_receiver_start(conn->data_port, conn->control_port);
-  }
+  audio_receiver_start_stream(conn->data_port, conn->control_port,
+                              conn->buffered_port);
 
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
@@ -954,11 +876,8 @@ static void handle_record(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  if (conn->stream_type == 103) {
-    // Buffered audio already started
-  } else if (conn->data_port > 0) {
-    audio_receiver_start(conn->data_port, conn->control_port);
-  }
+  audio_receiver_start_stream(conn->data_port, conn->control_port,
+                              conn->buffered_port);
   audio_receiver_set_playing(true);
 
   char headers[128];

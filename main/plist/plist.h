@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "base64.h"
+
 /**
  * Simple plist builder for AirPlay
  * Builds XML plist format (easier to debug, iOS accepts it)
@@ -90,16 +92,6 @@ void plist_array_int(plist_t *p, int64_t value);
  * @return Total size of plist
  */
 size_t plist_end(plist_t *p);
-
-/**
- * Base64 decode utility
- * @param input Base64 encoded string
- * @param input_len Length of input string
- * @param output Output buffer for decoded data
- * @param output_capacity Size of output buffer
- * @return Number of bytes decoded, or -1 on error
- */
-int base64_decode(const char *input, size_t input_len, uint8_t *output, size_t output_capacity);
 
 // ========================================
 // Binary plist parser (for AirPlay 2 SETUP)
