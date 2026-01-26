@@ -1,5 +1,3 @@
-set(ALAC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/alac/codec")
-
 idf_component_register(
     SRCS
         "main.c"
@@ -17,14 +15,7 @@ idf_component_register(
         "srp.c"
         "audio_receiver.c"
         "ptp_clock.c"
-        "apple_alac.cpp"
-        "${ALAC_DIR}/ALACDecoder.cpp"
-        "${ALAC_DIR}/ALACBitUtilities.c"
-        "${ALAC_DIR}/ag_dec.c"
-        "${ALAC_DIR}/dp_dec.c"
-        "${ALAC_DIR}/matrix_dec.c"
-        "EndianPortable_esp32.c"
-    INCLUDE_DIRS "." "${ALAC_DIR}"
+    INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
         esp_wifi

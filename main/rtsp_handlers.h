@@ -47,7 +47,7 @@ typedef void (*codec_configure_fn)(audio_format_t *fmt,
  */
 typedef struct {
     const char *name;           // Codec name: "ALAC", "AAC", "OPUS"
-    int64_t type_id;            // bplist "ct" value (2=ALAC, 8=AAC-ELD, etc.)
+    int64_t type_id;            // bplist "ct" value (2=ALAC, 4=AAC, 8=AAC-ELD)
     codec_configure_fn configure;
 } rtsp_codec_t;
 

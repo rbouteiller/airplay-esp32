@@ -37,6 +37,8 @@ AirPlay device name.
 ## Notes
 - I2S sample rate defaults to 44.1 kHz; adjust in `main/main.c` if needed.
 - Credentials are stored via `sdkconfig`; avoid committing secrets.
+- AAC (ct=4) decode uses the bundled `external/fdk-aac` library. AAC-ELD is
+  still not supported.
 
 ## License
 Non-commercial; commercial use requires permission. See `LICENSE`. Third-party

@@ -41,6 +41,18 @@ static void configure_alac(audio_format_t *fmt, int64_t sr, int64_t spf) {
     fmt->sample_rate_config = (uint32_t)sr;
 }
 
+static void configure_aac(audio_format_t *fmt, int64_t sr, int64_t spf) {
+    strcpy(fmt->codec, "AAC");
+    fmt->sample_rate = (int)sr;
+    fmt->channels = 2;
+    fmt->bits_per_sample = 16;
+    fmt->frame_size = (int)spf;
+    fmt->max_samples_per_frame = (uint32_t)spf;
+    fmt->sample_size = 16;
+    fmt->num_channels = 2;
+    fmt->sample_rate_config = (uint32_t)sr;
+}
+
 static void configure_aac_eld(audio_format_t *fmt, int64_t sr, int64_t spf) {
     strcpy(fmt->codec, "AAC-ELD");
     fmt->sample_rate = (int)sr;
@@ -66,9 +78,10 @@ static void configure_opus(audio_format_t *fmt, int64_t sr, int64_t spf) {
 }
 
 // Codec registry - add new codecs here
-// ct values: 2=ALAC, 8=AAC-ELD, 64=OPUS (based on AirPlay 2 protocol)
+// ct values: 2=ALAC, 4=AAC, 8=AAC-ELD, 64=OPUS (based on AirPlay 2 protocol)
 static const rtsp_codec_t codec_registry[] = {
     {"ALAC",    2,  configure_alac},
+    {"AAC",     4,  configure_aac},
     {"AAC-ELD", 8,  configure_aac_eld},
     {"OPUS",    64, configure_opus},
     {NULL, 0, NULL}
@@ -316,8 +329,6 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn,
         ESP_LOGW(TAG, "Failed to parse RTSP request");
         return -1;
     }
-
-    ESP_LOGI(TAG, "RTSP: %s %s", req.method, req.path);
 
     // Find handler in dispatch table
     for (const rtsp_method_handler_t *h = method_handlers; h->method; h++) {
@@ -606,6 +617,20 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
     const char *rtpmap = strstr(sdp, "a=rtpmap:");
     if (rtpmap) {
         sscanf(rtpmap, "a=rtpmap:%*d %31s", format.codec);
+        char *slash = strchr(format.codec, '/');
+        if (slash) {
+            *slash = '\0';
+            int sr = 0;
+            int ch = 0;
+            if (sscanf(slash + 1, "%d/%d", &sr, &ch) >= 1) {
+                if (sr > 0) {
+                    format.sample_rate = sr;
+                }
+                if (ch > 0) {
+                    format.channels = ch;
+                }
+            }
+        }
     }
 
     const char *fmtp = strstr(sdp, "a=fmtp:");
@@ -636,6 +661,14 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
                 format.sample_rate = rate;
             }
         }
+    }
+
+    if ((strstr(format.codec, "AAC") || strstr(format.codec, "aac") ||
+         strstr(format.codec, "mpeg4-generic") ||
+         strstr(format.codec, "MPEG4-GENERIC")) &&
+        format.max_samples_per_frame == 0) {
+        format.frame_size = 1024;
+        format.max_samples_per_frame = 1024;
     }
 
     // Update connection state
