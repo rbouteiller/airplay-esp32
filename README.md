@@ -7,6 +7,10 @@ PTP/NTP clocking for synchronized playback.
 ## Status
 Work in progress. Core discovery, control, and audio pipeline pieces are in
 place; additional features and hardening are still underway.
+Todo:
+- Demo video of the setup
+- Better setup instructions
+- 3D casing for ESP32 + PCM5102A
 
 ## Repository layout
 - `main/audio/` - stream abstraction (realtime UDP vs buffered TCP), decoder,
