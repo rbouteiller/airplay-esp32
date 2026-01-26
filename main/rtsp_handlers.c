@@ -1139,7 +1139,6 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
   if (rate == 0.0) {
     conn->stream_paused = true;
     audio_receiver_set_playing(false);
-    audio_receiver_flush();
   } else {
     conn->stream_paused = false;
     audio_receiver_set_playing(true);

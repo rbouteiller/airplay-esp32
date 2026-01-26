@@ -8,6 +8,7 @@
 #include "nvs_flash.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
+#include "settings.h"
 #include "wifi.h"
 #include <stdio.h>
 #include <string.h>
@@ -146,6 +147,8 @@ void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
+  ESP_ERROR_CHECK(settings_init());
 
   wifi_init_sta();
   wifi_wait_connected();
