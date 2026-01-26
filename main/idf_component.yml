@@ -1,3 +1,4 @@
 dependencies:
   espressif/mdns: "*"
   espressif/libsodium: "*"
+  espressif/esp_audio_codec: "^2.4.0"
