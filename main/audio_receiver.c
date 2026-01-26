@@ -21,9 +21,11 @@
 #include "ptp_clock.h"
 
 // esp_audio_codec for ALAC/AAC decoding
-#include "esp_audio_dec.h"
 #include "decoder/impl/esp_aac_dec.h"
 #include "decoder/impl/esp_alac_dec.h"
+#include "esp_audio_dec.h"
+
+#include "alac_magic_cookie.h"
 
 static const char *TAG = "audio_recv";
 
@@ -31,8 +33,8 @@ static const char *TAG = "audio_recv";
 #define BUFFERED_AUDIO_BUFFER_SIZE                                             \
   (128 * 1024)                          // 128KB for buffered audio (in PSRAM)
 #define BUFFERED_AUDIO_PACKET_SIZE 8192 // Max buffered audio packet size
-#define ALAC_MAGIC_COOKIE_SIZE 24       // ALAC codec specific info size
 #define ADTS_HEADER_LEN 7               // AAC ADTS header length
+#define AAC_FRAMES_PER_PACKET 352       // Matches shairport-sync frame size
 
 // RTP header structure
 typedef struct __attribute__((packed)) {
@@ -58,11 +60,13 @@ typedef struct __attribute__((packed)) {
 #define AUDIO_BYTES_PER_SAMPLE 2
 #define AUDIO_RECV_STACK_SIZE 12288
 #define AUDIO_CTRL_STACK_SIZE 4096
-#define AUDIO_BUFFERED_STACK_SIZE 12288
-#define AUDIO_BUFFER_SIZE                                                      \
-  (AUDIO_BUFFER_SECONDS * AUDIO_MAX_SAMPLE_RATE * AUDIO_MAX_CHANNELS *         \
-       AUDIO_BYTES_PER_SAMPLE +                                                \
-   (64 * 1024)) // 5s of stereo 48kHz 16-bit + headers
+#define AUDIO_BUFFERED_STACK_SIZE 4096  // High-water showed ~2248 bytes used
+// Ring buffer size: 5000 frames of 352 samples each (stereo 16-bit) + headers
+// Each frame: 8 bytes header + 352 * 2 * 2 = 1416 bytes
+// 5000 frames = ~7MB (requires PSRAM)
+#define MAX_RING_BUFFER_FRAMES 5000
+#define BYTES_PER_FRAME (sizeof(audio_frame_header_t) + (AAC_FRAMES_PER_PACKET * AUDIO_MAX_CHANNELS * AUDIO_BYTES_PER_SAMPLE))
+#define AUDIO_BUFFER_SIZE (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
 #define MAX_SAMPLES_PER_FRAME 4096
 #define DEFAULT_OUTPUT_LATENCY_US 500000 // 500ms buffer for network jitter
 #define MIN_STARTUP_FRAMES 4
@@ -92,7 +96,7 @@ static struct {
   void *alac_decoder;
   void *aac_decoder;
   uint8_t alac_magic_cookie[ALAC_MAGIC_COOKIE_SIZE];
-  uint8_t *aac_frame_buffer;      // Buffer for adding ADTS header
+  uint8_t *aac_frame_buffer; // Buffer for adding ADTS header
   size_t aac_frame_buffer_size;
 
   uint8_t *frame_buffer;
@@ -109,8 +113,8 @@ static struct {
   bool anchor_valid;
   uint64_t anchor_clock_id;
   uint64_t anchor_network_time_ns;
-  int64_t anchor_local_time_ns;  // Anchor time converted to LOCAL time
-  uint32_t anchor_rtp_time;      // RTP timestamp at anchor time
+  int64_t anchor_local_time_ns; // Anchor time converted to LOCAL time
+  uint32_t anchor_rtp_time;     // RTP timestamp at anchor time
   bool ptp_locked;
   bool ntp_locked;
   bool ntp_anchor_valid;
@@ -147,62 +151,16 @@ static void log_stack_high_watermark(const char *task_name) {
 
 // Codec detection helpers
 static bool codec_is_alac(const char *codec) {
-  if (!codec) return false;
+  if (!codec)
+    return false;
   return strcmp(codec, "AppleLossless") == 0 || strcmp(codec, "ALAC") == 0;
 }
 
 static bool codec_is_aac(const char *codec) {
-  if (!codec) return false;
+  if (!codec)
+    return false;
   return strstr(codec, "AAC") != NULL || strstr(codec, "aac") != NULL ||
          strstr(codec, "mpeg4-generic") != NULL;
-}
-
-// Build ALAC magic cookie (ALACSpecificConfig) from format parameters
-// Format: 24 bytes of codec specific information
-static void build_alac_magic_cookie(uint8_t *cookie, const audio_format_t *fmt) {
-  memset(cookie, 0, ALAC_MAGIC_COOKIE_SIZE);
-
-  uint32_t frame_length = fmt->max_samples_per_frame ? fmt->max_samples_per_frame
-                          : (fmt->frame_size > 0 ? (uint32_t)fmt->frame_size : 352);
-  uint8_t compatible_version = 0;
-  uint8_t bit_depth = fmt->sample_size ? fmt->sample_size
-                      : (fmt->bits_per_sample ? fmt->bits_per_sample : 16);
-  uint8_t pb = fmt->rice_history_mult ? fmt->rice_history_mult : 40;
-  uint8_t mb = fmt->rice_initial_history ? fmt->rice_initial_history : 10;
-  uint8_t kb = fmt->rice_limit ? fmt->rice_limit : 14;
-  uint8_t num_channels = fmt->num_channels ? fmt->num_channels
-                         : (fmt->channels ? fmt->channels : 2);
-  uint16_t max_run = fmt->max_run ? fmt->max_run : 255;
-  uint32_t max_frame_bytes = fmt->max_coded_frame_size ? fmt->max_coded_frame_size : 0;
-  uint32_t avg_bit_rate = fmt->avg_bit_rate ? fmt->avg_bit_rate : 0;
-  uint32_t sample_rate = fmt->sample_rate_config ? fmt->sample_rate_config
-                         : (fmt->sample_rate ? fmt->sample_rate : 44100);
-
-  // ALACSpecificConfig structure (big-endian)
-  cookie[0] = (frame_length >> 24) & 0xFF;
-  cookie[1] = (frame_length >> 16) & 0xFF;
-  cookie[2] = (frame_length >> 8) & 0xFF;
-  cookie[3] = frame_length & 0xFF;
-  cookie[4] = compatible_version;
-  cookie[5] = bit_depth;
-  cookie[6] = pb;
-  cookie[7] = mb;
-  cookie[8] = kb;
-  cookie[9] = num_channels;
-  cookie[10] = (max_run >> 8) & 0xFF;
-  cookie[11] = max_run & 0xFF;
-  cookie[12] = (max_frame_bytes >> 24) & 0xFF;
-  cookie[13] = (max_frame_bytes >> 16) & 0xFF;
-  cookie[14] = (max_frame_bytes >> 8) & 0xFF;
-  cookie[15] = max_frame_bytes & 0xFF;
-  cookie[16] = (avg_bit_rate >> 24) & 0xFF;
-  cookie[17] = (avg_bit_rate >> 16) & 0xFF;
-  cookie[18] = (avg_bit_rate >> 8) & 0xFF;
-  cookie[19] = avg_bit_rate & 0xFF;
-  cookie[20] = (sample_rate >> 24) & 0xFF;
-  cookie[21] = (sample_rate >> 16) & 0xFF;
-  cookie[22] = (sample_rate >> 8) & 0xFF;
-  cookie[23] = sample_rate & 0xFF;
 }
 
 // Check if AAC data has ADTS header (sync word 0xFFF)
@@ -212,28 +170,33 @@ static bool aac_has_adts_header(const uint8_t *data, size_t len) {
 
 // Get AAC sample rate index for ADTS header
 static int aac_sample_rate_index(int sample_rate) {
-  static const int rates[] = {96000, 88200, 64000, 48000, 44100, 32000,
-                               24000, 22050, 16000, 12000, 11025, 8000, 7350};
+  static const int rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                              22050, 16000, 12000, 11025, 8000,  7350};
   for (int i = 0; i < 13; i++) {
-    if (rates[i] == sample_rate) return i;
+    if (rates[i] == sample_rate)
+      return i;
   }
   return 4; // Default to 44100
 }
 
 // Build ADTS header for raw AAC frame (matches shairport-sync exactly)
-static void build_adts_header(uint8_t *header, size_t frame_len, int sample_rate, int channels) {
+// Note: shairport-sync uses 0xF9 (MPEG-2), but ESP-IDF decoder may prefer 0xF1
+// (MPEG-4) Both should work for AAC-LC, but we use MPEG-4 as it's more widely
+// compatible
+static void build_adts_header(uint8_t *header, size_t frame_len,
+                              int sample_rate, int channels) {
   (void)sample_rate; // Unused - shairport-sync hardcodes 44.1kHz
   (void)channels;    // Unused - shairport-sync hardcodes stereo
 
-  // Match shairport-sync addADTStoPacket() exactly
-  int profile = 2;  // AAC LC
-  int freqIdx = 4;  // 44.1KHz
-  int chanCfg = 2;  // CPE (stereo)
+  // Match shairport-sync addADTStoPacket() exactly (rtp.c:2166-2180)
+  int profile = 2; // AAC LC (object type 2)
+  int freqIdx = 4; // 44.1KHz
+  int chanCfg = 2; // CPE (stereo)
   int packetLen = (int)(frame_len + ADTS_HEADER_LEN);
 
-  // fill in ADTS data (from shairport-sync rtp.c:2166-2180)
+  // fill in ADTS data
   header[0] = 0xFF;
-  header[1] = 0xF9;  // MPEG-2 (ID=1), Layer=0, protection_absent=1
+  header[1] = 0xF1; // MPEG-4 (ID=0), Layer=0, protection_absent=1
   header[2] = ((profile - 1) << 6) + (freqIdx << 2) + (chanCfg >> 2);
   header[3] = ((chanCfg & 3) << 6) + (packetLen >> 11);
   header[4] = (packetLen & 0x7FF) >> 3;
@@ -581,19 +544,64 @@ static ssize_t read_exact(int sock, uint8_t *buf, size_t len) {
   return total;
 }
 
-static void queue_pcm_frame(uint32_t timestamp, size_t decoded_samples) {
-  if (decoded_samples == 0) {
+// Maximum buffer level before we start dropping old frames (in frames)
+// With 352-sample chunks at 44.1kHz, each chunk = 8ms, so 500 frames = 4s
+// This is a safety net - sync mode should prevent buffer from growing this
+// large
+#define MAX_BUFFER_FRAMES 5000
+
+// Drain old frames from buffer to prevent overflow
+static void drain_old_frames(int frames_to_drain) {
+  for (int i = 0; i < frames_to_drain; i++) {
+    size_t item_size = 0;
+    void *item = xRingbufferReceive(receiver.pcm_buffer, &item_size, 0);
+    if (item) {
+      vRingbufferReturnItem(receiver.pcm_buffer, item);
+      portENTER_CRITICAL(&buffer_lock);
+      receiver.buffered_frames--;
+      if (receiver.buffered_frames < 0)
+        receiver.buffered_frames = 0;
+      portEXIT_CRITICAL(&buffer_lock);
+    } else {
+      break;
+    }
+  }
+}
+
+// Queue a single chunk of PCM data (up to 352 samples like shairport-sync)
+static void queue_pcm_chunk(uint32_t timestamp, const int16_t *pcm_data,
+                            size_t samples, int channels) {
+  if (samples == 0) {
     return;
+  }
+
+  // Check buffer level and drain if too full
+  int current_frames;
+  portENTER_CRITICAL(&buffer_lock);
+  current_frames = receiver.buffered_frames;
+  portEXIT_CRITICAL(&buffer_lock);
+
+  if (current_frames > MAX_BUFFER_FRAMES) {
+    int to_drain = current_frames - MAX_BUFFER_FRAMES + 10;
+    static int drain_log = 0;
+    if (drain_log < 10) {
+      ESP_LOGW(TAG, "Buffer too full (%d frames), draining %d old frames",
+               current_frames, to_drain);
+      drain_log++;
+    }
+    drain_old_frames(to_drain);
   }
 
   audio_frame_header_t *hdr = (audio_frame_header_t *)receiver.frame_buffer;
   hdr->rtp_timestamp = timestamp;
-  hdr->samples_per_channel = (uint16_t)decoded_samples;
-  hdr->channels = (uint8_t)receiver.format.channels;
+  hdr->samples_per_channel = (uint16_t)samples;
+  hdr->channels = (uint8_t)channels;
   hdr->reserved = 0;
 
-  size_t pcm_bytes =
-      decoded_samples * receiver.format.channels * sizeof(int16_t);
+  size_t pcm_bytes = samples * channels * sizeof(int16_t);
+  int16_t *dest = (int16_t *)(hdr + 1);
+  memcpy(dest, pcm_data, pcm_bytes);
+
   size_t total_bytes = sizeof(*hdr) + pcm_bytes;
 
   BaseType_t ret = xRingbufferSend(receiver.pcm_buffer, receiver.frame_buffer,
@@ -601,8 +609,9 @@ static void queue_pcm_frame(uint32_t timestamp, size_t decoded_samples) {
   if (ret != pdTRUE) {
     receiver.stats.buffer_underruns++;
     static int overrun_log = 0;
-    if (overrun_log < 5) {
-      ESP_LOGW(TAG, "Ring buffer full, dropping audio");
+    if (overrun_log < 10) {
+      ESP_LOGW(TAG, "Ring buffer full (frames=%d), dropping new audio",
+               current_frames);
       overrun_log++;
     }
   } else {
@@ -610,6 +619,35 @@ static void queue_pcm_frame(uint32_t timestamp, size_t decoded_samples) {
     portENTER_CRITICAL(&buffer_lock);
     receiver.buffered_frames++;
     portEXIT_CRITICAL(&buffer_lock);
+  }
+}
+
+// Queue decoded PCM, splitting into 352-sample chunks to match playback reader
+static void queue_pcm_frame(uint32_t timestamp, size_t decoded_samples) {
+  if (decoded_samples == 0) {
+    return;
+  }
+
+  int channels = receiver.format.channels;
+  if (channels <= 0)
+    channels = 2;
+
+  // Split into 352-sample chunks (matches playback SAMPLES_PER_READ)
+  size_t offset = 0;
+  uint32_t chunk_timestamp = timestamp;
+
+  while (offset < decoded_samples) {
+    size_t chunk_samples = decoded_samples - offset;
+    if (chunk_samples > AAC_FRAMES_PER_PACKET) {
+      chunk_samples = AAC_FRAMES_PER_PACKET;
+    }
+
+    queue_pcm_chunk(chunk_timestamp,
+                    receiver.decode_buffer + (offset * channels), chunk_samples,
+                    channels);
+
+    offset += chunk_samples;
+    chunk_timestamp += chunk_samples;
   }
 }
 
@@ -642,28 +680,29 @@ static bool decode_and_queue_frame(uint32_t timestamp,
       return false;
     }
 
-    esp_audio_dec_in_raw_t raw = {
-        .buffer = (uint8_t *)audio_data,
-        .len = (uint32_t)audio_len,
-        .consumed = 0,
-        .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
-    };
+    esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t *)audio_data,
+                                  .len = (uint32_t)audio_len,
+                                  .consumed = 0,
+                                  .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
     esp_audio_dec_out_frame_t frame = {
         .buffer = (uint8_t *)receiver.decode_buffer,
-        .len = MAX_SAMPLES_PER_FRAME * receiver.format.channels * sizeof(int16_t),
-        .decoded_size = 0
-    };
+        .len =
+            MAX_SAMPLES_PER_FRAME * receiver.format.channels * sizeof(int16_t),
+        .decoded_size = 0};
     esp_audio_dec_info_t dec_info = {0};
 
-    esp_audio_err_t err = esp_alac_dec_decode(receiver.alac_decoder, &raw, &frame, &dec_info);
+    esp_audio_err_t err =
+        esp_alac_dec_decode(receiver.alac_decoder, &raw, &frame, &dec_info);
     if (err != ESP_AUDIO_ERR_OK) {
       receiver.stats.packets_dropped++;
       return false;
     }
 
     // Use format channels (dec_info.channel may be 0 on first frames)
-    int channels = dec_info.channel > 0 ? dec_info.channel : receiver.format.channels;
-    if (channels <= 0) channels = 2;
+    int channels =
+        dec_info.channel > 0 ? dec_info.channel : receiver.format.channels;
+    if (channels <= 0)
+      channels = 2;
     decoded_samples = frame.decoded_size / (channels * sizeof(int16_t));
     if (decoded_samples > MAX_SAMPLES_PER_FRAME) {
       decoded_samples = MAX_SAMPLES_PER_FRAME;
@@ -686,9 +725,10 @@ static bool decode_and_queue_frame(uint32_t timestamp,
     // Debug: log first AAC packet info
     static int aac_debug_count = 0;
     if (aac_debug_count < 3) {
-      ESP_LOGI(TAG, "AAC packet %d: len=%zu, first bytes: %02x %02x %02x %02x, has_adts=%d",
-               aac_debug_count, audio_len,
-               audio_len > 0 ? audio_data[0] : 0,
+      ESP_LOGI(TAG,
+               "AAC packet %d: len=%zu, first bytes: %02x %02x %02x %02x, "
+               "has_adts=%d",
+               aac_debug_count, audio_len, audio_len > 0 ? audio_data[0] : 0,
                audio_len > 1 ? audio_data[1] : 0,
                audio_len > 2 ? audio_data[2] : 0,
                audio_len > 3 ? audio_data[3] : 0,
@@ -699,7 +739,8 @@ static bool decode_and_queue_frame(uint32_t timestamp,
     // Add ADTS header if not present
     if (!aac_has_adts_header(audio_data, audio_len)) {
       size_t needed = audio_len + ADTS_HEADER_LEN;
-      if (!receiver.aac_frame_buffer || receiver.aac_frame_buffer_size < needed) {
+      if (!receiver.aac_frame_buffer ||
+          receiver.aac_frame_buffer_size < needed) {
         uint8_t *new_buf = realloc(receiver.aac_frame_buffer, needed);
         if (!new_buf) {
           receiver.stats.packets_dropped++;
@@ -710,25 +751,25 @@ static bool decode_and_queue_frame(uint32_t timestamp,
       }
       build_adts_header(receiver.aac_frame_buffer, audio_len,
                         receiver.format.sample_rate, receiver.format.channels);
-      memcpy(receiver.aac_frame_buffer + ADTS_HEADER_LEN, audio_data, audio_len);
+      memcpy(receiver.aac_frame_buffer + ADTS_HEADER_LEN, audio_data,
+             audio_len);
       decode_data = receiver.aac_frame_buffer;
       decode_len = needed;
     }
 
-    esp_audio_dec_in_raw_t raw = {
-        .buffer = (uint8_t *)decode_data,
-        .len = (uint32_t)decode_len,
-        .consumed = 0,
-        .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
-    };
+    esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t *)decode_data,
+                                  .len = (uint32_t)decode_len,
+                                  .consumed = 0,
+                                  .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
     esp_audio_dec_out_frame_t frame = {
         .buffer = (uint8_t *)receiver.decode_buffer,
-        .len = MAX_SAMPLES_PER_FRAME * receiver.format.channels * sizeof(int16_t),
-        .decoded_size = 0
-    };
+        .len =
+            MAX_SAMPLES_PER_FRAME * receiver.format.channels * sizeof(int16_t),
+        .decoded_size = 0};
     esp_audio_dec_info_t dec_info = {0};
 
-    esp_audio_err_t err = esp_aac_dec_decode(receiver.aac_decoder, &raw, &frame, &dec_info);
+    esp_audio_err_t err =
+        esp_aac_dec_decode(receiver.aac_decoder, &raw, &frame, &dec_info);
     if (err != ESP_AUDIO_ERR_OK) {
       static int aac_err_count = 0;
       if (aac_err_count < 5) {
@@ -742,30 +783,38 @@ static bool decode_and_queue_frame(uint32_t timestamp,
     // Debug: log first decoded frame info
     static int aac_decoded_count = 0;
     if (aac_decoded_count < 3) {
-      ESP_LOGI(TAG, "AAC decoded %d: decoded_size=%u, consumed=%u, sr=%u, ch=%u, bps=%u",
-               aac_decoded_count, frame.decoded_size, raw.consumed,
-               dec_info.sample_rate, dec_info.channel, dec_info.bits_per_sample);
+      ESP_LOGI(
+          TAG,
+          "AAC decoded %d: decoded_size=%u, consumed=%u, sr=%u, ch=%u, bps=%u",
+          aac_decoded_count, frame.decoded_size, raw.consumed,
+          dec_info.sample_rate, dec_info.channel, dec_info.bits_per_sample);
       aac_decoded_count++;
     }
 
     // Use format channels (dec_info.channel may be 0 on first frames)
-    int channels = dec_info.channel > 0 ? dec_info.channel : receiver.format.channels;
-    if (channels <= 0) channels = 2;
+    int channels =
+        dec_info.channel > 0 ? dec_info.channel : receiver.format.channels;
+    if (channels <= 0)
+      channels = 2;
     decoded_samples = frame.decoded_size / (channels * sizeof(int16_t));
     if (decoded_samples > MAX_SAMPLES_PER_FRAME) {
       decoded_samples = MAX_SAMPLES_PER_FRAME;
     }
 
     // AAC transient muting (matches shairport-sync rtp.c:2639-2649)
-    // If it's not the very first block of AAC, but is from the first few blocks of a
-    // new AAC sequence, it will contain noisy transients, so replace it with silence.
+    // If it's not the very first block of AAC, but is from the first few blocks
+    // of a new AAC sequence, it will contain noisy transients, so replace it
+    // with silence.
     if ((receiver.blocks_read_in_sequence <= 2) &&
         (receiver.blocks_read_in_sequence != receiver.blocks_read)) {
       // Mute by filling with silence
-      memset(receiver.decode_buffer, 0, decoded_samples * channels * sizeof(int16_t));
+      memset(receiver.decode_buffer, 0,
+             decoded_samples * channels * sizeof(int16_t));
       static int mute_log_count = 0;
       if (mute_log_count < 5) {
-        ESP_LOGI(TAG, "Muting AAC block %" PRIu64 " in sequence %" PRIu64 " to avoid transients",
+        ESP_LOGI(TAG,
+                 "Muting AAC block %" PRIu64 " in sequence %" PRIu64
+                 " to avoid transients",
                  receiver.blocks_read, receiver.blocks_read_in_sequence);
         mute_log_count++;
       }
@@ -790,15 +839,9 @@ static bool decode_and_queue_frame(uint32_t timestamp,
 
 // Buffered audio receiver task (type=103 over TCP)
 static void buffered_audio_task(void *pvParameters) {
-  int64_t last_stack_log = 0;
-  log_stack_high_watermark("buff_audio");
+  log_stack_high_watermark("buff_audio");  // Log once at start
 
   while (receiver.buffered_running) {
-    int64_t now_us = esp_timer_get_time();
-    if (now_us - last_stack_log > STACK_LOG_INTERVAL_US) {
-      last_stack_log = now_us;
-      log_stack_high_watermark("buff_audio");
-    }
 
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
@@ -817,8 +860,9 @@ static void buffered_audio_task(void *pvParameters) {
 
     receiver.buffered_client_socket = client_sock;
 
-    // Set receive timeout
-    struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
+    // Set long receive timeout - sender may pause between batches
+    // Shairport-sync uses no timeout (blocking forever)
+    struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     // Allocate packet buffer in PSRAM if available
@@ -889,6 +933,19 @@ static void buffered_audio_task(void *pvParameters) {
       receiver.blocks_read_in_sequence++;
 
       decode_and_queue_frame(timestamp, decrypted, (size_t)decrypted_len);
+
+      // Periodic buffer level logging for AAC debugging
+      static int buf_log_counter = 0;
+      if (++buf_log_counter >=
+          100) { // Every 100 packets (~2.3 seconds at 44.1kHz)
+        int frames;
+        portENTER_CRITICAL(&buffer_lock);
+        frames = receiver.buffered_frames;
+        portEXIT_CRITICAL(&buffer_lock);
+        ESP_LOGI(TAG, "AAC buffer: %d frames, blocks_read=%" PRIu64, frames,
+                 receiver.blocks_read);
+        buf_log_counter = 0;
+      }
     }
     close(client_sock);
     receiver.buffered_client_socket = -1;
@@ -1098,12 +1155,14 @@ static void control_receiver_task(void *pvParameters) {
         uint64_t network_time_ns = nctoh64(packet + 8);
         uint64_t clock_id = nctoh64(packet + 20);
 
-        // Adjust RTP time: subtract the fixed latency (11035 frames at 44100Hz ≈ 250ms)
+        // Adjust RTP time: subtract the fixed latency (11035 frames at 44100Hz
+        // ≈ 250ms)
         uint32_t adjusted_rtp = frame_1 - 11035;
 
         // Only log first anchor or periodically
         static int anchor_log_count = 0;
-        if (anchor_log_count++ % 30 == 0) {  // Log every 30 anchors (~30 seconds)
+        if (anchor_log_count++ % 30 ==
+            0) { // Log every 30 anchors (~30 seconds)
           ESP_LOGI(TAG, "Control anchor: clock=%llx, time=%llu ms",
                    (unsigned long long)clock_id,
                    (unsigned long long)(network_time_ns / 1000000ULL));
@@ -1136,13 +1195,22 @@ esp_err_t audio_receiver_init(void) {
     return ESP_OK; // Already initialized
   }
 
-  // Create ring buffer for PCM frames (header + samples)
-  receiver.pcm_buffer =
-      xRingbufferCreate(AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT);
+  // Create ring buffer for PCM frames (header + samples) in PSRAM
+  // Buffer is ~7MB for 5000 frames, requires PSRAM
+  receiver.pcm_buffer = xRingbufferCreateWithCaps(
+      AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!receiver.pcm_buffer) {
+    // Fallback to regular RAM with smaller buffer
+    ESP_LOGW(TAG, "PSRAM not available, using smaller buffer");
+    receiver.pcm_buffer =
+        xRingbufferCreate(1024 * 1024, RINGBUF_TYPE_NOSPLIT);  // 1MB fallback
+  }
   if (!receiver.pcm_buffer) {
     ESP_LOGE(TAG, "Failed to create ring buffer");
     return ESP_ERR_NO_MEM;
   }
+  ESP_LOGI(TAG, "Ring buffer created: %zu bytes for %d frames",
+           (size_t)AUDIO_BUFFER_SIZE, MAX_RING_BUFFER_FRAMES);
 
   // Allocate decrypt buffer
   receiver.decrypt_buffer = malloc(MAX_RTP_PACKET_SIZE);
@@ -1218,12 +1286,12 @@ void audio_receiver_set_format(const audio_format_t *format) {
     // Build ALAC magic cookie from format parameters
     build_alac_magic_cookie(receiver.alac_magic_cookie, format);
 
-    esp_alac_dec_cfg_t alac_cfg = {
-        .codec_spec_info = receiver.alac_magic_cookie,
-        .spec_info_len = ALAC_MAGIC_COOKIE_SIZE
-    };
+    esp_alac_dec_cfg_t alac_cfg = {.codec_spec_info =
+                                       receiver.alac_magic_cookie,
+                                   .spec_info_len = ALAC_MAGIC_COOKIE_SIZE};
 
-    esp_audio_err_t err = esp_alac_dec_open(&alac_cfg, sizeof(alac_cfg), &receiver.alac_decoder);
+    esp_audio_err_t err =
+        esp_alac_dec_open(&alac_cfg, sizeof(alac_cfg), &receiver.alac_decoder);
     if (err != ESP_AUDIO_ERR_OK) {
       ESP_LOGE(TAG, "Failed to open ALAC decoder: %d", err);
       receiver.alac_decoder = NULL;
@@ -1236,11 +1304,13 @@ void audio_receiver_set_format(const audio_format_t *format) {
     esp_aac_dec_cfg_t aac_cfg = ESP_AAC_DEC_CONFIG_DEFAULT();
     aac_cfg.sample_rate = format->sample_rate;
     aac_cfg.channel = format->channels;
-    aac_cfg.bits_per_sample = format->bits_per_sample ? format->bits_per_sample : 16;
-    aac_cfg.no_adts_header = false;  // We ensure ADTS headers are present
+    aac_cfg.bits_per_sample =
+        format->bits_per_sample ? format->bits_per_sample : 16;
+    aac_cfg.no_adts_header = false; // We ensure ADTS headers are present
     aac_cfg.aac_plus_enable = false;
 
-    esp_audio_err_t err = esp_aac_dec_open(&aac_cfg, sizeof(aac_cfg), &receiver.aac_decoder);
+    esp_audio_err_t err =
+        esp_aac_dec_open(&aac_cfg, sizeof(aac_cfg), &receiver.aac_decoder);
     if (err != ESP_AUDIO_ERR_OK) {
       ESP_LOGE(TAG, "Failed to open AAC decoder: %d", err);
       receiver.aac_decoder = NULL;
@@ -1272,8 +1342,13 @@ uint32_t audio_receiver_get_output_latency_us(void) {
 
 void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                                     uint32_t rtp_time) {
+  // Don't flush on small anchor updates - only flush after significant jump
+  // (e.g., pause/resume causes large RTP time change)
+  // Small updates (~44100 samples/sec) are normal timing adjustments
+
   receiver.anchor_clock_id = clock_id;
-  receiver.anchor_rtp_time = rtp_time;  // Store original RTP time (no modification)
+  receiver.anchor_rtp_time =
+      rtp_time; // Store original RTP time (no modification)
   receiver.anchor_network_time_ns = network_time_ns;
 
   // Convert network time to LOCAL time using PTP/NTP offset
@@ -1420,10 +1495,9 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
 
   // Start receiver task
   receiver.running = true;
-  BaseType_t ret =
-      xTaskCreatePinnedToCore(receiver_task, "audio_recv",
-                              AUDIO_RECV_STACK_SIZE, NULL, 8,
-                              &receiver.task_handle, AUDIO_TASK_CORE);
+  BaseType_t ret = xTaskCreatePinnedToCore(
+      receiver_task, "audio_recv", AUDIO_RECV_STACK_SIZE, NULL, 8,
+      &receiver.task_handle, AUDIO_TASK_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create receiver task");
     close(receiver.data_socket);
@@ -1438,10 +1512,9 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
 
   // Start control receiver task if control socket created
   if (receiver.control_socket > 0) {
-    ret = xTaskCreatePinnedToCore(control_receiver_task, "ctrl_recv",
-                                  AUDIO_CTRL_STACK_SIZE, NULL, 7,
-                                  &receiver.control_task_handle,
-                                  AUDIO_TASK_CORE);
+    ret = xTaskCreatePinnedToCore(
+        control_receiver_task, "ctrl_recv", AUDIO_CTRL_STACK_SIZE, NULL, 7,
+        &receiver.control_task_handle, AUDIO_TASK_CORE);
     if (ret != pdPASS) {
       ESP_LOGW(TAG,
                "Failed to create control receiver task - continuing without");
@@ -1520,6 +1593,46 @@ void audio_receiver_stop(void) {
   audio_receiver_flush();
 }
 
+void audio_receiver_stop_buffered_only(void) {
+  // Stop only the buffered (TCP) receiver but keep playing
+  // This is called when TEARDOWN with streams array is received
+  // meaning the sender is done sending data but we should continue playback
+
+  if (receiver.buffered_running) {
+    ESP_LOGI(TAG, "Stopping buffered receiver only (keeping %d frames in buffer)",
+             receiver.buffered_frames);
+    receiver.buffered_running = false;
+
+    // Close client socket first
+    if (receiver.buffered_client_socket > 0) {
+      close(receiver.buffered_client_socket);
+      receiver.buffered_client_socket = -1;
+    }
+
+    // Close listening socket
+    if (receiver.buffered_listen_socket > 0) {
+      close(receiver.buffered_listen_socket);
+      receiver.buffered_listen_socket = -1;
+    }
+
+    // Wait for task to exit
+    if (receiver.buffered_task_handle) {
+      vTaskDelay(pdMS_TO_TICKS(300));
+      receiver.buffered_task_handle = NULL;
+    }
+
+    // Free buffered receive buffer
+    if (receiver.buffered_recv_buffer) {
+      heap_caps_free(receiver.buffered_recv_buffer);
+      receiver.buffered_recv_buffer = NULL;
+    }
+
+    receiver.buffered_port = 0;
+  }
+
+  // Note: Do NOT flush buffer or stop playback - keep playing buffered data
+}
+
 void audio_receiver_get_stats(audio_stats_t *stats) {
   memcpy(stats, &receiver.stats, sizeof(audio_stats_t));
 }
@@ -1541,11 +1654,9 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
       if (compute_early_us(receiver.last_played_rtp, true,
                            ptp_clock_get_offset_ns(), 0, &early_us)) {
         if (early_us >= 0) {
-          ESP_LOGW(TAG, "PTP lock lost: early by %lld ms",
-                   early_us / 1000LL);
+          ESP_LOGW(TAG, "PTP lock lost: early by %lld ms", early_us / 1000LL);
         } else {
-          ESP_LOGW(TAG, "PTP lock lost: late by %lld ms",
-                   (-early_us) / 1000LL);
+          ESP_LOGW(TAG, "PTP lock lost: late by %lld ms", (-early_us) / 1000LL);
         }
       } else {
         ESP_LOGW(TAG, "PTP lock lost (no timing reference)");
@@ -1562,11 +1673,9 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
                            ntp_clock_get_offset_ns(),
                            receiver.ntp_anchor_offset_ns, &early_us)) {
         if (early_us >= 0) {
-          ESP_LOGW(TAG, "NTP lock lost: early by %lld ms",
-                   early_us / 1000LL);
+          ESP_LOGW(TAG, "NTP lock lost: early by %lld ms", early_us / 1000LL);
         } else {
-          ESP_LOGW(TAG, "NTP lock lost: late by %lld ms",
-                   (-early_us) / 1000LL);
+          ESP_LOGW(TAG, "NTP lock lost: late by %lld ms", (-early_us) / 1000LL);
         }
       } else {
         ESP_LOGW(TAG, "NTP lock lost (no timing reference)");
@@ -1594,8 +1703,11 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
     sync_source = "ntp";
   }
 
+  // Enable sync mode when we have timing info
+  // Disable sync for buffered audio (type 103) - it has built-in timing
   bool sync_mode =
-      use_offset && receiver.anchor_valid && receiver.format.sample_rate > 0;
+      use_offset && receiver.anchor_valid && receiver.format.sample_rate > 0 &&
+      receiver.stream_type != AUDIO_STREAM_BUFFERED;
 
   int buffered_frames;
   portENTER_CRITICAL(&buffer_lock);
@@ -1702,15 +1814,15 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
           return 0;
         }
 
+        // Don't drop late frames - just play them (causes slight delay but no
+        // clicks) Only log if very late for debugging
         if (early_us < -late_limit_us) {
-          if (from_pending) {
-            receiver.pending_valid = false;
-            receiver.pending_frame_len = 0;
-          } else {
-            vRingbufferReturnItem(receiver.pcm_buffer, item);
+          static int late_log_count = 0;
+          if (late_log_count < 10) {
+            ESP_LOGD(TAG, "Playing late frame: %lld ms late, rtp=%u, buf=%d",
+                     (-early_us) / 1000LL, hdr->rtp_timestamp, buffered_frames);
+            late_log_count++;
           }
-          receiver.stats.packets_dropped++;
-          continue;
         }
       }
     }
@@ -1720,8 +1832,7 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
       if (++timing_log_count >= 4000) {
         int64_t log_early_us = 0;
         if (compute_early_us(hdr->rtp_timestamp, use_offset, offset_ns,
-                             anchor_time_offset_ns,
-                             &log_early_us)) {
+                             anchor_time_offset_ns, &log_early_us)) {
           ESP_LOGI(TAG, "Timing: drift=%lld ms, sync=%s, buf=%d",
                    log_early_us / 1000LL, sync_source, buffered_frames);
         }
@@ -1902,9 +2013,9 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
 
   // Start buffered audio task with larger stack (in PSRAM if possible)
   receiver.buffered_running = true;
-  BaseType_t ret = xTaskCreate(buffered_audio_task, "buff_audio",
-                               AUDIO_BUFFERED_STACK_SIZE, NULL, 5,
-                               &receiver.buffered_task_handle);
+  BaseType_t ret =
+      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
+                  NULL, 5, &receiver.buffered_task_handle);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(receiver.buffered_listen_socket);

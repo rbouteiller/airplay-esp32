@@ -151,6 +151,12 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port);
 uint16_t audio_receiver_get_buffered_port(void);
 
 /**
+ * Stop only the buffered receiver but keep playing buffered data
+ * Used when TEARDOWN with streams array is received (sender done sending)
+ */
+void audio_receiver_stop_buffered_only(void);
+
+/**
  * Set the stream type (realtime vs buffered)
  */
 void audio_receiver_set_stream_type(audio_stream_type_t type);

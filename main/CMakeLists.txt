@@ -13,6 +13,7 @@ idf_component_register(
         "tlv8.c"
         "hap.c"
         "srp.c"
+        "alac_magic_cookie.c"
         "audio_receiver.c"
         "ptp_clock.c"
     INCLUDE_DIRS "."
