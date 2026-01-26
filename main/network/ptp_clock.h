@@ -28,26 +28,10 @@ void ptp_clock_stop(void);
 void ptp_clock_clear(void);
 
 /**
- * Initialize and start NTP clock synchronization.
- */
-esp_err_t ntp_clock_init(void);
-
-/**
- * Stop NTP clock synchronization.
- */
-void ntp_clock_stop(void);
-
-/**
  * Check if PTP is locked to a master clock.
  * @return true if synchronized with acceptable accuracy
  */
 bool ptp_clock_is_locked(void);
-
-/**
- * Check if NTP is locked to a server clock.
- * @return true if synchronized with acceptable accuracy
- */
-bool ntp_clock_is_locked(void);
 
 /**
  * Get current PTP time in nanoseconds.
@@ -57,23 +41,10 @@ bool ntp_clock_is_locked(void);
 uint64_t ptp_clock_get_time_ns(void);
 
 /**
- * Get current NTP time in nanoseconds.
- * Returns local time adjusted by NTP offset.
- * @return NTP time in nanoseconds since epoch
- */
-uint64_t ntp_clock_get_time_ns(void);
-
-/**
  * Get current offset from local clock to PTP time in nanoseconds.
  * PTP_time = local_time + offset
  */
 int64_t ptp_clock_get_offset_ns(void);
-
-/**
- * Get current offset from local clock to NTP time in nanoseconds.
- * NTP_time = local_time + offset
- */
-int64_t ntp_clock_get_offset_ns(void);
 
 /**
  * Get synchronization statistics.

@@ -176,6 +176,10 @@ void audio_receiver_set_playing(bool playing) {
   }
 }
 
+void audio_receiver_reset_timing(void) {
+  audio_timing_reset(&receiver.timing);
+}
+
 void audio_receiver_set_stream_type(audio_stream_type_t type) {
   if (!receiver.realtime_stream || !receiver.buffered_stream) {
     return;
@@ -218,9 +222,6 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
   receiver.timing.ptp_locked = ptp_clock_is_locked();
-  receiver.timing.ntp_locked = ntp_clock_is_locked();
-  receiver.timing.ntp_anchor_valid = false;
-  receiver.timing.ntp_anchor_offset_ns = 0;
   audio_receiver_reset_blocks();
 
   if (!receiver.stream || !receiver.stream->ops ||
@@ -243,9 +244,6 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
   receiver.timing.ptp_locked = ptp_clock_is_locked();
-  receiver.timing.ntp_locked = ntp_clock_is_locked();
-  receiver.timing.ntp_anchor_valid = false;
-  receiver.timing.ntp_anchor_offset_ns = 0;
   audio_receiver_reset_blocks();
 
   if (!receiver.stream || !receiver.stream->ops ||

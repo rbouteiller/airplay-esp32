@@ -53,6 +53,7 @@ typedef struct {
   uint32_t packets_dropped;
   uint32_t decrypt_errors;
   uint32_t buffer_underruns;
+  uint32_t late_frames;
   uint16_t last_seq;
   uint32_t last_timestamp;
 } audio_stats_t;
@@ -134,6 +135,11 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
  * Enable or pause playout scheduling.
  */
 void audio_receiver_set_playing(bool playing);
+
+/**
+ * Reset timing anchor (call when PTP clock changes, e.g., SETPEERS)
+ */
+void audio_receiver_reset_timing(void);
 
 /**
  * Stream types for AirPlay 2

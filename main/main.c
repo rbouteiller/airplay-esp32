@@ -24,7 +24,6 @@ void app_main(void) {
 
   wifi_init_sta();
   wifi_wait_connected();
-  ESP_ERROR_CHECK(ntp_clock_init());
   ESP_ERROR_CHECK(ptp_clock_init());
   ESP_ERROR_CHECK(hap_init());
   ESP_ERROR_CHECK(audio_receiver_init());

@@ -31,6 +31,7 @@ idf_component_register(
         "network/wifi.c"
         "network/mdns_airplay.c"
         "network/ptp_clock.c"
+        "network/ntp_clock.c"
         "network/socket_utils.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES

@@ -130,6 +130,16 @@ static void client_task(void *pvParameters) {
   }
   slot->conn = conn;
 
+  // Get client IP address for timing requests
+  struct sockaddr_in peer_addr;
+  socklen_t peer_len = sizeof(peer_addr);
+  if (getpeername(slot->socket, (struct sockaddr *)&peer_addr, &peer_len) == 0) {
+    conn->client_ip = peer_addr.sin_addr.s_addr;
+    ESP_LOGI(TAG, "Client IP: %d.%d.%d.%d",
+             conn->client_ip & 0xFF, (conn->client_ip >> 8) & 0xFF,
+             (conn->client_ip >> 16) & 0xFF, (conn->client_ip >> 24) & 0xFF);
+  }
+
   // Allocate buffer
   size_t buf_capacity = RTSP_BUFFER_INITIAL;
   uint8_t *buffer = malloc(buf_capacity);

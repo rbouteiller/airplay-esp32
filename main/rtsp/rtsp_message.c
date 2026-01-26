@@ -51,6 +51,37 @@ const uint8_t *rtsp_get_body(const char *request, size_t request_len,
     return NULL;
 }
 
+// Parse Transport header for client ports (AirPlay 1)
+// Format: Transport: RTP/AVP/UDP;unicast;mode=record;control_port=6001;timing_port=6002
+void rtsp_parse_transport(const char *request, uint16_t *control_port,
+                          uint16_t *timing_port) {
+    if (control_port) *control_port = 0;
+    if (timing_port) *timing_port = 0;
+
+    const char *transport = strstr(request, "Transport:");
+    if (!transport) {
+        return;
+    }
+
+    // Find end of Transport header line
+    const char *line_end = strstr(transport, "\r\n");
+    if (!line_end) {
+        line_end = transport + strlen(transport);
+    }
+
+    // Parse control_port
+    const char *cp = strstr(transport, "control_port=");
+    if (cp && cp < line_end && control_port) {
+        *control_port = (uint16_t)atoi(cp + 13);
+    }
+
+    // Parse timing_port
+    const char *tp = strstr(transport, "timing_port=");
+    if (tp && tp < line_end && timing_port) {
+        *timing_port = (uint16_t)atoi(tp + 12);
+    }
+}
+
 int rtsp_request_parse(const uint8_t *data, size_t len, rtsp_request_t *req) {
     if (!data || !req || len == 0) {
         return -1;

@@ -19,6 +19,7 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "hap.h"
+#include "ntp_clock.h"
 #include "plist.h"
 #include "rtsp_fairplay.h"
 #include "socket_utils.h"
@@ -119,6 +120,8 @@ static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
     }
   }
   if (conn->timing_port == 0) {
+    // Allocate a timing port for RTSP response (required by protocol)
+    // Note: For AirPlay 1, we send timing requests TO the client, not receive them
     temp_socket = rtsp_create_udp_socket(&conn->timing_port);
     if (temp_socket > 0) {
       close(temp_socket);
@@ -896,6 +899,17 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                        "Content-Type: application/x-apple-binary-plist\r\n",
                        (const char *)plist_body, plist_len);
   } else {
+    // AirPlay 1: Parse client's ports from Transport header
+    rtsp_parse_transport((const char *)raw, &conn->client_control_port,
+                         &conn->client_timing_port);
+    ESP_LOGI(TAG, "Client ports: control=%u timing=%u",
+             conn->client_control_port, conn->client_timing_port);
+
+    // Start NTP timing client if client has a timing port
+    if (conn->client_timing_port > 0 && conn->client_ip != 0) {
+      ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
+    }
+
     char transport_response[256];
     snprintf(transport_response, sizeof(transport_response),
              "Transport: RTP/AVP/UDP;unicast;mode=record;"
@@ -1040,6 +1054,12 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   conn->stream_active = false;
   conn->stream_paused = has_streams;  // Keep session ready if only streams torn down
 
+  if (!has_streams) {
+    // Full teardown - stop NTP timing
+    ntp_clock_stop();
+    conn->timing_port = 0;
+  }
+
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
@@ -1118,6 +1138,11 @@ static void handle_setpeers(int socket, rtsp_conn_t *conn,
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
     ESP_LOGI(TAG, "SETPEERS: got bplist");
   }
+
+  // Reset audio timing anchor when PTP peers change
+  // The PTP clock master may change, invalidating the current anchor
+  ESP_LOGI(TAG, "SETPEERS: Resetting timing anchor (PTP peers changed)");
+  audio_receiver_reset_timing();
 
   rtsp_send_ok(socket, conn, req->cseq);
 }

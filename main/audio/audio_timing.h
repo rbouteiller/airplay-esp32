@@ -15,16 +15,10 @@ typedef struct {
   bool playout_started;
   bool playing;
   bool anchor_valid;
-  uint64_t anchor_clock_id;
   uint64_t anchor_network_time_ns;
-  int64_t anchor_local_time_ns;
   uint32_t anchor_rtp_time;
+  int64_t anchor_local_time_ns; // Local time when anchor was received
   bool ptp_locked;
-  bool ntp_locked;
-  bool ntp_anchor_valid;
-  int64_t ntp_anchor_offset_ns;
-  uint32_t last_played_rtp;
-  bool last_played_valid;
   uint8_t *pending_frame;
   size_t pending_frame_len;
   size_t pending_frame_capacity;

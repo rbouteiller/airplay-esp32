@@ -7,7 +7,6 @@
 #include <unistd.h>
 
 #include "esp_log.h"
-#include "esp_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,20 +33,11 @@ static const char *TAG = "ptp_clock";
 #define PTP_TIMESTAMP_SIZE 10
 
 // Synchronization parameters
-#define LOCK_THRESHOLD_NS                                                      \
-  1500000000LL // 1500 ms - consider locked if offset stable within this
-#define MIN_SAMPLES_FOR_LOCK 3 // Need this many samples before declaring lock
-#define LOCK_STABLE_TIME_MS 2000
+#define LOCK_THRESHOLD_NS 40000000LL // 40ms - consider locked if offset stable
+#define MIN_SAMPLES_FOR_LOCK 3
+#define LOCK_STABLE_TIME_MS 500 // 500ms of stable readings to declare lock
 #define LOCK_TIMEOUT_MS 3000
-#define OFFSET_FILTER_ALPHA                                                    \
-  16 // IIR filter: new = old + (sample - old) / ALPHA (higher = smoother)
-
-#ifndef CONFIG_LWIP_SNTP_UPDATE_DELAY
-#define CONFIG_LWIP_SNTP_UPDATE_DELAY 3600000
-#endif
-#define NTP_LOCK_TIMEOUT_MS                                                    \
-  ((uint32_t)(CONFIG_LWIP_SNTP_UPDATE_DELAY * 2U + 10000U))
-#define NTP_OFFSET_FILTER_ALPHA 8
+#define OFFSET_FILTER_ALPHA 4 // IIR filter (lower = faster convergence)
 
 // PTP state
 static struct {
@@ -74,17 +64,6 @@ static struct {
   uint32_t sync_count;
   uint32_t followup_count;
 } ptp = {0};
-
-// NTP state
-static struct {
-  bool running;
-  bool locked;
-  uint32_t lock_start_ms;
-  uint32_t last_sync_ms;
-  int64_t offset_ns;
-  int64_t filtered_offset_ns;
-  uint32_t sync_count;
-} ntp = {0};
 
 // Parse 48-bit seconds + 32-bit nanoseconds from PTP timestamp
 static uint64_t parse_ptp_timestamp_ns(const uint8_t *data) {
@@ -166,56 +145,6 @@ static void update_offset(int64_t new_offset_ns) {
       }
     }
   }
-}
-
-// Update NTP offset with new sample using IIR filter with outlier rejection
-static void update_ntp_offset(int64_t new_offset_ns) {
-  uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-  ntp.sync_count++;
-  ntp.last_sync_ms = now_ms;
-
-  if (ntp.sync_count == 1) {
-    ntp.offset_ns = new_offset_ns;
-    ntp.filtered_offset_ns = new_offset_ns;
-    ntp.locked = true;
-    ntp.lock_start_ms = now_ms;
-    ESP_LOGI(TAG, "NTP locked, offset: %lld.%03lld s (samples: %u)",
-             ntp.filtered_offset_ns / 1000000000LL,
-             (ntp.filtered_offset_ns % 1000000000LL) / 1000000LL,
-             ntp.sync_count);
-    return;
-  }
-
-  int64_t diff = new_offset_ns - ntp.filtered_offset_ns;
-  if (diff < 0) {
-    diff = -diff;
-  }
-
-  if (diff > 10000000000LL) { // 10 seconds
-    return;
-  }
-
-  ntp.offset_ns = new_offset_ns;
-  ntp.filtered_offset_ns +=
-      (new_offset_ns - ntp.filtered_offset_ns) / NTP_OFFSET_FILTER_ALPHA;
-
-  if (ptp.locked) {
-    int64_t delta_ns = ntp.filtered_offset_ns - ptp.filtered_offset_ns;
-    ESP_LOGI(TAG, "NTP/PTP offset delta: %lld ms", delta_ns / 1000000LL);
-  }
-}
-
-static void ntp_time_sync_cb(struct timeval *tv) {
-  if (!tv) {
-    return;
-  }
-
-  int64_t ntp_time_ns =
-      ((int64_t)tv->tv_sec * 1000000000LL) + ((int64_t)tv->tv_usec * 1000LL);
-  int64_t local_ns = get_local_time_ns();
-  int64_t offset_ns = ntp_time_ns - local_ns;
-  update_ntp_offset(offset_ns);
 }
 
 // Process SYNC message (records receive time)
@@ -450,23 +379,6 @@ esp_err_t ptp_clock_init(void) {
   return ESP_OK;
 }
 
-esp_err_t ntp_clock_init(void) {
-  if (ntp.running) {
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  memset(&ntp, 0, sizeof(ntp));
-  ntp.running = true;
-
-  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
-  esp_sntp_set_time_sync_notification_cb(ntp_time_sync_cb);
-  esp_sntp_init();
-
-  ESP_LOGI(TAG, "NTP client started");
-  return ESP_OK;
-}
-
 void ptp_clock_stop(void) {
   if (!ptp.running) {
     return;
@@ -513,18 +425,6 @@ void ptp_clock_clear(void) {
   ptp.followup_count = 0;
 }
 
-void ntp_clock_stop(void) {
-  if (!ntp.running) {
-    return;
-  }
-
-  ntp.running = false;
-  esp_sntp_stop();
-  ntp.locked = false;
-  ntp.lock_start_ms = 0;
-  ntp.last_sync_ms = 0;
-}
-
 bool ptp_clock_is_locked(void) {
   if (ptp.locked && ptp.last_sync_ms > 0) {
     uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -540,33 +440,12 @@ bool ptp_clock_is_locked(void) {
   return ptp.locked;
 }
 
-bool ntp_clock_is_locked(void) {
-  if (ntp.locked && ntp.last_sync_ms > 0) {
-    uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    if ((now_ms - ntp.last_sync_ms) > NTP_LOCK_TIMEOUT_MS) {
-      ESP_LOGW(TAG, "NTP lock lost (timeout %u ms)",
-               (unsigned)(now_ms - ntp.last_sync_ms));
-      ntp.locked = false;
-      ntp.lock_start_ms = 0;
-    }
-  }
-
-  return ntp.locked;
-}
-
 uint64_t ptp_clock_get_time_ns(void) {
   int64_t local_ns = get_local_time_ns();
   return (uint64_t)(local_ns + ptp.filtered_offset_ns);
 }
 
-uint64_t ntp_clock_get_time_ns(void) {
-  int64_t local_ns = get_local_time_ns();
-  return (uint64_t)(local_ns + ntp.filtered_offset_ns);
-}
-
 int64_t ptp_clock_get_offset_ns(void) { return ptp.filtered_offset_ns; }
-
-int64_t ntp_clock_get_offset_ns(void) { return ntp.filtered_offset_ns; }
 
 void ptp_clock_get_stats(ptp_stats_t *stats) {
   stats->sync_count = ptp.sync_count;

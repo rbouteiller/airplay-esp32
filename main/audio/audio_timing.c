@@ -5,13 +5,14 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_OUTPUT_LATENCY_US 500000
+#define DEFAULT_BUFFER_LATENCY_US 500000 // 500ms buffer for network jitter
+#define HARDWARE_OUTPUT_LATENCY_US 46000 // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES 4
-#define EARLY_SCHEDULE_THRESHOLD_US 2000
-#define LATE_SCHEDULE_THRESHOLD_US 15000
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
+#define TIMING_THRESHOLD_US 40000 // 40ms early/late threshold
 
 static const char *TAG = "audio_time";
 
@@ -35,8 +36,7 @@ static void update_timing_targets(audio_timing_t *timing,
   }
 
   uint64_t latency_samples =
-      ((uint64_t)timing->output_latency_us *
-       (uint64_t)format->sample_rate) /
+      ((uint64_t)timing->output_latency_us * (uint64_t)format->sample_rate) /
       1000000ULL;
   uint32_t target_frames =
       (uint32_t)((latency_samples + timing->nominal_frame_samples - 1) /
@@ -47,88 +47,49 @@ static void update_timing_targets(audio_timing_t *timing,
   timing->target_buffer_frames = target_frames;
 }
 
-static int64_t frame_duration_us(const audio_timing_t *timing,
-                                 const audio_format_t *format) {
-  if (format->sample_rate <= 0 || timing->nominal_frame_samples == 0) {
-    return 0;
-  }
+typedef enum {
+  SYNC_MODE_NONE,  // No clock sync, use local anchor time
+  SYNC_MODE_PTP,   // AirPlay 2 PTP sync
+  SYNC_MODE_NTP,   // AirPlay 1 NTP sync
+} sync_mode_t;
 
-  return ((int64_t)timing->nominal_frame_samples * 1000000LL) /
-         format->sample_rate;
-}
-
-static int64_t early_threshold_us(const audio_timing_t *timing,
-                                  const audio_format_t *format) {
-  int64_t frame_us = frame_duration_us(timing, format);
-  if (frame_us <= 0) {
-    return EARLY_SCHEDULE_THRESHOLD_US;
-  }
-
-  if (frame_us < EARLY_SCHEDULE_THRESHOLD_US) {
-    return EARLY_SCHEDULE_THRESHOLD_US;
-  }
-
-  return frame_us;
-}
-
-static int64_t late_threshold_us(const audio_timing_t *timing,
-                                 const audio_format_t *format) {
-  int64_t frame_us = frame_duration_us(timing, format);
-  if (frame_us <= 0) {
-    return LATE_SCHEDULE_THRESHOLD_US;
-  }
-
-  int64_t threshold = frame_us * 2;
-  if (threshold < LATE_SCHEDULE_THRESHOLD_US) {
-    return LATE_SCHEDULE_THRESHOLD_US;
-  }
-
-  return threshold;
-}
-
-static bool compute_target_local_ns(const audio_timing_t *timing,
-                                    const audio_format_t *format,
-                                    uint32_t rtp_timestamp, bool use_offset,
-                                    int64_t offset_ns,
-                                    int64_t anchor_time_offset_ns,
-                                    int64_t *target_local_ns) {
+// Compute how early (positive) or late (negative) a frame is in microseconds
+static bool compute_early_us(const audio_timing_t *timing,
+                             const audio_format_t *format,
+                             uint32_t rtp_timestamp, sync_mode_t sync_mode,
+                             int64_t *early_us) {
   if (!timing->anchor_valid || format->sample_rate <= 0) {
     return false;
   }
 
-  int32_t rtp_delta =
-      (int32_t)(rtp_timestamp - timing->anchor_rtp_time);
+  int32_t rtp_delta = (int32_t)(rtp_timestamp - timing->anchor_rtp_time);
   int64_t frame_offset_ns =
       ((int64_t)rtp_delta * 1000000000LL) / format->sample_rate;
 
-  int64_t anchor_local_ns = 0;
-  if (use_offset) {
-    anchor_local_ns = (int64_t)timing->anchor_network_time_ns +
-                      anchor_time_offset_ns - offset_ns;
-  } else if (timing->anchor_local_time_ns != 0) {
-    anchor_local_ns = timing->anchor_local_time_ns;
-  } else {
-    return false;
+  int64_t target_ns;
+  switch (sync_mode) {
+  case SYNC_MODE_PTP:
+    // AirPlay 2: use network time with PTP offset for multi-room sync
+    target_ns = (int64_t)timing->anchor_network_time_ns -
+                ptp_clock_get_offset_ns() + frame_offset_ns;
+    break;
+  case SYNC_MODE_NTP:
+    // AirPlay 1: use network time with NTP offset for multi-room sync
+    // offset = remote_time - local_time, so local = remote - offset
+    target_ns = (int64_t)timing->anchor_network_time_ns -
+                ntp_clock_get_offset_ns() + frame_offset_ns;
+    break;
+  default:
+    // Fallback: use local anchor time (no multi-room sync)
+    target_ns = timing->anchor_local_time_ns + frame_offset_ns;
+    break;
   }
 
-  *target_local_ns = anchor_local_ns + frame_offset_ns;
-  return true;
-}
-
-static bool compute_early_us(const audio_timing_t *timing,
-                             const audio_format_t *format,
-                             uint32_t rtp_timestamp, bool use_offset,
-                             int64_t offset_ns, int64_t anchor_time_offset_ns,
-                             int64_t *early_us) {
-  int64_t target_local_ns = 0;
-  if (!compute_target_local_ns(timing, format, rtp_timestamp, use_offset,
-                               offset_ns, anchor_time_offset_ns,
-                               &target_local_ns)) {
-    return false;
-  }
+  // Subtract hardware latency to account for I2S DMA delay
+  target_ns -= (int64_t)HARDWARE_OUTPUT_LATENCY_US * 1000LL;
 
   int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
-  *early_us = (target_local_ns - now_ns) / 1000LL;
+  *early_us = (target_ns - now_ns) / 1000LL;
   return true;
 }
 
@@ -138,7 +99,7 @@ void audio_timing_init(audio_timing_t *timing, size_t pending_capacity) {
   }
 
   memset(timing, 0, sizeof(*timing));
-  timing->output_latency_us = DEFAULT_OUTPUT_LATENCY_US;
+  timing->output_latency_us = DEFAULT_BUFFER_LATENCY_US;
   timing->playing = true;
 
   if (pending_capacity > 0) {
@@ -158,9 +119,6 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->anchor_valid = false;
   timing->pending_valid = false;
   timing->pending_frame_len = 0;
-  timing->last_played_valid = false;
-  timing->ntp_anchor_valid = false;
-  timing->ntp_anchor_offset_ns = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -198,43 +156,18 @@ void audio_timing_set_anchor(audio_timing_t *timing,
     return;
   }
 
-  timing->anchor_clock_id = clock_id;
+  (void)clock_id; // unused
   timing->anchor_rtp_time = rtp_time;
   timing->anchor_network_time_ns = network_time_ns;
-
-  bool ptp_locked = ptp_clock_is_locked();
-  bool ntp_locked = ntp_clock_is_locked();
-  if (ptp_locked) {
-    int64_t offset_ns = ptp_clock_get_offset_ns();
-    timing->anchor_local_time_ns =
-        (int64_t)network_time_ns - offset_ns;
-    timing->ntp_anchor_valid = false;
-    timing->ntp_anchor_offset_ns = 0;
-  } else if (ntp_locked) {
-    int64_t ntp_time_ns = (int64_t)ntp_clock_get_time_ns();
-    timing->ntp_anchor_offset_ns =
-        ntp_time_ns - (int64_t)network_time_ns;
-    timing->ntp_anchor_valid = true;
-    timing->anchor_local_time_ns = (int64_t)network_time_ns +
-                                   timing->ntp_anchor_offset_ns -
-                                   ntp_clock_get_offset_ns();
-  } else {
-    timing->anchor_local_time_ns =
-        (int64_t)esp_timer_get_time() * 1000LL;
-    timing->ntp_anchor_valid = false;
-    timing->ntp_anchor_offset_ns = 0;
-  }
-
-  if (!timing->anchor_valid) {
-    ESP_LOGI(TAG,
-             "Anchor set: rtp=%u, local_time=%lld ms, ptp_locked=%d, ntp=%d",
-             rtp_time, timing->anchor_local_time_ns / 1000000LL, ptp_locked,
-             ntp_locked);
-  }
-
-  timing->ptp_locked = ptp_locked;
-  timing->ntp_locked = ntp_locked;
+  timing->anchor_local_time_ns = (int64_t)esp_timer_get_time() * 1000LL;
+  timing->ptp_locked = ptp_clock_is_locked();
   timing->anchor_valid = true;
+
+  bool ntp_locked = ntp_clock_is_locked();
+  const char *sync_str = timing->ptp_locked ? "PTP" : (ntp_locked ? "NTP" : "none");
+  ESP_LOGI(TAG, "Anchor: rtp=%u, network=%llu ms, local=%lld ms, sync=%s",
+           rtp_time, (unsigned long long)(network_time_ns / 1000000ULL),
+           timing->anchor_local_time_ns / 1000000LL, sync_str);
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -248,9 +181,6 @@ void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
     timing->anchor_valid = false;
     timing->pending_valid = false;
     timing->pending_frame_len = 0;
-    timing->last_played_valid = false;
-    timing->ntp_anchor_valid = false;
-    timing->ntp_anchor_offset_ns = 0;
   }
 }
 
@@ -266,93 +196,37 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   }
 
   const audio_format_t *format = &stream->format;
-
-  bool ptp_locked = ptp_clock_is_locked();
-  bool ntp_locked = ntp_clock_is_locked();
-  if (timing->ptp_locked && !ptp_locked) {
-    if (timing->anchor_valid && timing->last_played_valid) {
-      int64_t early_us = 0;
-      if (compute_early_us(timing, format, timing->last_played_rtp, true,
-                           ptp_clock_get_offset_ns(), 0, &early_us)) {
-        if (early_us >= 0) {
-          ESP_LOGW(TAG, "PTP lock lost: early by %lld ms",
-                   early_us / 1000LL);
-        } else {
-          ESP_LOGW(TAG, "PTP lock lost: late by %lld ms",
-                   (-early_us) / 1000LL);
-        }
-      } else {
-        ESP_LOGW(TAG, "PTP lock lost (no timing reference)");
-      }
-    } else {
-      ESP_LOGW(TAG, "PTP lock lost (no timing reference)");
-    }
-  }
-  if (timing->ntp_locked && !ntp_locked) {
-    if (timing->anchor_valid && timing->last_played_valid &&
-        timing->ntp_anchor_valid) {
-      int64_t early_us = 0;
-      if (compute_early_us(timing, format, timing->last_played_rtp, true,
-                           ntp_clock_get_offset_ns(),
-                           timing->ntp_anchor_offset_ns, &early_us)) {
-        if (early_us >= 0) {
-          ESP_LOGW(TAG, "NTP lock lost: early by %lld ms",
-                   early_us / 1000LL);
-        } else {
-          ESP_LOGW(TAG, "NTP lock lost: late by %lld ms",
-                   (-early_us) / 1000LL);
-        }
-      } else {
-        ESP_LOGW(TAG, "NTP lock lost (no timing reference)");
-      }
-    } else {
-      ESP_LOGW(TAG, "NTP lock lost (no timing reference)");
-    }
-  }
-  timing->ptp_locked = ptp_locked;
-  timing->ntp_locked = ntp_locked;
-
-  bool use_offset = false;
-  int64_t offset_ns = 0;
-  int64_t anchor_time_offset_ns = 0;
-  const char *sync_source = "none";
-  if (ptp_locked) {
-    use_offset = true;
-    offset_ns = ptp_clock_get_offset_ns();
-    anchor_time_offset_ns = 0;
-    sync_source = "ptp";
-  } else if (ntp_locked && timing->ntp_anchor_valid) {
-    use_offset = true;
-    offset_ns = ntp_clock_get_offset_ns();
-    anchor_time_offset_ns = timing->ntp_anchor_offset_ns;
-    sync_source = "ntp";
-  }
-
-  bool sync_mode =
-      use_offset && timing->anchor_valid && format->sample_rate > 0 &&
-      stream->type != AUDIO_STREAM_BUFFERED;
-
   int buffered_frames = audio_buffer_get_frame_count(buffer);
 
+  // Wait for enough buffer before starting
   if (!timing->playout_started && !timing->pending_valid) {
     if (!timing->anchor_valid) {
       return 0;
     }
     if (buffered_frames < (int)timing->target_buffer_frames) {
+      static int buffer_wait_log = 0;
+      if (++buffer_wait_log % 50 == 1) {
+        ESP_LOGI(TAG, "Buffering: %d/%u frames", buffered_frames,
+                 timing->target_buffer_frames);
+      }
       return 0;
     }
   }
 
-  static int wait_log = 0;
-  static int timing_log_count = 0;
-  int64_t early_limit_us = early_threshold_us(timing, format);
-  int64_t late_limit_us = late_threshold_us(timing, format);
+  // Determine sync mode: PTP (AirPlay 2), NTP (AirPlay 1), or local fallback
+  sync_mode_t sync_mode = SYNC_MODE_NONE;
+  if (ptp_clock_is_locked()) {
+    sync_mode = SYNC_MODE_PTP;
+  } else if (ntp_clock_is_locked()) {
+    sync_mode = SYNC_MODE_NTP;
+  }
 
   for (int attempt = 0; attempt < 8; attempt++) {
     size_t item_size = 0;
     void *item = NULL;
     bool from_pending = false;
 
+    // Get frame from pending or buffer
     if (timing->pending_valid) {
       item_size = timing->pending_frame_len;
       if (item_size < sizeof(audio_frame_header_t)) {
@@ -382,6 +256,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
     size_t channels = hdr->channels ? hdr->channels : format->channels;
     int16_t *pcm = (int16_t *)(hdr + 1);
 
+    // Validate frame
     if (frame_samples == 0 || channels == 0) {
       if (from_pending) {
         timing->pending_valid = false;
@@ -404,97 +279,61 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       continue;
     }
 
-    if (sync_mode) {
-      int64_t early_us = 0;
-      if (compute_early_us(timing, format, hdr->rtp_timestamp, true, offset_ns,
-                           anchor_time_offset_ns, &early_us)) {
-        if (early_us > early_limit_us) {
-          if (!from_pending) {
-            if (timing->pending_frame &&
-                item_size <= timing->pending_frame_capacity) {
-              memcpy(timing->pending_frame, item, item_size);
-              timing->pending_frame_len = item_size;
-              timing->pending_valid = true;
-            }
-            audio_buffer_return(buffer, item);
-          }
-
-          if (!timing->playout_started && ++wait_log % 100 == 1) {
-            ESP_LOGI(TAG, "Waiting for sync: early=%lld ms, buf=%d",
-                     early_us / 1000LL, buffered_frames);
-          }
-          return 0;
-        }
-
-        if (early_us < -late_limit_us) {
-          ESP_LOGD(TAG, "Playing late frame: %lld ms late, rtp=%u, buf=%d",
-                   (-early_us) / 1000LL, hdr->rtp_timestamp, buffered_frames);
-        }
-      }
-    }
-
-    if (timing->anchor_valid && format->sample_rate > 0) {
-      if (++timing_log_count >= 4000) {
-        int64_t log_early_us = 0;
-        if (compute_early_us(timing, format, hdr->rtp_timestamp, use_offset,
-                             offset_ns, anchor_time_offset_ns, &log_early_us)) {
-          ESP_LOGI(TAG, "Timing: drift=%lld ms, sync=%s, buf=%d",
-                   log_early_us / 1000LL, sync_source, buffered_frames);
-        }
-        timing_log_count = 0;
-      }
-    }
-
     if (frame_samples > samples) {
       frame_samples = samples;
     }
 
-    int adjust = 0;
-    if (!sync_mode && timing->anchor_valid) {
-      if (buffered_frames >
-          (int)timing->target_buffer_frames + DRIFT_ADJUST_THRESHOLD_FRAMES) {
-        adjust = -1;
-      } else if (buffered_frames <
-                 (int)timing->target_buffer_frames -
-                     DRIFT_ADJUST_THRESHOLD_FRAMES) {
-        adjust = 1;
+    // Handle early/late frames based on anchor timing
+    if (timing->anchor_valid && format->sample_rate > 0) {
+      int64_t early_us = 0;
+      if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
+                           &early_us)) {
+        if (early_us > TIMING_THRESHOLD_US) {
+          // Too early: output silence, keep frame for later
+          ESP_LOGI(TAG, "Padding silence: EARLY %lld ms", early_us / 1000LL);
+          if (!from_pending && timing->pending_frame &&
+              item_size <= timing->pending_frame_capacity) {
+            memcpy(timing->pending_frame, item, item_size);
+            timing->pending_frame_len = item_size;
+            timing->pending_valid = true;
+            audio_buffer_return(buffer, item);
+          }
+          memset(out, 0, samples * channels * sizeof(int16_t));
+          return samples;
+        } else if (early_us < -TIMING_THRESHOLD_US) {
+          // Too late: drop frame
+          ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
+          if (stats) {
+            stats->late_frames++;
+          }
+          if (from_pending) {
+            timing->pending_valid = false;
+            timing->pending_frame_len = 0;
+          } else {
+            audio_buffer_return(buffer, item);
+          }
+          continue;
+        }
       }
     }
 
-    size_t out_samples = frame_samples;
-    if (adjust < 0 && out_samples > 1) {
-      out_samples--;
-    } else if (adjust > 0 && out_samples + 1 <= samples) {
-      out_samples++;
-    }
+    // Copy PCM data to output
+    memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
 
-    size_t copy_samples =
-        (out_samples <= frame_samples) ? out_samples : frame_samples;
-    memcpy(out, pcm, copy_samples * channels * sizeof(int16_t));
-
-    if (out_samples > frame_samples) {
-      size_t base = (frame_samples - 1) * channels;
-      for (size_t ch = 0; ch < channels; ch++) {
-        out[frame_samples * channels + ch] = out[base + ch];
-      }
-    }
-
-    uint32_t played_rtp = hdr->rtp_timestamp;
+    // Cleanup
     if (from_pending) {
       timing->pending_valid = false;
       timing->pending_frame_len = 0;
     } else {
       audio_buffer_return(buffer, item);
     }
-    timing->last_played_rtp = played_rtp;
-    timing->last_played_valid = true;
+
     if (!timing->playout_started) {
       timing->playout_started = true;
-      ESP_LOGI(TAG, "Playout started: anchor_valid=%d, sync=%s, latency=%u us",
-               timing->anchor_valid, sync_source,
-               timing->output_latency_us);
+      ESP_LOGI(TAG, "Playout started: buf=%d frames", buffered_frames);
     }
-    return out_samples;
+
+    return frame_samples;
   }
 
   return 0;
