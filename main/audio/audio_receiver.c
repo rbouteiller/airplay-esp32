@@ -210,9 +210,14 @@ void audio_receiver_set_stream_type(audio_stream_type_t type) {
 esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   audio_receiver_set_stream_type(AUDIO_STREAM_REALTIME);
 
-  if (receiver.stream && receiver.stream->running) {
-    ESP_LOGI(TAG, "Audio receiver already running, continuing");
-    return ESP_OK;
+  if (!receiver.stream || !receiver.stream->ops ||
+      !receiver.stream->ops->start) {
+    return ESP_FAIL;
+  }
+
+  // Always stop and restart fresh
+  if (receiver.stream->running) {
+    receiver.stream->ops->stop(receiver.stream);
   }
 
   receiver.data_port = data_port;
@@ -224,19 +229,19 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
 
-  if (!receiver.stream || !receiver.stream->ops ||
-      !receiver.stream->ops->start) {
-    return ESP_FAIL;
-  }
-
   return receiver.stream->ops->start(receiver.stream, data_port);
 }
 
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   audio_receiver_set_stream_type(AUDIO_STREAM_BUFFERED);
 
-  if (receiver.stream && receiver.stream->running) {
-    ESP_LOGI(TAG, "Buffered audio already running, continuing");
+  if (!receiver.stream || !receiver.stream->ops ||
+      !receiver.stream->ops->start) {
+    return ESP_FAIL;
+  }
+
+  // Buffered streams use a fixed port, no need to restart if running
+  if (receiver.stream->running) {
     return ESP_OK;
   }
 
@@ -245,11 +250,6 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   audio_timing_reset(&receiver.timing);
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
-
-  if (!receiver.stream || !receiver.stream->ops ||
-      !receiver.stream->ops->start) {
-    return ESP_FAIL;
-  }
 
   return receiver.stream->ops->start(receiver.stream, tcp_port);
 }

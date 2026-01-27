@@ -217,41 +217,26 @@ static void control_receiver_task(void *pvParameters) {
     switch (packet_type) {
     case 0xD4: // AirPlay 1 sync packet (NTP timing)
     case 0x54: // Same as 0xD4 but without extension bit
-      // Sync packet format (shairport-sync rtp_control_receiver):
-      // - Offset 4: current RTP timestamp (32-bit)
-      // - Offset 8: NTP seconds (32-bit)
-      // - Offset 12: NTP fraction (32-bit)
-      // - Offset 16: next RTP timestamp (32-bit)
+      // Format: [4] current RTP, [8] NTP secs, [12] NTP frac, [16] next RTP
       if (len >= 20) {
         uint32_t rtp_timestamp = nctoh32(packet + 16);
-
-        // Convert NTP format to nanoseconds (like shairport-sync)
         uint64_t ntp_secs = nctoh32(packet + 8);
         uint64_t ntp_frac = nctoh32(packet + 12);
-        uint64_t network_time_ns = (ntp_secs * 1000000000ULL) +
-                                   ((ntp_frac * 1000000000ULL) >> 32);
-
-        ESP_LOGI(TAG, "Sync pkt: rtp=%u, ntp=%llu.%09llu s",
-                 rtp_timestamp, ntp_secs, (ntp_frac * 1000000000ULL) >> 32);
-
+        uint64_t network_time_ns =
+            (ntp_secs * 1000000000ULL) + ((ntp_frac * 1000000000ULL) >> 32);
         audio_receiver_set_anchor_time(0, network_time_ns, rtp_timestamp);
       }
       break;
 
     case 0xD7: // AirPlay 2 anchor timing packet (PTP timing)
-      // This packet provides anchor timing info:
-      // - frame_1 at offset 4: RTP frame (includes some latency offset)
-      // - network_time_ns at offset 8: PTP timestamp for the anchor
-      // - frame_2 at offset 16: the frame the time actually refers to
-      // - clock_id at offset 20: PTP clock ID
-      // notified_latency = frame_2 - frame_1, typically ~77175 frames (~1.75s)
-      ESP_LOGI(TAG, "PTP anchor packet received");
+      // Format: [4] RTP frame, [8] PTP time ns, [20] clock ID
       if (len >= 28) {
         uint32_t frame_1 = nctoh32(packet + 4);
         uint64_t network_time_ns = nctoh64(packet + 8);
         uint64_t clock_id = nctoh64(packet + 20);
 
-        audio_receiver_set_anchor_time(clock_id, network_time_ns, frame_1);
+        audio_receiver_set_anchor_time(clock_id, network_time_ns,
+                                       frame_1 - 11035);
       }
       break;
 
@@ -275,7 +260,8 @@ static void control_receiver_task(void *pvParameters) {
 static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   audio_receiver_state_t *state = audio_stream_state(stream);
   if (stream->running) {
-    ESP_LOGI(TAG, "Audio receiver already running, continuing");
+    ESP_LOGI(TAG, "Audio receiver already running on port %u",
+             state->data_port);
     return ESP_OK;
   }
 

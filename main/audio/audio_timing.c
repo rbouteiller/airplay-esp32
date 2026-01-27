@@ -119,6 +119,7 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->anchor_valid = false;
   timing->pending_valid = false;
   timing->pending_frame_len = 0;
+  timing->ready_time_us = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -156,18 +157,12 @@ void audio_timing_set_anchor(audio_timing_t *timing,
     return;
   }
 
-  (void)clock_id; // unused
+  (void)clock_id;
   timing->anchor_rtp_time = rtp_time;
   timing->anchor_network_time_ns = network_time_ns;
   timing->anchor_local_time_ns = (int64_t)esp_timer_get_time() * 1000LL;
   timing->ptp_locked = ptp_clock_is_locked();
   timing->anchor_valid = true;
-
-  bool ntp_locked = ntp_clock_is_locked();
-  const char *sync_str = timing->ptp_locked ? "PTP" : (ntp_locked ? "NTP" : "none");
-  ESP_LOGI(TAG, "Anchor: rtp=%u, network=%llu ms, local=%lld ms, sync=%s",
-           rtp_time, (unsigned long long)(network_time_ns / 1000000ULL),
-           timing->anchor_local_time_ns / 1000000LL, sync_str);
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -200,16 +195,19 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
 
   // Wait for enough buffer before starting
   if (!timing->playout_started && !timing->pending_valid) {
-    if (!timing->anchor_valid) {
+    if (buffered_frames < (int)timing->target_buffer_frames) {
       return 0;
     }
-    if (buffered_frames < (int)timing->target_buffer_frames) {
-      static int buffer_wait_log = 0;
-      if (++buffer_wait_log % 50 == 1) {
-        ESP_LOGI(TAG, "Buffering: %d/%u frames", buffered_frames,
-                 timing->target_buffer_frames);
+    // Buffer is ready - wait up to 1 second for anchor to arrive
+    if (!timing->anchor_valid) {
+      int64_t now_us = esp_timer_get_time();
+      if (timing->ready_time_us == 0) {
+        timing->ready_time_us = now_us;
       }
-      return 0;
+      if (now_us - timing->ready_time_us < 1000000) {
+        return 0; // Still waiting for anchor
+      }
+      // Waited 1 second, no anchor - proceed without sync
     }
   }
 
@@ -290,7 +288,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
                            &early_us)) {
         if (early_us > TIMING_THRESHOLD_US) {
           // Too early: output silence, keep frame for later
-          ESP_LOGI(TAG, "Padding silence: EARLY %lld ms", early_us / 1000LL);
           if (!from_pending && timing->pending_frame &&
               item_size <= timing->pending_frame_capacity) {
             memcpy(timing->pending_frame, item, item_size);
@@ -330,7 +327,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
 
     if (!timing->playout_started) {
       timing->playout_started = true;
-      ESP_LOGI(TAG, "Playout started: buf=%d frames", buffered_frames);
     }
 
     return frame_samples;

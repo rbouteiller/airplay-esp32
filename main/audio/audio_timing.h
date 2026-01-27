@@ -17,7 +17,8 @@ typedef struct {
   bool anchor_valid;
   uint64_t anchor_network_time_ns;
   uint32_t anchor_rtp_time;
-  int64_t anchor_local_time_ns; // Local time when anchor was received
+  int64_t anchor_local_time_ns;
+  int64_t ready_time_us; // When buffer became ready (0 = not ready yet)
   bool ptp_locked;
   uint8_t *pending_frame;
   size_t pending_frame_len;

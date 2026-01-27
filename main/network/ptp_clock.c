@@ -33,11 +33,12 @@ static const char *TAG = "ptp_clock";
 #define PTP_TIMESTAMP_SIZE 10
 
 // Synchronization parameters
-#define LOCK_THRESHOLD_NS 40000000LL // 40ms - consider locked if offset stable
-#define MIN_SAMPLES_FOR_LOCK 3
-#define LOCK_STABLE_TIME_MS 500 // 500ms of stable readings to declare lock
-#define LOCK_TIMEOUT_MS 3000
-#define OFFSET_FILTER_ALPHA 4 // IIR filter (lower = faster convergence)
+#define LOCK_THRESHOLD_NS 40000000LL // 40ms - tight threshold for lock
+#define MIN_SAMPLES_FOR_LOCK 8
+#define LOCK_STABLE_TIME_MS 1000 // 1s of stable readings to declare lock
+#define LOCK_TIMEOUT_MS 5000
+#define SAMPLE_BUFFER_SIZE 16           // Ring buffer for median filtering
+#define OUTLIER_THRESHOLD_NS 50000000LL // 50ms - reject samples beyond this
 
 // PTP state
 static struct {
@@ -51,13 +52,17 @@ static struct {
   uint32_t lock_start_ms;
   uint32_t lock_candidate_start_ms;
   uint32_t last_sync_ms;
-  int64_t offset_ns; // PTP_time = local_time + offset
-  int64_t filtered_offset_ns;
+  int64_t filtered_offset_ns; // PTP_time = local_time + offset
   uint32_t sample_count;
+
+  // Sample ring buffer for median filtering
+  int64_t samples[SAMPLE_BUFFER_SIZE];
+  int sample_index;
+  int sample_fill;
 
   // Two-step sync tracking
   uint16_t last_sync_seq;
-  int64_t last_sync_local_ns; // Local time when SYNC received
+  int64_t last_sync_local_ns;
   bool awaiting_followup;
 
   // Statistics
@@ -85,61 +90,81 @@ static inline int64_t get_local_time_ns(void) {
   return (int64_t)esp_timer_get_time() * 1000LL;
 }
 
-// Update offset with new sample using IIR filter with outlier rejection
+// Compare function for qsort
+static int compare_int64(const void *a, const void *b) {
+  int64_t va = *(const int64_t *)a;
+  int64_t vb = *(const int64_t *)b;
+  if (va < vb)
+    return -1;
+  if (va > vb)
+    return 1;
+  return 0;
+}
+
+// Compute median of samples
+static int64_t compute_median(void) {
+  if (ptp.sample_fill == 0)
+    return 0;
+
+  int64_t sorted[SAMPLE_BUFFER_SIZE];
+  memcpy(sorted, ptp.samples, ptp.sample_fill * sizeof(int64_t));
+  qsort(sorted, ptp.sample_fill, sizeof(int64_t), compare_int64);
+
+  return sorted[ptp.sample_fill / 2];
+}
+
+// Update offset with new sample using median filtering
 static void update_offset(int64_t new_offset_ns) {
   uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-  ptp.sample_count++;
   ptp.last_sync_ms = now_ms;
+  ptp.sample_count++;
 
-  if (ptp.sample_count == 1) {
-    // First sample - initialize directly
-    ptp.offset_ns = new_offset_ns;
-    ptp.filtered_offset_ns = new_offset_ns;
-  } else {
-    // Reject outliers: if new sample differs by more than 10 seconds, ignore it
+  // Reject obvious outliers (more than 50ms from current estimate)
+  if (ptp.sample_fill > 0) {
     int64_t diff = new_offset_ns - ptp.filtered_offset_ns;
     if (diff < 0)
       diff = -diff;
-
-    if (diff > 10000000000LL) { // 10 seconds
-      // Outlier - ignore this sample
+    if (diff > OUTLIER_THRESHOLD_NS) {
       return;
     }
-
-    // IIR low-pass filter
-    ptp.offset_ns = new_offset_ns;
-    ptp.filtered_offset_ns +=
-        (new_offset_ns - ptp.filtered_offset_ns) / OFFSET_FILTER_ALPHA;
   }
 
-  // Check lock status
-  if (ptp.sample_count >= MIN_SAMPLES_FOR_LOCK) {
-    int64_t diff = ptp.offset_ns - ptp.filtered_offset_ns;
-    if (diff < 0)
-      diff = -diff;
+  // Add to ring buffer
+  ptp.samples[ptp.sample_index] = new_offset_ns;
+  ptp.sample_index = (ptp.sample_index + 1) % SAMPLE_BUFFER_SIZE;
+  if (ptp.sample_fill < SAMPLE_BUFFER_SIZE) {
+    ptp.sample_fill++;
+  }
 
-    if (diff < LOCK_THRESHOLD_NS) {
+  // Use median for filtered offset (robust to outliers)
+  ptp.filtered_offset_ns = compute_median();
+
+  // Check lock status based on sample variance
+  if (ptp.sample_fill >= MIN_SAMPLES_FOR_LOCK) {
+    // Compute max deviation from median
+    int64_t max_dev = 0;
+    for (int i = 0; i < ptp.sample_fill; i++) {
+      int64_t dev = ptp.samples[i] - ptp.filtered_offset_ns;
+      if (dev < 0)
+        dev = -dev;
+      if (dev > max_dev)
+        max_dev = dev;
+    }
+
+    if (max_dev < LOCK_THRESHOLD_NS) {
       if (!ptp.locked) {
         if (ptp.lock_candidate_start_ms == 0) {
           ptp.lock_candidate_start_ms = now_ms;
         }
-
         if ((now_ms - ptp.lock_candidate_start_ms) >= LOCK_STABLE_TIME_MS) {
           ptp.locked = true;
           ptp.lock_start_ms = now_ms;
           ptp.lock_candidate_start_ms = 0;
-          ESP_LOGI(TAG, "PTP locked, offset: %lld.%03lld s (samples: %u)",
-                   ptp.filtered_offset_ns / 1000000000LL,
-                   (ptp.filtered_offset_ns % 1000000000LL) / 1000000LL,
-                   ptp.sample_count);
         }
       }
     } else {
       ptp.lock_candidate_start_ms = 0;
-      // Don't lose lock easily - only if really far off
-      if (ptp.locked && diff > LOCK_THRESHOLD_NS * 2) {
-        ESP_LOGW(TAG, "PTP lock lost, diff: %lld ms", diff / 1000000LL);
+      if (ptp.locked && max_dev > LOCK_THRESHOLD_NS * 4) {
         ptp.locked = false;
         ptp.lock_start_ms = 0;
       }
@@ -359,9 +384,6 @@ esp_err_t ptp_clock_init(void) {
     return ESP_FAIL;
   }
 
-  ESP_LOGI(TAG, "PTP sockets created, listening on %s ports %d/%d",
-           PTP_MULTICAST_ADDR, PTP_EVENT_PORT, PTP_GENERAL_PORT);
-
   // Start task
   ptp.running = true;
   BaseType_t ret =
@@ -403,24 +425,19 @@ void ptp_clock_stop(void) {
 }
 
 void ptp_clock_clear(void) {
-  // Reset synchronization state without stopping the clock
-  // This allows re-sync on new AirPlay session
-  ESP_LOGI(TAG, "Clearing PTP clock synchronization state");
-
   ptp.locked = false;
   ptp.lock_start_ms = 0;
   ptp.lock_candidate_start_ms = 0;
   ptp.last_sync_ms = 0;
-  ptp.offset_ns = 0;
   ptp.filtered_offset_ns = 0;
   ptp.sample_count = 0;
+  ptp.sample_index = 0;
+  ptp.sample_fill = 0;
 
-  // Reset two-step tracking
   ptp.last_sync_seq = 0;
   ptp.last_sync_local_ns = 0;
   ptp.awaiting_followup = false;
 
-  // Reset statistics
   ptp.sync_count = 0;
   ptp.followup_count = 0;
 }
@@ -429,8 +446,6 @@ bool ptp_clock_is_locked(void) {
   if (ptp.locked && ptp.last_sync_ms > 0) {
     uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
     if ((now_ms - ptp.last_sync_ms) > LOCK_TIMEOUT_MS) {
-      ESP_LOGW(TAG, "PTP lock lost (timeout %u ms)",
-               (unsigned)(now_ms - ptp.last_sync_ms));
       ptp.locked = false;
       ptp.lock_start_ms = 0;
       ptp.lock_candidate_start_ms = 0;
@@ -450,7 +465,11 @@ int64_t ptp_clock_get_offset_ns(void) { return ptp.filtered_offset_ns; }
 void ptp_clock_get_stats(ptp_stats_t *stats) {
   stats->sync_count = ptp.sync_count;
   stats->followup_count = ptp.followup_count;
-  stats->last_offset_ns = ptp.offset_ns;
+  stats->last_offset_ns =
+      ptp.sample_fill > 0
+          ? ptp.samples[(ptp.sample_index + SAMPLE_BUFFER_SIZE - 1) %
+                        SAMPLE_BUFFER_SIZE]
+          : 0;
   stats->filtered_offset_ns = ptp.filtered_offset_ns;
 
   if (ptp.locked && ptp.lock_start_ms > 0) {
