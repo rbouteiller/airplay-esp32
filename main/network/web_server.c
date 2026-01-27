@@ -221,6 +221,33 @@ static esp_err_t root_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// Captive portal detection handlers
+// These endpoints are requested by various OS to detect captive portals
+static esp_err_t captive_portal_redirect(httpd_req_t *req) {
+  // Redirect to the configuration page
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
+// Apple devices (iOS/macOS) check these
+static esp_err_t captive_apple_handler(httpd_req_t *req) {
+  // Apple expects specific response, redirect instead
+  return captive_portal_redirect(req);
+}
+
+// Android checks this
+static esp_err_t captive_android_handler(httpd_req_t *req) {
+  // Android expects 204 for no captive portal, anything else triggers portal
+  return captive_portal_redirect(req);
+}
+
+// Windows checks this
+static esp_err_t captive_windows_handler(httpd_req_t *req) {
+  return captive_portal_redirect(req);
+}
+
 static esp_err_t wifi_scan_handler(httpd_req_t *req) {
   wifi_ap_record_t *ap_list = NULL;
   uint16_t ap_count = 0;
@@ -425,7 +452,7 @@ esp_err_t web_server_start(uint16_t port) {
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
-  config.max_uri_handlers = 12;
+  config.max_uri_handlers = 16; // Increased for captive portal handlers
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -470,7 +497,32 @@ esp_err_t web_server_start(uint16_t port) {
                                     .handler = system_restart_handler};
   httpd_register_uri_handler(s_server, &system_restart_uri);
 
-  ESP_LOGI(TAG, "Web server started on port %d", port);
+  // Captive portal detection endpoints
+  // Apple iOS/macOS
+  httpd_uri_t apple_captive1 = {.uri = "/hotspot-detect.html",
+                                .method = HTTP_GET,
+                                .handler = captive_apple_handler};
+  httpd_register_uri_handler(s_server, &apple_captive1);
+
+  httpd_uri_t apple_captive2 = {.uri = "/library/test/success.html",
+                                .method = HTTP_GET,
+                                .handler = captive_apple_handler};
+  httpd_register_uri_handler(s_server, &apple_captive2);
+
+  // Android
+  httpd_uri_t android_captive = {.uri = "/generate_204",
+                                 .method = HTTP_GET,
+                                 .handler = captive_android_handler};
+  httpd_register_uri_handler(s_server, &android_captive);
+
+  // Windows
+  httpd_uri_t windows_captive = {.uri = "/connecttest.txt",
+                                 .method = HTTP_GET,
+                                 .handler = captive_windows_handler};
+  httpd_register_uri_handler(s_server, &windows_captive);
+
+  ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
+           port);
   return ESP_OK;
 }
 

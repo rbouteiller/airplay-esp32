@@ -35,6 +35,7 @@ idf_component_register(
         "network/socket_utils.c"
         "network/web_server.c"
         "network/ota.c"
+        "network/dns_server.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES
         nvs_flash

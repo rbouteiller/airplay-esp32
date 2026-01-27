@@ -7,7 +7,8 @@
 static const char *TAG = "ota";
 
 esp_err_t ota_start_from_http(httpd_req_t *req) {
-  const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t *ota_partition =
+      esp_ota_get_next_update_partition(NULL);
   if (!ota_partition) {
     ESP_LOGE(TAG, "No OTA partition found");
     return ESP_ERR_NOT_FOUND;

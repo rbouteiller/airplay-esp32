@@ -11,7 +11,6 @@
 
 static const char *TAG = "mdns_airplay";
 
-
 // Bit definitions from:
 // https://openairplay.github.io/airplay-spec/features.html Key bits:
 //   Bit 38: SupportsCoreUtilsPairingAndEncryption
