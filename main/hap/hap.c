@@ -11,7 +11,7 @@
 
 static const char *TAG = "hap";
 
-#define NVS_NAMESPACE "airplay"
+#define NVS_NAMESPACE  "airplay"
 #define NVS_KEY_PUBLIC "ed25519_pub"
 #define NVS_KEY_SECRET "ed25519_sec"
 
@@ -58,8 +58,7 @@ esp_err_t hap_init(void) {
       err = nvs_commit(nvs);
     }
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to store keypair in NVS: %s",
-               esp_err_to_name(err));
+      ESP_LOGE(TAG, "Failed to store keypair in NVS: %s", esp_err_to_name(err));
       nvs_close(nvs);
       return err;
     }
@@ -86,8 +85,7 @@ hap_session_t *hap_session_create(void) {
   memcpy(session->device_secret_key, g_device_secret_key,
          HAP_ED25519_SECRET_KEY_SIZE);
 
-  crypto_box_keypair(session->session_public_key,
-                     session->session_secret_key);
+  crypto_box_keypair(session->session_public_key, session->session_secret_key);
 
   session->pair_verify_state = 0;
   session->session_established = false;

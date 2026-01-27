@@ -41,14 +41,15 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
   }
 
   audio_decode_info_t info = {0};
-  int decoded_samples = audio_decoder_decode(state->decoder, audio_data,
-                                             audio_len, decode_buffer,
-                                             capacity_samples, &info);
+  int decoded_samples =
+      audio_decoder_decode(state->decoder, audio_data, audio_len, decode_buffer,
+                           capacity_samples, &info);
   if (decoded_samples <= 0) {
     return false;
   }
 
-  int channels = info.channels > 0 ? info.channels : state->stream->format.channels;
+  int channels =
+      info.channels > 0 ? info.channels : state->stream->format.channels;
   if (channels <= 0) {
     channels = 2;
   }

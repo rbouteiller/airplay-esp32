@@ -43,9 +43,9 @@ void plist_dict_string(plist_t *p, const char *key, const char *value) {
 
 void plist_dict_int(plist_t *p, const char *key, int64_t value) {
   size_t remaining = p->capacity - p->size;
-  int len = snprintf(p->buffer + p->size, remaining,
-                     "<key>%s</key>\n<integer>%" PRId64 "</integer>\n", key,
-                     value);
+  int len =
+      snprintf(p->buffer + p->size, remaining,
+               "<key>%s</key>\n<integer>%" PRId64 "</integer>\n", key, value);
   if (len > 0 && (size_t)len < remaining) {
     p->size += (size_t)len;
   }
@@ -53,9 +53,9 @@ void plist_dict_int(plist_t *p, const char *key, int64_t value) {
 
 void plist_dict_uint(plist_t *p, const char *key, uint64_t value) {
   size_t remaining = p->capacity - p->size;
-  int len = snprintf(p->buffer + p->size, remaining,
-                     "<key>%s</key>\n<integer>%" PRIu64 "</integer>\n", key,
-                     value);
+  int len =
+      snprintf(p->buffer + p->size, remaining,
+               "<key>%s</key>\n<integer>%" PRIu64 "</integer>\n", key, value);
   if (len > 0 && (size_t)len < remaining) {
     p->size += (size_t)len;
   }
@@ -63,9 +63,8 @@ void plist_dict_uint(plist_t *p, const char *key, uint64_t value) {
 
 void plist_dict_bool(plist_t *p, const char *key, bool value) {
   size_t remaining = p->capacity - p->size;
-  int len = snprintf(p->buffer + p->size, remaining,
-                     "<key>%s</key>\n<%s/>\n", key,
-                     value ? "true" : "false");
+  int len = snprintf(p->buffer + p->size, remaining, "<key>%s</key>\n<%s/>\n",
+                     key, value ? "true" : "false");
   if (len > 0 && (size_t)len < remaining) {
     p->size += (size_t)len;
   }
@@ -80,8 +79,8 @@ void plist_dict_data(plist_t *p, const char *key, const uint8_t *data,
     return;
   }
 
-  int written = snprintf(p->buffer + p->size, remaining, "<key>%s</key>\n<data>",
-                         key);
+  int written =
+      snprintf(p->buffer + p->size, remaining, "<key>%s</key>\n<data>", key);
   if (written > 0) {
     p->size += (size_t)written;
   }
@@ -108,8 +107,8 @@ void plist_dict_end(plist_t *p) {
 
 void plist_dict_array_begin(plist_t *p, const char *key) {
   size_t remaining = p->capacity - p->size;
-  int len = snprintf(p->buffer + p->size, remaining,
-                     "<key>%s</key>\n<array>\n", key);
+  int len =
+      snprintf(p->buffer + p->size, remaining, "<key>%s</key>\n<array>\n", key);
   if (len > 0 && (size_t)len < remaining) {
     p->size += (size_t)len;
   }

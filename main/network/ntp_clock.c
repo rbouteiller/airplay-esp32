@@ -14,24 +14,24 @@
 static const char *TAG = "ntp_clock";
 
 // Timing packet types (from shairport-sync)
-#define TIMING_REQUEST 0xD2
+#define TIMING_REQUEST  0xD2
 #define TIMING_RESPONSE 0xD3
 
 // Timing request packet structure (32 bytes)
 typedef struct __attribute__((packed)) {
-  uint8_t leader;     // 0x80
-  uint8_t type;       // 0xD2 for request
-  uint16_t seqno;     // sequence number (network byte order)
-  uint32_t filler;    // padding
-  uint64_t origin;    // our transmit time (will be echoed back)
-  uint64_t receive;   // zeroed in request
-  uint64_t transmit;  // zeroed in request
+  uint8_t leader;    // 0x80
+  uint8_t type;      // 0xD2 for request
+  uint16_t seqno;    // sequence number (network byte order)
+  uint32_t filler;   // padding
+  uint64_t origin;   // our transmit time (will be echoed back)
+  uint64_t receive;  // zeroed in request
+  uint64_t transmit; // zeroed in request
 } timing_packet_t;
 
 // Number of measurements to keep for stability
 #define TIMING_HISTORY_SIZE 8
-#define MIN_MEASUREMENTS 3
-#define TIMING_INTERVAL_MS 3000  // Send request every 3 seconds
+#define MIN_MEASUREMENTS    3
+#define TIMING_INTERVAL_MS  3000 // Send request every 3 seconds
 
 // Timing state
 static struct {
@@ -42,7 +42,7 @@ static struct {
 
   // Clock offset tracking
   bool locked;
-  int64_t offset_ns;           // Current best offset
+  int64_t offset_ns; // Current best offset
   int64_t measurements[TIMING_HISTORY_SIZE];
   int64_t dispersions[TIMING_HISTORY_SIZE];
   int measurement_count;
@@ -146,8 +146,7 @@ static void process_timing_response(const uint8_t *packet, size_t len,
   }
 
   ESP_LOGD(TAG, "Timing: RTT=%lld us, offset=%lld ms",
-           (long long)(round_trip_ns / 1000),
-           (long long)(offset_ns / 1000000));
+           (long long)(round_trip_ns / 1000), (long long)(offset_ns / 1000000));
 }
 
 // Send timing request
@@ -157,7 +156,7 @@ static void send_timing_request(void) {
 
   req.leader = 0x80;
   req.type = TIMING_REQUEST;
-  req.seqno = htons(7);  // Fixed sequence number (like shairport-sync)
+  req.seqno = htons(7); // Fixed sequence number (like shairport-sync)
 
   // Set origin to our current time (will be echoed back in response)
   int64_t now_us = esp_timer_get_time();
@@ -298,6 +297,10 @@ void ntp_clock_stop(void) {
   ESP_LOGI(TAG, "NTP timing stopped");
 }
 
-bool ntp_clock_is_locked(void) { return ntp.locked; }
+bool ntp_clock_is_locked(void) {
+  return ntp.locked;
+}
 
-int64_t ntp_clock_get_offset_ns(void) { return ntp.offset_ns; }
+int64_t ntp_clock_get_offset_ns(void) {
+  return ntp.offset_ns;
+}

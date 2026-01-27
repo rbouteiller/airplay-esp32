@@ -23,7 +23,7 @@ static const char *TAG = "mdns_airplay";
 
 // Protocol version
 #define AIRPLAY_PROTOCOL_VERSION "2"
-#define AIRPLAY_SOURCE_VERSION "377.40.00"
+#define AIRPLAY_SOURCE_VERSION   "377.40.00"
 
 // Flags: 0x4 = audio receiver
 #define AIRPLAY_FLAGS "0x4"

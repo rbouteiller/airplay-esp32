@@ -121,7 +121,8 @@ static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
   }
   if (conn->timing_port == 0) {
     // Allocate a timing port for RTSP response (required by protocol)
-    // Note: For AirPlay 1, we send timing requests TO the client, not receive them
+    // Note: For AirPlay 1, we send timing requests TO the client, not receive
+    // them
     temp_socket = rtsp_create_udp_socket(&conn->timing_port);
     if (temp_socket > 0) {
       close(temp_socket);
@@ -171,7 +172,7 @@ static void event_port_task(void *pvParameters) {
         if (!event_task_should_stop) {
           ESP_LOGE(TAG, "Event port accept error: %d", errno);
         }
-        break;  // Don't continue - socket is likely invalid
+        break; // Don't continue - socket is likely invalid
       }
 
       if (event_client_socket >= 0) {
@@ -1052,7 +1053,8 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   // TEARDOWN without streams = full session teardown (disconnect)
   audio_receiver_stop();
   conn->stream_active = false;
-  conn->stream_paused = has_streams;  // Keep session ready if only streams torn down
+  conn->stream_paused =
+      has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
     // Full teardown - stop NTP timing

@@ -4,18 +4,18 @@
 #include "plist.h"
 
 // Binary plist object types (high nibble of marker byte)
-#define BPLIST_NULL 0x00
-#define BPLIST_BOOL 0x00
-#define BPLIST_INT 0x10
-#define BPLIST_REAL 0x20
-#define BPLIST_DATE 0x30
-#define BPLIST_DATA 0x40
-#define BPLIST_STRING 0x50
+#define BPLIST_NULL    0x00
+#define BPLIST_BOOL    0x00
+#define BPLIST_INT     0x10
+#define BPLIST_REAL    0x20
+#define BPLIST_DATE    0x30
+#define BPLIST_DATA    0x40
+#define BPLIST_STRING  0x50
 #define BPLIST_UNICODE 0x60
-#define BPLIST_UID 0x80
-#define BPLIST_ARRAY 0xA0
-#define BPLIST_SET 0xC0
-#define BPLIST_DICT 0xD0
+#define BPLIST_UID     0x80
+#define BPLIST_ARRAY   0xA0
+#define BPLIST_SET     0xC0
+#define BPLIST_DICT    0xD0
 
 static uint64_t read_be_int(const uint8_t *data, size_t bytes) {
   uint64_t val = 0;
@@ -48,8 +48,7 @@ static bool bplist_parse_trailer(const uint8_t *plist, size_t plist_len,
 static uint64_t bplist_get_offset(const uint8_t *plist,
                                   uint64_t offset_table_offset,
                                   uint8_t offset_size, uint64_t obj_idx) {
-  const uint8_t *entry =
-      plist + offset_table_offset + obj_idx * offset_size;
+  const uint8_t *entry = plist + offset_table_offset + obj_idx * offset_size;
   return read_be_int(entry, offset_size);
 }
 
@@ -111,8 +110,8 @@ static bool bplist_read_string(const uint8_t *plist, size_t plist_len,
 }
 
 static bool bplist_read_data(const uint8_t *plist, size_t plist_len,
-                             uint64_t offset, uint8_t *out,
-                             size_t out_capacity, size_t *out_len) {
+                             uint64_t offset, uint8_t *out, size_t out_capacity,
+                             size_t *out_len) {
   if (offset >= plist_len) {
     return false;
   }
@@ -356,8 +355,8 @@ static bool bplist_find_data_in_dict(const uint8_t *plist, size_t plist_len,
                            sizeof(found_key))) {
       if (strcmp(found_key, key) == 0) {
         uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
-        uint64_t val_offset = bplist_get_offset(plist, offset_table_offset,
-                                                offset_size, val_idx);
+        uint64_t val_offset =
+            bplist_get_offset(plist, offset_table_offset, offset_size, val_idx);
         return bplist_read_data(plist, plist_len, val_offset, out_data,
                                 out_capacity, out_len);
       }
@@ -413,9 +412,8 @@ static bool bplist_find_data_recursive(const uint8_t *plist, size_t plist_len,
                              sizeof(found_key))) {
         if (strcmp(found_key, key) == 0) {
           uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
-          uint64_t val_offset =
-              bplist_get_offset(plist, offset_table_offset, offset_size,
-                                val_idx);
+          uint64_t val_offset = bplist_get_offset(plist, offset_table_offset,
+                                                  offset_size, val_idx);
           return bplist_read_data(plist, plist_len, val_offset, out_data,
                                   out_capacity, out_len);
         }
@@ -424,10 +422,9 @@ static bool bplist_find_data_recursive(const uint8_t *plist, size_t plist_len,
 
     for (size_t i = 0; i < dict_size; i++) {
       uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
-      if (bplist_find_data_recursive(plist, plist_len, val_idx,
-                                     offset_table_offset, offset_size,
-                                     ref_size, key, out_data, out_capacity,
-                                     out_len, depth + 1)) {
+      if (bplist_find_data_recursive(
+              plist, plist_len, val_idx, offset_table_offset, offset_size,
+              ref_size, key, out_data, out_capacity, out_len, depth + 1)) {
         return true;
       }
     }
@@ -445,10 +442,9 @@ static bool bplist_find_data_recursive(const uint8_t *plist, size_t plist_len,
 
     for (size_t i = 0; i < count; i++) {
       uint64_t idx = read_be_int(plist + pos + i * ref_size, ref_size);
-      if (bplist_find_data_recursive(plist, plist_len, idx,
-                                     offset_table_offset, offset_size,
-                                     ref_size, key, out_data, out_capacity,
-                                     out_len, depth + 1)) {
+      if (bplist_find_data_recursive(plist, plist_len, idx, offset_table_offset,
+                                     offset_size, ref_size, key, out_data,
+                                     out_capacity, out_len, depth + 1)) {
         return true;
       }
     }
@@ -458,8 +454,7 @@ static bool bplist_find_data_recursive(const uint8_t *plist, size_t plist_len,
 }
 
 bool bplist_find_data(const uint8_t *plist, size_t plist_len, const char *key,
-                      uint8_t *out_data, size_t out_capacity,
-                      size_t *out_len) {
+                      uint8_t *out_data, size_t out_capacity, size_t *out_len) {
   if (plist_len < 40 || memcmp(plist, "bplist00", 8) != 0) {
     return false;
   }
@@ -470,8 +465,7 @@ bool bplist_find_data(const uint8_t *plist, size_t plist_len, const char *key,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -499,8 +493,7 @@ bool bplist_find_data_deep(const uint8_t *plist, size_t plist_len,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -522,8 +515,7 @@ bool bplist_find_int(const uint8_t *plist, size_t plist_len, const char *key,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -593,8 +585,7 @@ bool bplist_find_real(const uint8_t *plist, size_t plist_len, const char *key,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -678,8 +669,7 @@ bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -800,8 +790,7 @@ bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -897,9 +886,8 @@ bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
 
       uint64_t stream_idx =
           read_be_int(plist + array_pos + index * ref_size, ref_size);
-      uint64_t stream_offset =
-          bplist_get_offset(plist, offset_table_offset, offset_size,
-                            stream_idx);
+      uint64_t stream_offset = bplist_get_offset(plist, offset_table_offset,
+                                                 offset_size, stream_idx);
 
       uint8_t stream_marker = plist[stream_offset];
       if ((stream_marker & 0xF0) != BPLIST_DICT) {
@@ -925,9 +913,8 @@ bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
       for (size_t j = 0; j < stream_dict_size; j++) {
         uint64_t stream_key_idx =
             read_be_int(stream_key_refs + j * ref_size, ref_size);
-        uint64_t stream_key_offset =
-            bplist_get_offset(plist, offset_table_offset, offset_size,
-                              stream_key_idx);
+        uint64_t stream_key_offset = bplist_get_offset(
+            plist, offset_table_offset, offset_size, stream_key_idx);
 
         char stream_key[32];
         if (!bplist_read_string(plist, plist_len, stream_key_offset, stream_key,
@@ -937,9 +924,8 @@ bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
 
         uint64_t stream_val_idx =
             read_be_int(stream_val_refs + j * ref_size, ref_size);
-        uint64_t stream_val_offset =
-            bplist_get_offset(plist, offset_table_offset, offset_size,
-                              stream_val_idx);
+        uint64_t stream_val_offset = bplist_get_offset(
+            plist, offset_table_offset, offset_size, stream_val_idx);
 
         if (strcmp(stream_key, "type") == 0) {
           int64_t type_val = 0;
@@ -981,8 +967,7 @@ bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
   uint64_t top_object = 0;
   uint64_t offset_table_offset = 0;
   if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
-                            &num_objects, &top_object,
-                            &offset_table_offset)) {
+                            &num_objects, &top_object, &offset_table_offset)) {
     return false;
   }
 
@@ -1078,9 +1063,8 @@ bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
 
       uint64_t stream_idx =
           read_be_int(plist + array_pos + index * ref_size, ref_size);
-      uint64_t stream_offset =
-          bplist_get_offset(plist, offset_table_offset, offset_size,
-                            stream_idx);
+      uint64_t stream_offset = bplist_get_offset(plist, offset_table_offset,
+                                                 offset_size, stream_idx);
 
       uint8_t stream_marker = plist[stream_offset];
       if ((stream_marker & 0xF0) != BPLIST_DICT) {
@@ -1107,9 +1091,8 @@ bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
            j++) {
         uint64_t stream_key_idx =
             read_be_int(stream_key_refs + j * ref_size, ref_size);
-        uint64_t stream_key_offset =
-            bplist_get_offset(plist, offset_table_offset, offset_size,
-                              stream_key_idx);
+        uint64_t stream_key_offset = bplist_get_offset(
+            plist, offset_table_offset, offset_size, stream_key_idx);
 
         char stream_key[64];
         if (!bplist_read_string(plist, plist_len, stream_key_offset, stream_key,
@@ -1119,9 +1102,8 @@ bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
 
         uint64_t stream_val_idx =
             read_be_int(stream_val_refs + j * ref_size, ref_size);
-        uint64_t stream_val_offset =
-            bplist_get_offset(plist, offset_table_offset, offset_size,
-                              stream_val_idx);
+        uint64_t stream_val_offset = bplist_get_offset(
+            plist, offset_table_offset, offset_size, stream_val_idx);
 
         bplist_kv_info_t *info = &out[*out_count];
         memset(info, 0, sizeof(*info));
@@ -1210,8 +1192,8 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
     size_t temp_len = 0;
 
     if (ekey && local_ekey_len > 0 && ekey_len) {
-      if (bplist_find_data(plist, plist_len, "ekey", temp_buf,
-                           sizeof(temp_buf), &temp_len)) {
+      if (bplist_find_data(plist, plist_len, "ekey", temp_buf, sizeof(temp_buf),
+                           &temp_len)) {
         size_t copy_len = temp_len < ekey_capacity ? temp_len : ekey_capacity;
         memcpy(ekey, temp_buf, copy_len);
         *ekey_len = copy_len;
@@ -1220,8 +1202,8 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
     }
 
     if (eiv && local_eiv_len > 0 && eiv_len) {
-      if (bplist_find_data(plist, plist_len, "eiv", temp_buf,
-                           sizeof(temp_buf), &temp_len)) {
+      if (bplist_find_data(plist, plist_len, "eiv", temp_buf, sizeof(temp_buf),
+                           &temp_len)) {
         size_t copy_len = temp_len < eiv_capacity ? temp_len : eiv_capacity;
         memcpy(eiv, temp_buf, copy_len);
         *eiv_len = copy_len;
@@ -1230,8 +1212,8 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
     }
 
     if (shk && local_shk_len > 0 && shk_len) {
-      if (bplist_find_data(plist, plist_len, "shk", temp_buf,
-                           sizeof(temp_buf), &temp_len)) {
+      if (bplist_find_data(plist, plist_len, "shk", temp_buf, sizeof(temp_buf),
+                           &temp_len)) {
         size_t copy_len = temp_len < shk_capacity ? temp_len : shk_capacity;
         memcpy(shk, temp_buf, copy_len);
         *shk_len = copy_len;

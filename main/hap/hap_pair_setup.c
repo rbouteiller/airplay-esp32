@@ -11,9 +11,9 @@
 static const char *TAG = "hap_setup";
 
 #define TLV_TYPE_METHOD 0x00
-#define TLV_TYPE_SALT 0x02
-#define TLV_TYPE_PROOF 0x04
-#define TLV_TYPE_FLAGS 0x13
+#define TLV_TYPE_SALT   0x02
+#define TLV_TYPE_PROOF  0x04
+#define TLV_TYPE_FLAGS  0x13
 
 #define PAIR_SETUP_M1 1
 #define PAIR_SETUP_M2 2
@@ -107,9 +107,8 @@ esp_err_t hap_pair_setup_m3(hap_session_t *session, const uint8_t *input,
     return ESP_ERR_INVALID_ARG;
   }
 
-  esp_err_t err =
-      srp_verify_client(session->srp, client_pk, pk_len, client_proof,
-                        proof_len);
+  esp_err_t err = srp_verify_client(session->srp, client_pk, pk_len,
+                                    client_proof, proof_len);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Client verification failed");
     tlv8_encoder_t enc;
@@ -198,9 +197,9 @@ esp_err_t hap_pair_setup_m5(hap_session_t *session, const uint8_t *input,
   uint8_t decrypted[512];
   unsigned long long decrypted_len = 0;
 
-  if (crypto_aead_chacha20poly1305_ietf_decrypt(
-          decrypted, &decrypted_len, NULL, encrypted, encrypted_len, NULL, 0,
-          nonce, setup_key) != 0) {
+  if (crypto_aead_chacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, NULL,
+                                                encrypted, encrypted_len, NULL,
+                                                0, nonce, setup_key) != 0) {
     ESP_LOGE(TAG, "M5 decryption failed");
     return ESP_FAIL;
   }

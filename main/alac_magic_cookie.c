@@ -6,27 +6,27 @@
 void build_alac_magic_cookie(uint8_t *cookie, const audio_format_t *fmt) {
   memset(cookie, 0, ALAC_MAGIC_COOKIE_SIZE);
 
-  uint32_t frame_length = fmt->max_samples_per_frame
-                          ? fmt->max_samples_per_frame
-                          : (fmt->frame_size > 0 ? (uint32_t)fmt->frame_size
-                                                 : 352);
+  uint32_t frame_length =
+      fmt->max_samples_per_frame
+          ? fmt->max_samples_per_frame
+          : (fmt->frame_size > 0 ? (uint32_t)fmt->frame_size : 352);
   uint8_t compatible_version = 0;
   uint8_t bit_depth = fmt->sample_size
-                      ? fmt->sample_size
-                      : (fmt->bits_per_sample ? fmt->bits_per_sample : 16);
+                          ? fmt->sample_size
+                          : (fmt->bits_per_sample ? fmt->bits_per_sample : 16);
   uint8_t pb = fmt->rice_history_mult ? fmt->rice_history_mult : 40;
   uint8_t mb = fmt->rice_initial_history ? fmt->rice_initial_history : 10;
   uint8_t kb = fmt->rice_limit ? fmt->rice_limit : 14;
-  uint8_t num_channels =
-      fmt->num_channels ? fmt->num_channels : (fmt->channels ? fmt->channels : 2);
+  uint8_t num_channels = fmt->num_channels
+                             ? fmt->num_channels
+                             : (fmt->channels ? fmt->channels : 2);
   uint16_t max_run = fmt->max_run ? fmt->max_run : 255;
   uint32_t max_frame_bytes =
       fmt->max_coded_frame_size ? fmt->max_coded_frame_size : 0;
   uint32_t avg_bit_rate = fmt->avg_bit_rate ? fmt->avg_bit_rate : 0;
-  uint32_t sample_rate =
-      fmt->sample_rate_config
-          ? fmt->sample_rate_config
-          : (fmt->sample_rate ? fmt->sample_rate : 44100);
+  uint32_t sample_rate = fmt->sample_rate_config
+                             ? fmt->sample_rate_config
+                             : (fmt->sample_rate ? fmt->sample_rate : 44100);
 
   // ALACSpecificConfig structure (big-endian).
   cookie[0] = (frame_length >> 24) & 0xFF;

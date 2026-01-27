@@ -1,0 +1,13 @@
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 80
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+IndentCaseLabels: false
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+SortIncludes: false
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left

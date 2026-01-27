@@ -20,9 +20,9 @@
 
 static const char *TAG = "rtsp_server";
 
-#define RTSP_PORT 7000
+#define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
-#define RTSP_BUFFER_LARGE (256 * 1024)
+#define RTSP_BUFFER_LARGE   (256 * 1024)
 
 static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
@@ -34,10 +34,10 @@ typedef struct {
   TaskHandle_t task;
   int socket;
   volatile bool should_stop;
-  volatile bool is_old;  // Marked as old client being killed
+  volatile bool is_old; // Marked as old client being killed
 } client_slot_t;
 
-static client_slot_t clients[2] = {0};  // Current and old
+static client_slot_t clients[2] = {0}; // Current and old
 static int current_slot = 0;
 
 // Public API for volume control
@@ -94,12 +94,14 @@ static void process_rtsp_buffer(client_slot_t *slot, uint8_t *buffer,
     header_str[header_len] = '\0';
 
     int content_len = rtsp_parse_content_length(header_str);
-    if (content_len < 0) content_len = 0;
+    if (content_len < 0)
+      content_len = 0;
 
     size_t total_len = header_len + (size_t)content_len;
     if (total_len > RTSP_BUFFER_LARGE || *buf_len < total_len) {
       free(header_str);
-      if (total_len > RTSP_BUFFER_LARGE) *buf_len = 0;
+      if (total_len > RTSP_BUFFER_LARGE)
+        *buf_len = 0;
       break;
     }
 
@@ -133,11 +135,12 @@ static void client_task(void *pvParameters) {
   // Get client IP address for timing requests
   struct sockaddr_in peer_addr;
   socklen_t peer_len = sizeof(peer_addr);
-  if (getpeername(slot->socket, (struct sockaddr *)&peer_addr, &peer_len) == 0) {
+  if (getpeername(slot->socket, (struct sockaddr *)&peer_addr, &peer_len) ==
+      0) {
     conn->client_ip = peer_addr.sin_addr.s_addr;
-    ESP_LOGI(TAG, "Client IP: %d.%d.%d.%d",
-             conn->client_ip & 0xFF, (conn->client_ip >> 8) & 0xFF,
-             (conn->client_ip >> 16) & 0xFF, (conn->client_ip >> 24) & 0xFF);
+    ESP_LOGI(TAG, "Client IP: %d.%d.%d.%d", conn->client_ip & 0xFF,
+             (conn->client_ip >> 8) & 0xFF, (conn->client_ip >> 16) & 0xFF,
+             (conn->client_ip >> 24) & 0xFF);
   }
 
   // Allocate buffer
@@ -167,16 +170,18 @@ static void client_task(void *pvParameters) {
         if (buf_len >= buf_capacity - 1024) {
           size_t new_cap = buf_capacity < RTSP_BUFFER_LARGE ? RTSP_BUFFER_LARGE
                                                             : buf_capacity * 2;
-          if (new_cap > RTSP_BUFFER_LARGE) goto cleanup;
-          uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_cap, buf_len);
-          if (!new_buf) goto cleanup;
+          if (new_cap > RTSP_BUFFER_LARGE)
+            goto cleanup;
+          uint8_t *new_buf =
+              grow_buffer(buffer, buf_capacity, new_cap, buf_len);
+          if (!new_buf)
+            goto cleanup;
           buffer = new_buf;
           buf_capacity = new_cap;
         }
 
-        int block_len = rtsp_crypto_read_block(slot->socket, conn,
-                                               buffer + buf_len,
-                                               buf_capacity - buf_len);
+        int block_len = rtsp_crypto_read_block(
+            slot->socket, conn, buffer + buf_len, buf_capacity - buf_len);
         if (block_len <= 0) {
           if (slot->should_stop || (errno != EAGAIN && errno != EWOULDBLOCK)) {
             goto cleanup;
@@ -192,11 +197,13 @@ static void client_task(void *pvParameters) {
 
     // Plain-text mode
     if (buf_len >= buf_capacity - 1024) {
-      size_t new_cap =
-          buf_capacity < RTSP_BUFFER_LARGE ? RTSP_BUFFER_LARGE : buf_capacity * 2;
-      if (new_cap > RTSP_BUFFER_LARGE) break;
+      size_t new_cap = buf_capacity < RTSP_BUFFER_LARGE ? RTSP_BUFFER_LARGE
+                                                        : buf_capacity * 2;
+      if (new_cap > RTSP_BUFFER_LARGE)
+        break;
       uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_cap, buf_len);
-      if (!new_buf) break;
+      if (!new_buf)
+        break;
       buffer = new_buf;
       buf_capacity = new_cap;
     }
@@ -311,8 +318,8 @@ static void server_task(void *pvParameters) {
   server_running = true;
 
   while (server_running) {
-    int new_socket =
-        accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
+    int new_socket = accept(server_socket, (struct sockaddr *)&client_addr,
+                            &client_addr_len);
     if (new_socket < 0) {
       if (server_running) {
         ESP_LOGE(TAG, "Failed to accept: %d", errno);
@@ -343,9 +350,9 @@ static void server_task(void *pvParameters) {
     clients[new_slot].is_old = false;
 
     // Start new client task immediately
-    BaseType_t ret = xTaskCreate(client_task, "rtsp_client", 8192,
-                                 (void *)(intptr_t)new_slot, 5,
-                                 &clients[new_slot].task);
+    BaseType_t ret =
+        xTaskCreate(client_task, "rtsp_client", 8192,
+                    (void *)(intptr_t)new_slot, 5, &clients[new_slot].task);
     if (ret != pdPASS) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);

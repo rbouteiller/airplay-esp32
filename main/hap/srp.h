@@ -11,24 +11,24 @@
  */
 
 // SRP parameter sizes
-#define SRP_PRIME_BITS      3072
-#define SRP_PRIME_BYTES     (SRP_PRIME_BITS / 8)  // 384 bytes
-#define SRP_SALT_BYTES      16
-#define SRP_PROOF_BYTES     64
-#define SRP_SESSION_KEY_BYTES 64   // SHA-512 output
+#define SRP_PRIME_BITS        3072
+#define SRP_PRIME_BYTES       (SRP_PRIME_BITS / 8) // 384 bytes
+#define SRP_SALT_BYTES        16
+#define SRP_PROOF_BYTES       64
+#define SRP_SESSION_KEY_BYTES 64 // SHA-512 output
 
 // SRP session context
 typedef struct srp_session {
-    uint8_t salt[SRP_SALT_BYTES];
-    uint8_t server_public_key[SRP_PRIME_BYTES];  // B
-    uint8_t server_secret[SRP_PRIME_BYTES];       // b
-    uint8_t client_public_key[SRP_PRIME_BYTES];   // A
-    uint8_t session_key[SRP_SESSION_KEY_BYTES];   // K
-    size_t session_key_len;
-    uint8_t proof_m1[SRP_SESSION_KEY_BYTES];      // Client proof
-    uint8_t proof_m2[SRP_SESSION_KEY_BYTES];      // Server proof
-    int state;
-    bool verified;
+  uint8_t salt[SRP_SALT_BYTES];
+  uint8_t server_public_key[SRP_PRIME_BYTES]; // B
+  uint8_t server_secret[SRP_PRIME_BYTES];     // b
+  uint8_t client_public_key[SRP_PRIME_BYTES]; // A
+  uint8_t session_key[SRP_SESSION_KEY_BYTES]; // K
+  size_t session_key_len;
+  uint8_t proof_m1[SRP_SESSION_KEY_BYTES]; // Client proof
+  uint8_t proof_m2[SRP_SESSION_KEY_BYTES]; // Server proof
+  int state;
+  bool verified;
 } srp_session_t;
 
 /**
@@ -50,7 +50,8 @@ void srp_session_free(srp_session_t *session);
  * @param password Password (typically "3939" for transient)
  * @return ESP_OK on success
  */
-esp_err_t srp_start(srp_session_t *session, const char *username, const char *password);
+esp_err_t srp_start(srp_session_t *session, const char *username,
+                    const char *password);
 
 /**
  * Get salt for M2 response
@@ -75,8 +76,9 @@ const uint8_t *srp_get_public_key(srp_session_t *session, size_t *len);
  * @return ESP_OK if verification succeeds
  */
 esp_err_t srp_verify_client(srp_session_t *session,
-                            const uint8_t *client_public_key, size_t client_pk_len,
-                            const uint8_t *client_proof, size_t proof_len);
+                            const uint8_t *client_public_key,
+                            size_t client_pk_len, const uint8_t *client_proof,
+                            size_t proof_len);
 
 /**
  * Get server proof M2 for M4 response
