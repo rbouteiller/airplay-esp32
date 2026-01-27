@@ -22,6 +22,7 @@
 #include "ntp_clock.h"
 #include "plist.h"
 #include "rtsp_fairplay.h"
+#include "settings.h"
 #include "socket_utils.h"
 #include "tlv8.h"
 
@@ -360,10 +361,12 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
   if (strcmp(req->path, "/info") == 0) {
     // Build info response
     char device_id[18];
+    char device_name[65];
     static char body[4096];
     plist_t p;
 
     rtsp_get_device_id(device_id, sizeof(device_id));
+    settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
     uint64_t features =
         ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
@@ -381,7 +384,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_int(&p, "statusFlags", 4);
     plist_dict_data(&p, "pk", pk, 32);
     plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
-    plist_dict_string(&p, "name", CONFIG_AIRPLAY_DEVICE_NAME);
+    plist_dict_string(&p, "name", device_name);
 
     // Audio formats array
     plist_dict_array_begin(&p, "audioFormats");

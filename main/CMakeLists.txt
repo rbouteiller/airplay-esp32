@@ -33,6 +33,8 @@ idf_component_register(
         "network/ptp_clock.c"
         "network/ntp_clock.c"
         "network/socket_utils.c"
+        "network/web_server.c"
+        "network/ota.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES
         nvs_flash
@@ -42,4 +44,8 @@ idf_component_register(
         esp_ringbuf
         esp_driver_i2s
         esp_timer
+        esp_http_server
+        app_update
+        json
+        mbedtls
 )

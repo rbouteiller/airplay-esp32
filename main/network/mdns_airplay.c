@@ -7,11 +7,10 @@
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "wifi.h"
+#include "settings.h"
 
 static const char *TAG = "mdns_airplay";
 
-// Device name that appears in AirPlay menu
-#define AIRPLAY_DEVICE_NAME CONFIG_AIRPLAY_DEVICE_NAME
 
 // Bit definitions from:
 // https://openairplay.github.io/airplay-spec/features.html Key bits:
@@ -36,8 +35,12 @@ void mdns_airplay_init(void) {
   char mac_str[18];
   char device_id[18];
   char features_str[32];
-  char service_name[64];
+  char service_name[80];
   char pk_str[65]; // 32 bytes = 64 hex chars + null
+  char device_name[65];
+
+  // Get device name from settings
+  settings_get_device_name(device_name, sizeof(device_name));
 
   // Get MAC address
   wifi_get_mac_str(mac_str, sizeof(mac_str));
@@ -57,13 +60,13 @@ void mdns_airplay_init(void) {
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   snprintf(service_name, sizeof(service_name), "%02X%02X%02X%02X%02X%02X@%s",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], AIRPLAY_DEVICE_NAME);
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], device_name);
 
   // Initialize mDNS
   ESP_ERROR_CHECK(mdns_init());
 
   // Set hostname
-  ESP_ERROR_CHECK(mdns_hostname_set(AIRPLAY_DEVICE_NAME));
+  ESP_ERROR_CHECK(mdns_hostname_set(device_name));
 
   // ========================================
   // _airplay._tcp service (port 7000)
@@ -80,9 +83,9 @@ void mdns_airplay_init(void) {
       {"acl", "0"},
   };
 
-  esp_err_t err = mdns_service_add(
-      AIRPLAY_DEVICE_NAME, "_airplay", "_tcp", 7000, airplay_txt,
-      sizeof(airplay_txt) / sizeof(airplay_txt[0]));
+  esp_err_t err =
+      mdns_service_add(device_name, "_airplay", "_tcp", 7000, airplay_txt,
+                       sizeof(airplay_txt) / sizeof(airplay_txt[0]));
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to add _airplay._tcp service: %s",
              esp_err_to_name(err));
