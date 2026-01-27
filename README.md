@@ -40,12 +40,7 @@ Core ESP-IDF components used (`main/CMakeLists.txt`):
 - ESP32-S3 (tested on N16R8)
 - PCM5102A I2S DAC board (or compatible)
 
-## Get started
-1) Install ESP-IDF v5.x and set up the environment:
-   - `source /path/to/esp-idf/export.sh`
-2) Initialize submodules:
-   - `git submodule update --init --recursive`
-3) Wiring overview:
+## Wiring overview:
 
 ```
 AirPlay source (iOS/macOS)
@@ -84,17 +79,35 @@ I2S signal meaning:
 - DOUT is serial audio data from ESP32 to the DAC.
 MCLK is unused in this design.
 
-4) Configure the project:
+## Get started
+
+### ESP-IDF Option
+1) Install ESP-IDF v5.x and set up the environment:
+   - `source /path/to/esp-idf/export.sh`
+2) Initialize submodules:
+   - `git submodule update --init --recursive`
+3) Configure the project:
    - `idf.py set-target esp32s3`
    - `idf.py menuconfig`
      - `AirPlay 2 Receiver Configuration`:
        - `WiFi SSID`
        - `WiFi Password`
        - `AirPlay Device Name`
-5) Build, flash, and monitor:
+4) Build, flash, and monitor:
    - `idf.py build`
    - `idf.py -p /dev/ttyUSB0 flash monitor`
      (swap the port if yours is different)
+
+### PlatformIO Option
+1) Install [PlatformIO](https://platformio.org/install/cli)
+2) Configure WiFi in `sdkconfig`/`sdkconfig.esp32s3`:
+   - `CONFIG_WIFI_SSID`
+   - `CONFIG_WIFI_PASSWORD`
+   - `CONFIG_AIRPLAY_DEVICE_NAME`
+3) Build and flash:
+   - `pio run -e esp32s3 -t upload`
+4) Monitor:
+   - `pio run -e esp32s3 -t monitor`
 
 ## Usage
 After boot and WiFi connection, the device advertises `_airplay._tcp` and
