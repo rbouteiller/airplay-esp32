@@ -76,17 +76,16 @@ esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
   uint8_t encrypted[256 + crypto_aead_chacha20poly1305_ietf_ABYTES];
   unsigned long long encrypted_len = 0;
 
-  crypto_aead_chacha20poly1305_ietf_encrypt(
-      encrypted, &encrypted_len, sub_tlv, tlv8_encoder_size(&sub_enc), NULL, 0,
-      NULL, nonce, session_key);
+  crypto_aead_chacha20poly1305_ietf_encrypt(encrypted, &encrypted_len, sub_tlv,
+                                            tlv8_encoder_size(&sub_enc), NULL,
+                                            0, NULL, nonce, session_key);
 
   tlv8_encoder_t enc;
   tlv8_encoder_init(&enc, output, output_capacity);
   tlv8_encode_byte(&enc, TLV_TYPE_STATE, PAIR_VERIFY_STATE_M2);
   tlv8_encode(&enc, TLV_TYPE_PUBLIC_KEY, session->session_public_key,
               HAP_X25519_KEY_SIZE);
-  tlv8_encode(&enc, TLV_TYPE_ENCRYPTED_DATA, encrypted,
-              (size_t)encrypted_len);
+  tlv8_encode(&enc, TLV_TYPE_ENCRYPTED_DATA, encrypted, (size_t)encrypted_len);
 
   *output_len = tlv8_encoder_size(&enc);
   session->pair_verify_state = PAIR_VERIFY_STATE_M2;
@@ -132,9 +131,8 @@ esp_err_t hap_pair_verify_m3(hap_session_t *session, const uint8_t *input,
   }
 
   hap_hkdf_sha512((uint8_t *)"Control-Salt", 12, session->shared_secret,
-                  HAP_X25519_KEY_SIZE,
-                  (uint8_t *)"Control-Read-Encryption-Key", 27,
-                  session->encrypt_key, 32);
+                  HAP_X25519_KEY_SIZE, (uint8_t *)"Control-Read-Encryption-Key",
+                  27, session->encrypt_key, 32);
 
   hap_hkdf_sha512((uint8_t *)"Control-Salt", 12, session->shared_secret,
                   HAP_X25519_KEY_SIZE,
@@ -183,8 +181,8 @@ esp_err_t hap_pair_verify_m1_raw(hap_session_t *session, const uint8_t *input,
     crypto_hash_sha512_state state;
     uint8_t hash[64];
     crypto_hash_sha512_init(&state);
-    crypto_hash_sha512_update(&state,
-                              (const uint8_t *)"Pair-Verify-AES-Key", 19);
+    crypto_hash_sha512_update(&state, (const uint8_t *)"Pair-Verify-AES-Key",
+                              19);
     crypto_hash_sha512_update(&state, session->shared_secret, 32);
     crypto_hash_sha512_final(&state, hash);
     memcpy(aes_key, hash, sizeof(aes_key));
@@ -194,8 +192,8 @@ esp_err_t hap_pair_verify_m1_raw(hap_session_t *session, const uint8_t *input,
     crypto_hash_sha512_state state;
     uint8_t hash[64];
     crypto_hash_sha512_init(&state);
-    crypto_hash_sha512_update(&state,
-                              (const uint8_t *)"Pair-Verify-AES-IV", 18);
+    crypto_hash_sha512_update(&state, (const uint8_t *)"Pair-Verify-AES-IV",
+                              18);
     crypto_hash_sha512_update(&state, session->shared_secret, 32);
     crypto_hash_sha512_final(&state, hash);
     memcpy(aes_iv, hash, sizeof(aes_iv));
@@ -262,8 +260,8 @@ esp_err_t hap_pair_verify_m3_raw(hap_session_t *session, const uint8_t *input,
     crypto_hash_sha512_state state;
     uint8_t hash[64];
     crypto_hash_sha512_init(&state);
-    crypto_hash_sha512_update(&state,
-                              (const uint8_t *)"Pair-Verify-AES-Key", 19);
+    crypto_hash_sha512_update(&state, (const uint8_t *)"Pair-Verify-AES-Key",
+                              19);
     crypto_hash_sha512_update(&state, session->shared_secret, 32);
     crypto_hash_sha512_final(&state, hash);
     memcpy(aes_key, hash, sizeof(aes_key));
@@ -273,8 +271,8 @@ esp_err_t hap_pair_verify_m3_raw(hap_session_t *session, const uint8_t *input,
     crypto_hash_sha512_state state;
     uint8_t hash[64];
     crypto_hash_sha512_init(&state);
-    crypto_hash_sha512_update(&state,
-                              (const uint8_t *)"Pair-Verify-AES-IV", 18);
+    crypto_hash_sha512_update(&state, (const uint8_t *)"Pair-Verify-AES-IV",
+                              18);
     crypto_hash_sha512_update(&state, session->shared_secret, 32);
     crypto_hash_sha512_final(&state, hash);
     memcpy(aes_iv, hash, sizeof(aes_iv));
@@ -298,9 +296,8 @@ esp_err_t hap_pair_verify_m3_raw(hap_session_t *session, const uint8_t *input,
   ESP_LOGW(TAG, "Skipping signature verification (transient pairing)");
 
   hap_hkdf_sha512((uint8_t *)"Control-Salt", 12, session->shared_secret,
-                  HAP_X25519_KEY_SIZE,
-                  (uint8_t *)"Control-Read-Encryption-Key", 27,
-                  session->decrypt_key, 32);
+                  HAP_X25519_KEY_SIZE, (uint8_t *)"Control-Read-Encryption-Key",
+                  27, session->decrypt_key, 32);
 
   hap_hkdf_sha512((uint8_t *)"Control-Salt", 12, session->shared_secret,
                   HAP_X25519_KEY_SIZE,

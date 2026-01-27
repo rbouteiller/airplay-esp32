@@ -19,9 +19,9 @@
 
 static const char *TAG = "rtsp_server";
 
-#define RTSP_PORT 7000
+#define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
-#define RTSP_BUFFER_LARGE (256 * 1024)
+#define RTSP_BUFFER_LARGE   (256 * 1024)
 
 static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;

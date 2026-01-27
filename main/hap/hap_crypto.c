@@ -83,9 +83,9 @@ esp_err_t hap_encrypt(hap_session_t *session, const uint8_t *plaintext,
   memcpy(nonce + 4, &session->encrypt_nonce, 8);
 
   unsigned long long ct_len = 0;
-  crypto_aead_chacha20poly1305_ietf_encrypt(
-      ciphertext, &ct_len, plaintext, plaintext_len, NULL, 0, NULL, nonce,
-      session->encrypt_key);
+  crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, &ct_len, plaintext,
+                                            plaintext_len, NULL, 0, NULL, nonce,
+                                            session->encrypt_key);
 
   *ciphertext_len = (size_t)ct_len;
   session->encrypt_nonce++;

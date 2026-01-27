@@ -13,13 +13,13 @@
  * Parsed RTSP request structure
  */
 typedef struct {
-    char method[32];
-    char path[256];
-    int cseq;
-    char content_type[64];
-    size_t content_length;
-    const uint8_t *body;
-    size_t body_len;
+  char method[32];
+  char path[256];
+  int cseq;
+  char content_type[64];
+  size_t content_length;
+  const uint8_t *body;
+  size_t body_len;
 } rtsp_request_t;
 
 /**
@@ -61,7 +61,7 @@ int rtsp_parse_content_length(const char *request);
  * @return Pointer to body, or NULL if none
  */
 const uint8_t *rtsp_get_body(const char *request, size_t request_len,
-                              size_t *body_len);
+                             size_t *body_len);
 
 /**
  * Send RTSP response (handles encryption automatically)
@@ -75,10 +75,10 @@ const uint8_t *rtsp_get_body(const char *request, size_t request_len,
  * @param body_len Body length
  * @return 0 on success, -1 on error
  */
-int rtsp_send_response(int socket, rtsp_conn_t *conn,
-                       int status_code, const char *status_text,
-                       int cseq, const char *extra_headers,
-                       const char *body, size_t body_len);
+int rtsp_send_response(int socket, rtsp_conn_t *conn, int status_code,
+                       const char *status_text, int cseq,
+                       const char *extra_headers, const char *body,
+                       size_t body_len);
 
 /**
  * Send simple 200 OK response
@@ -96,9 +96,8 @@ int rtsp_send_ok(int socket, rtsp_conn_t *conn, int cseq);
  * @param body_len Body length
  * @return 0 on success, -1 on error
  */
-int rtsp_send_http_response(int socket, rtsp_conn_t *conn,
-                            int status_code, const char *status_text,
-                            const char *content_type,
+int rtsp_send_http_response(int socket, rtsp_conn_t *conn, int status_code,
+                            const char *status_text, const char *content_type,
                             const char *body, size_t body_len);
 
 /**

@@ -1,0 +1,26 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  clang-analyzer-*,
+  misc-*,
+  -misc-unused-parameters,
+  performance-*,
+  portability-*,
+  readability-braces-around-statements,
+  readability-inconsistent-declaration-parameter-name,
+  readability-misleading-indentation,
+  readability-redundant-declaration,
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'main/.*'
+
+CheckOptions:
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE

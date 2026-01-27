@@ -17,27 +17,27 @@ static const char *TAG = "ptp_clock";
 
 // PTP multicast addresses and ports
 #define PTP_MULTICAST_ADDR "224.0.1.129"
-#define PTP_EVENT_PORT 319
-#define PTP_GENERAL_PORT 320
+#define PTP_EVENT_PORT     319
+#define PTP_GENERAL_PORT   320
 
 // PTP message types
-#define PTP_MSG_SYNC 0x0
-#define PTP_MSG_DELAY_REQ 0x1
-#define PTP_MSG_FOLLOW_UP 0x8
+#define PTP_MSG_SYNC       0x0
+#define PTP_MSG_DELAY_REQ  0x1
+#define PTP_MSG_FOLLOW_UP  0x8
 #define PTP_MSG_DELAY_RESP 0x9
-#define PTP_MSG_ANNOUNCE 0xB
+#define PTP_MSG_ANNOUNCE   0xB
 
 // PTP header size and timestamp offset
-#define PTP_HEADER_SIZE 34
+#define PTP_HEADER_SIZE      34
 #define PTP_TIMESTAMP_OFFSET 34
-#define PTP_TIMESTAMP_SIZE 10
+#define PTP_TIMESTAMP_SIZE   10
 
 // Synchronization parameters
-#define LOCK_THRESHOLD_NS 40000000LL // 40ms - tight threshold for lock
+#define LOCK_THRESHOLD_NS    40000000LL // 40ms - tight threshold for lock
 #define MIN_SAMPLES_FOR_LOCK 8
-#define LOCK_STABLE_TIME_MS 1000 // 1s of stable readings to declare lock
-#define LOCK_TIMEOUT_MS 5000
-#define SAMPLE_BUFFER_SIZE 16           // Ring buffer for median filtering
+#define LOCK_STABLE_TIME_MS  1000 // 1s of stable readings to declare lock
+#define LOCK_TIMEOUT_MS      5000
+#define SAMPLE_BUFFER_SIZE   16         // Ring buffer for median filtering
 #define OUTLIER_THRESHOLD_NS 50000000LL // 50ms - reject samples beyond this
 
 // PTP state
@@ -460,7 +460,9 @@ uint64_t ptp_clock_get_time_ns(void) {
   return (uint64_t)(local_ns + ptp.filtered_offset_ns);
 }
 
-int64_t ptp_clock_get_offset_ns(void) { return ptp.filtered_offset_ns; }
+int64_t ptp_clock_get_offset_ns(void) {
+  return ptp.filtered_offset_ns;
+}
 
 void ptp_clock_get_stats(ptp_stats_t *stats) {
   stats->sync_count = ptp.sync_count;

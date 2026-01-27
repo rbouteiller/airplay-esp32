@@ -12,9 +12,9 @@
  */
 
 typedef struct {
-    char *buffer;
-    size_t size;
-    size_t capacity;
+  char *buffer;
+  size_t size;
+  size_t capacity;
 } plist_t;
 
 /**
@@ -55,12 +55,14 @@ void plist_dict_bool(plist_t *p, const char *key, bool value);
 /**
  * Add base64 data to dictionary
  */
-void plist_dict_data(plist_t *p, const char *key, const uint8_t *data, size_t len);
+void plist_dict_data(plist_t *p, const char *key, const uint8_t *data,
+                     size_t len);
 
 /**
  * Add data as hex string (for pk field)
  */
-void plist_dict_data_hex(plist_t *p, const char *key, const uint8_t *data, size_t len);
+void plist_dict_data_hex(plist_t *p, const char *key, const uint8_t *data,
+                         size_t len);
 
 /**
  * End dictionary
@@ -107,8 +109,8 @@ size_t plist_end(plist_t *p);
  * @param out_len Actual length of data found
  * @return true if found, false otherwise
  */
-bool bplist_find_data(const uint8_t *plist, size_t plist_len,
-                      const char *key, uint8_t *out_data, size_t out_capacity, size_t *out_len);
+bool bplist_find_data(const uint8_t *plist, size_t plist_len, const char *key,
+                      uint8_t *out_data, size_t out_capacity, size_t *out_len);
 
 /**
  * Find a data value by key anywhere in a binary plist
@@ -121,7 +123,8 @@ bool bplist_find_data(const uint8_t *plist, size_t plist_len,
  * @return true if found, false otherwise
  */
 bool bplist_find_data_deep(const uint8_t *plist, size_t plist_len,
-                           const char *key, uint8_t *out_data, size_t out_capacity, size_t *out_len);
+                           const char *key, uint8_t *out_data,
+                           size_t out_capacity, size_t *out_len);
 
 /**
  * Get number of stream entries in a binary plist "streams" array
@@ -130,7 +133,8 @@ bool bplist_find_data_deep(const uint8_t *plist, size_t plist_len,
  * @param count Output stream count
  * @return true if streams array found and count read
  */
-bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len, size_t *count);
+bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len,
+                              size_t *count);
 
 /**
  * Get stream details by index from a binary plist "streams" array
@@ -144,15 +148,15 @@ bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len, size_t *co
  * @return true if stream entry parsed
  */
 bool bplist_get_stream_info(const uint8_t *plist, size_t plist_len,
-                            size_t index, int64_t *type,
-                            size_t *ekey_len, size_t *eiv_len, size_t *shk_len);
+                            size_t index, int64_t *type, size_t *ekey_len,
+                            size_t *eiv_len, size_t *shk_len);
 
 // Stream key debug info
 typedef struct {
-    char key[64];
-    uint8_t value_type;  // See BPLIST_VALUE_*
-    size_t value_len;
-    int64_t int_value;
+  char key[64];
+  uint8_t value_type; // See BPLIST_VALUE_*
+  size_t value_len;
+  int64_t int_value;
 } bplist_kv_info_t;
 
 #define BPLIST_VALUE_UNKNOWN 0
@@ -194,10 +198,11 @@ bool bplist_get_stream_kv_info(const uint8_t *plist, size_t plist_len,
  * @return true if any crypto field was found for the stream, false otherwise
  */
 bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
-                               int64_t stream_type,
-                               uint8_t *ekey, size_t ekey_capacity, size_t *ekey_len,
-                               uint8_t *eiv, size_t eiv_capacity, size_t *eiv_len,
-                               uint8_t *shk, size_t shk_capacity, size_t *shk_len);
+                               int64_t stream_type, uint8_t *ekey,
+                               size_t ekey_capacity, size_t *ekey_len,
+                               uint8_t *eiv, size_t eiv_capacity,
+                               size_t *eiv_len, uint8_t *shk,
+                               size_t shk_capacity, size_t *shk_len);
 
 /**
  * Find an integer value by key in a binary plist
@@ -207,8 +212,8 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
  * @param out_value Output for integer value
  * @return true if found, false otherwise
  */
-bool bplist_find_int(const uint8_t *plist, size_t plist_len,
-                     const char *key, int64_t *out_value);
+bool bplist_find_int(const uint8_t *plist, size_t plist_len, const char *key,
+                     int64_t *out_value);
 
 /**
  * Find a real/float value by key in a binary plist
@@ -219,8 +224,8 @@ bool bplist_find_int(const uint8_t *plist, size_t plist_len,
  * @param out_value Output for double value
  * @return true if found, false otherwise
  */
-bool bplist_find_real(const uint8_t *plist, size_t plist_len,
-                      const char *key, double *out_value);
+bool bplist_find_real(const uint8_t *plist, size_t plist_len, const char *key,
+                      double *out_value);
 
 // ========================================
 // Binary plist builders (for AirPlay SETUP responses)
@@ -234,7 +239,8 @@ bool bplist_find_real(const uint8_t *plist, size_t plist_len,
  * @param event_port Event port to include in response
  * @return Length of generated bplist, or 0 on error
  */
-size_t bplist_build_initial_setup(uint8_t *out, size_t capacity, uint16_t event_port);
+size_t bplist_build_initial_setup(uint8_t *out, size_t capacity,
+                                  uint16_t event_port);
 
 /**
  * Build stream SETUP response bplist (with streams array)
@@ -249,4 +255,5 @@ size_t bplist_build_initial_setup(uint8_t *out, size_t capacity, uint16_t event_
  */
 size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
                                  int64_t stream_type, uint16_t data_port,
-                                 uint16_t control_port, uint32_t audio_buffer_size);
+                                 uint16_t control_port,
+                                 uint32_t audio_buffer_size);

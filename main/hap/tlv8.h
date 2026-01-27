@@ -22,29 +22,29 @@
 #define TLV_TYPE_SIGNATURE      0x0A
 
 // HAP Error codes
-#define TLV_ERROR_UNKNOWN       0x01
+#define TLV_ERROR_UNKNOWN        0x01
 #define TLV_ERROR_AUTHENTICATION 0x02
-#define TLV_ERROR_BACKOFF       0x03
-#define TLV_ERROR_MAX_PEERS     0x04
-#define TLV_ERROR_MAX_TRIES     0x05
-#define TLV_ERROR_UNAVAILABLE   0x06
-#define TLV_ERROR_BUSY          0x07
+#define TLV_ERROR_BACKOFF        0x03
+#define TLV_ERROR_MAX_PEERS      0x04
+#define TLV_ERROR_MAX_TRIES      0x05
+#define TLV_ERROR_UNAVAILABLE    0x06
+#define TLV_ERROR_BUSY           0x07
 
 // Pair-verify states
-#define PAIR_VERIFY_STATE_M1    0x01
-#define PAIR_VERIFY_STATE_M2    0x02
-#define PAIR_VERIFY_STATE_M3    0x03
-#define PAIR_VERIFY_STATE_M4    0x04
+#define PAIR_VERIFY_STATE_M1 0x01
+#define PAIR_VERIFY_STATE_M2 0x02
+#define PAIR_VERIFY_STATE_M3 0x03
+#define PAIR_VERIFY_STATE_M4 0x04
 
 typedef struct {
-    uint8_t *buffer;
-    size_t size;
-    size_t capacity;
+  uint8_t *buffer;
+  size_t size;
+  size_t capacity;
 } tlv8_encoder_t;
 
 typedef struct {
-    const uint8_t *data;
-    size_t len;
+  const uint8_t *data;
+  size_t len;
 } tlv8_value_t;
 
 /**
@@ -56,7 +56,8 @@ void tlv8_encoder_init(tlv8_encoder_t *enc, uint8_t *buffer, size_t capacity);
  * Add a TLV to the encoder
  * Handles values > 255 bytes by splitting into multiple TLVs
  */
-bool tlv8_encode(tlv8_encoder_t *enc, uint8_t type, const uint8_t *value, size_t len);
+bool tlv8_encode(tlv8_encoder_t *enc, uint8_t type, const uint8_t *value,
+                 size_t len);
 
 /**
  * Add a single byte TLV
@@ -71,9 +72,11 @@ size_t tlv8_encoder_size(const tlv8_encoder_t *enc);
 /**
  * Find a TLV by type in encoded data
  * Returns pointer to value and sets len, or NULL if not found
- * For split TLVs, only returns first chunk (use tlv8_decode_concat for full value)
+ * For split TLVs, only returns first chunk (use tlv8_decode_concat for full
+ * value)
  */
-const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type, size_t *value_len);
+const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type,
+                         size_t *value_len);
 
 /**
  * Decode and concatenate split TLVs of same type
@@ -86,4 +89,5 @@ const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type, siz
  * @return true if found, false otherwise
  */
 bool tlv8_decode_concat(const uint8_t *data, size_t data_len, uint8_t type,
-                        uint8_t *out_buffer, size_t out_capacity, size_t *out_len);
+                        uint8_t *out_buffer, size_t out_capacity,
+                        size_t *out_len);

@@ -23,8 +23,8 @@
  * @param buffer_size Size of output buffer
  * @return Decrypted length on success, -1 on error
  */
-int rtsp_crypto_read_block(int socket, rtsp_conn_t *conn,
-                           uint8_t *buffer, size_t buffer_size);
+int rtsp_crypto_read_block(int socket, rtsp_conn_t *conn, uint8_t *buffer,
+                           size_t buffer_size);
 
 /**
  * Encrypt and write data to socket
@@ -37,5 +37,5 @@ int rtsp_crypto_read_block(int socket, rtsp_conn_t *conn,
  * @param data_len Length of data
  * @return 0 on success, -1 on error
  */
-int rtsp_crypto_write_frame(int socket, rtsp_conn_t *conn,
-                            const uint8_t *data, size_t data_len);
+int rtsp_crypto_write_frame(int socket, rtsp_conn_t *conn, const uint8_t *data,
+                            size_t data_len);

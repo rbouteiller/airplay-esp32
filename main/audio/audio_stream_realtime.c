@@ -15,7 +15,7 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE 12
+#define RTP_HEADER_SIZE       12
 #define AUDIO_RECV_STACK_SIZE 12288
 #define AUDIO_CTRL_STACK_SIZE 4096
 #define STACK_LOG_INTERVAL_US 5000000

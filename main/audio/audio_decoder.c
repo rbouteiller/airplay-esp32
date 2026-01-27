@@ -11,7 +11,7 @@
 #include "decoder/impl/esp_alac_dec.h"
 #include "esp_audio_dec.h"
 
-#define ADTS_HEADER_LEN 7
+#define ADTS_HEADER_LEN       7
 #define MAX_FALLBACK_CHANNELS 2
 
 typedef enum {
@@ -87,13 +87,12 @@ audio_decoder_t *audio_decoder_create(const audio_decoder_config_t *config) {
     decoder->kind = AUDIO_DECODER_ALAC;
     build_alac_magic_cookie(decoder->alac_magic_cookie, &config->format);
 
-    esp_alac_dec_cfg_t alac_cfg = {
-        .codec_spec_info = decoder->alac_magic_cookie,
-        .spec_info_len = ALAC_MAGIC_COOKIE_SIZE};
+    esp_alac_dec_cfg_t alac_cfg = {.codec_spec_info =
+                                       decoder->alac_magic_cookie,
+                                   .spec_info_len = ALAC_MAGIC_COOKIE_SIZE};
 
     esp_audio_err_t err =
-        esp_alac_dec_open(&alac_cfg, sizeof(alac_cfg),
-                          &decoder->alac_decoder);
+        esp_alac_dec_open(&alac_cfg, sizeof(alac_cfg), &decoder->alac_decoder);
     if (err != ESP_AUDIO_ERR_OK) {
       ESP_LOGE(TAG, "Failed to open ALAC decoder: %d", err);
       decoder->alac_decoder = NULL;
@@ -110,8 +109,8 @@ audio_decoder_t *audio_decoder_create(const audio_decoder_config_t *config) {
     aac_cfg.no_adts_header = false;
     aac_cfg.aac_plus_enable = false;
 
-    esp_audio_err_t err = esp_aac_dec_open(&aac_cfg, sizeof(aac_cfg),
-                                          &decoder->aac_decoder);
+    esp_audio_err_t err =
+        esp_aac_dec_open(&aac_cfg, sizeof(aac_cfg), &decoder->aac_decoder);
     if (err != ESP_AUDIO_ERR_OK) {
       ESP_LOGE(TAG, "Failed to open AAC decoder: %d", err);
       decoder->aac_decoder = NULL;
@@ -192,8 +191,7 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
                                   .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
     esp_audio_dec_out_frame_t frame = {
         .buffer = (uint8_t *)output,
-        .len = (uint32_t)(output_capacity_samples * channels *
-                          sizeof(int16_t)),
+        .len = (uint32_t)(output_capacity_samples * channels * sizeof(int16_t)),
         .decoded_size = 0};
     esp_audio_dec_info_t dec_info = {0};
 
@@ -203,8 +201,7 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
       return -1;
     }
 
-    int dec_channels =
-        dec_info.channel > 0 ? dec_info.channel : channels;
+    int dec_channels = dec_info.channel > 0 ? dec_info.channel : channels;
     if (dec_channels <= 0) {
       dec_channels = MAX_FALLBACK_CHANNELS;
     }
@@ -254,8 +251,7 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
                                   .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
     esp_audio_dec_out_frame_t frame = {
         .buffer = (uint8_t *)output,
-        .len = (uint32_t)(output_capacity_samples * channels *
-                          sizeof(int16_t)),
+        .len = (uint32_t)(output_capacity_samples * channels * sizeof(int16_t)),
         .decoded_size = 0};
     esp_audio_dec_info_t dec_info = {0};
 
@@ -265,8 +261,7 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
       return -1;
     }
 
-    int dec_channels =
-        dec_info.channel > 0 ? dec_info.channel : channels;
+    int dec_channels = dec_info.channel > 0 ? dec_info.channel : channels;
     if (dec_channels <= 0) {
       dec_channels = MAX_FALLBACK_CHANNELS;
     }

@@ -50,6 +50,7 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
                                 uint32_t timestamp, const uint8_t *audio_data,
                                 size_t audio_len);
 
-static inline audio_receiver_state_t *audio_stream_state(audio_stream_t *stream) {
+static inline audio_receiver_state_t *
+audio_stream_state(audio_stream_t *stream) {
   return (audio_receiver_state_t *)stream->ctx;
 }

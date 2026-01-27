@@ -11,10 +11,10 @@
 
 #include "audio_receiver.h"
 
-#define AAC_FRAMES_PER_PACKET 352
-#define AUDIO_MAX_CHANNELS 2
+#define AAC_FRAMES_PER_PACKET  352
+#define AUDIO_MAX_CHANNELS     2
 #define AUDIO_BYTES_PER_SAMPLE 2
-#define MAX_SAMPLES_PER_FRAME 4096
+#define MAX_SAMPLES_PER_FRAME  4096
 
 typedef struct __attribute__((packed)) {
   uint32_t rtp_timestamp;
@@ -24,8 +24,8 @@ typedef struct __attribute__((packed)) {
 } audio_frame_header_t;
 
 #define MAX_RING_BUFFER_FRAMES 5000
-#define BYTES_PER_FRAME                                                        \
-  (sizeof(audio_frame_header_t) +                                             \
+#define BYTES_PER_FRAME           \
+  (sizeof(audio_frame_header_t) + \
    (AAC_FRAMES_PER_PACKET * AUDIO_MAX_CHANNELS * AUDIO_BYTES_PER_SAMPLE))
 #define AUDIO_BUFFER_SIZE (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
 #define MAX_BUFFER_FRAMES 5000

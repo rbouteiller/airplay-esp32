@@ -29,9 +29,10 @@ static void audio_buffer_drain(audio_buffer_t *buffer, int frames_to_drain) {
   }
 }
 
-static bool audio_buffer_queue_chunk(audio_buffer_t *buffer, audio_stats_t *stats,
-                                    uint32_t timestamp, const int16_t *pcm_data,
-                                    size_t samples, int channels) {
+static bool audio_buffer_queue_chunk(audio_buffer_t *buffer,
+                                     audio_stats_t *stats, uint32_t timestamp,
+                                     const int16_t *pcm_data, size_t samples,
+                                     int channels) {
   if (samples == 0) {
     return false;
   }
@@ -79,21 +80,20 @@ esp_err_t audio_buffer_init(audio_buffer_t *buffer) {
   buffer->lock = lock;
   buffer->buffered_frames = 0;
 
-  buffer->ring = xRingbufferCreateWithCaps(
-      AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  buffer->ring =
+      xRingbufferCreateWithCaps(AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!buffer->ring) {
     ESP_LOGW(TAG, "PSRAM not available, using smaller buffer");
-    buffer->ring =
-        xRingbufferCreate(1024 * 1024, RINGBUF_TYPE_NOSPLIT);
+    buffer->ring = xRingbufferCreate(1024 * 1024, RINGBUF_TYPE_NOSPLIT);
   }
   if (!buffer->ring) {
     ESP_LOGE(TAG, "Failed to create ring buffer");
     return ESP_ERR_NO_MEM;
   }
 
-  size_t max_pcm_bytes = MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS *
-                         sizeof(int16_t);
+  size_t max_pcm_bytes =
+      MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS * sizeof(int16_t);
   buffer->frame_buffer =
       (uint8_t *)malloc(sizeof(audio_frame_header_t) + max_pcm_bytes);
   if (!buffer->frame_buffer) {
@@ -217,8 +217,8 @@ bool audio_buffer_queue_decoded(audio_buffer_t *buffer, audio_stats_t *stats,
     }
 
     if (!audio_buffer_queue_chunk(buffer, stats, chunk_timestamp,
-                                  pcm_data + (offset * channels),
-                                  chunk_samples, channels)) {
+                                  pcm_data + (offset * channels), chunk_samples,
+                                  channels)) {
       return false;
     }
 

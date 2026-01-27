@@ -11,10 +11,10 @@
 
 #define TAG "audio_output"
 
-#define I2S_BCK_PIN GPIO_NUM_5
-#define I2S_LRCK_PIN GPIO_NUM_6
-#define I2S_DOUT_PIN GPIO_NUM_7
-#define SAMPLE_RATE 44100
+#define I2S_BCK_PIN   GPIO_NUM_5
+#define I2S_LRCK_PIN  GPIO_NUM_6
+#define I2S_DOUT_PIN  GPIO_NUM_7
+#define SAMPLE_RATE   44100
 #define FRAME_SAMPLES 352
 
 #if CONFIG_FREERTOS_UNICORE

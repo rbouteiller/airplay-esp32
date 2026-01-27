@@ -12,11 +12,11 @@
 #include "audio_timing.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_SAMPLE_RATE 44100
-#define DEFAULT_CHANNELS 2
+#define DEFAULT_SAMPLE_RATE     44100
+#define DEFAULT_CHANNELS        2
 #define DEFAULT_BITS_PER_SAMPLE 16
-#define DEFAULT_FRAME_SIZE 352
-#define DECRYPT_BUFFER_SIZE 8192
+#define DEFAULT_FRAME_SIZE      352
+#define DECRYPT_BUFFER_SIZE     8192
 
 static const char *TAG = "audio_recv";
 
@@ -96,9 +96,9 @@ esp_err_t audio_receiver_init(void) {
     return ESP_ERR_NO_MEM;
   }
 
-  size_t pending_capacity = sizeof(audio_frame_header_t) +
-                            (MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS *
-                             sizeof(int16_t));
+  size_t pending_capacity =
+      sizeof(audio_frame_header_t) +
+      (MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS * sizeof(int16_t));
   audio_timing_init(&receiver.timing, pending_capacity);
   audio_timing_set_format(&receiver.timing, &receiver.stream->format);
 
@@ -254,8 +254,7 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   return receiver.stream->ops->start(receiver.stream, tcp_port);
 }
 
-esp_err_t audio_receiver_start_stream(uint16_t data_port,
-                                      uint16_t control_port,
+esp_err_t audio_receiver_start_stream(uint16_t data_port, uint16_t control_port,
                                       uint16_t tcp_port) {
   if (!receiver.stream) {
     return ESP_FAIL;

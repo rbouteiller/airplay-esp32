@@ -8,11 +8,11 @@
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_BUFFER_LATENCY_US 500000 // 500ms buffer for network jitter
-#define HARDWARE_OUTPUT_LATENCY_US 46000 // ~46ms I2S DMA latency
-#define MIN_STARTUP_FRAMES 4
+#define DEFAULT_BUFFER_LATENCY_US     500000 // 500ms buffer for network jitter
+#define HARDWARE_OUTPUT_LATENCY_US    46000  // ~46ms I2S DMA latency
+#define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US 40000 // 40ms early/late threshold
+#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
 
 static const char *TAG = "audio_time";
 
@@ -48,9 +48,9 @@ static void update_timing_targets(audio_timing_t *timing,
 }
 
 typedef enum {
-  SYNC_MODE_NONE,  // No clock sync, use local anchor time
-  SYNC_MODE_PTP,   // AirPlay 2 PTP sync
-  SYNC_MODE_NTP,   // AirPlay 1 NTP sync
+  SYNC_MODE_NONE, // No clock sync, use local anchor time
+  SYNC_MODE_PTP,  // AirPlay 2 PTP sync
+  SYNC_MODE_NTP,  // AirPlay 1 NTP sync
 } sync_mode_t;
 
 // Compute how early (positive) or late (negative) a frame is in microseconds

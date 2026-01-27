@@ -16,7 +16,7 @@
 #include "network/socket_utils.h"
 
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
-#define AUDIO_BUFFERED_STACK_SIZE 4096
+#define AUDIO_BUFFERED_STACK_SIZE  4096
 
 static const char *TAG = "audio_buf";
 

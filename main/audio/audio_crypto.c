@@ -115,7 +115,8 @@ int audio_crypto_decrypt_buffered(const audio_encrypt_t *encrypt,
     return -1;
   }
 
-  // Buffered audio: AAD is bytes 4-11 (timestamp + SSRC), nonce in last 8 bytes.
+  // Buffered audio: AAD is bytes 4-11 (timestamp + SSRC), nonce in last 8
+  // bytes.
   uint8_t nonce[12] = {0};
   memcpy(nonce + 4, packet + packet_len - 8, 8);
 

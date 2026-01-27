@@ -7,8 +7,8 @@
 
 /**
  * NTP-like timing for AirPlay 1 synchronization.
- * Sends timing requests to the sender and calculates clock offset from responses.
- * Based on shairport-sync's timing implementation.
+ * Sends timing requests to the sender and calculates clock offset from
+ * responses. Based on shairport-sync's timing implementation.
  */
 
 /**
