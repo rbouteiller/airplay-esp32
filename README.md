@@ -1,124 +1,285 @@
-# AirPlay 2 Receiver for ESP32-S3
+<div align="center">
 
-This project turns an ESP32-S3 into a small AirPlay receiver with I2S output.
-It handles mDNS discovery, RTSP control, HAP pairing, ALAC/AAC decoding, and
-PTP/NTP clocking for synchronized playback.
+# ESP32 AirPlay 2 Receiver
 
-## Status
-Work in progress. Core discovery, control, and audio pipeline pieces are in
-place; additional features and hardening are still underway.
-Todo:
-- Demo video of the setup
-- Better setup instructions
-- 3D casing for ESP32 + PCM5102A
+[![GitHub stars](https://img.shields.io/github/stars/rbouteiller/airplay-esp32?style=flat-square)](https://github.com/rbouteiller/airplay-esp32/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/rbouteiller/airplay-esp32?style=flat-square)](https://github.com/rbouteiller/airplay-esp32/network)
+[![License](https://img.shields.io/badge/license-Non--Commercial-blue?style=flat-square)](LICENSE)
+[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32-s3)
 
-## Repository layout
-- `main/audio/` - stream abstraction (realtime UDP vs buffered TCP), decoder,
-  buffers, timing, crypto
-- `main/rtsp/` - RTSP server, message parsing, handlers, FairPlay
-- `main/hap/` - HAP pairing, SRP, crypto helpers
-- `main/plist/` - plist XML + binary parse/build, base64
-- `main/network/` - WiFi, mDNS, PTP/NTP clock, socket helpers
-- `main/` - app entry point, settings, ALAC magic cookie
+**Stream music from your Apple devices to any speaker for 10$**
 
-## Decoders
-- ALAC via `esp_alac_dec` from `espressif/esp_audio_codec`
-- AAC via `esp_aac_dec` from `espressif/esp_audio_codec`
-- PCM (L16) path for uncompressed streams
+[Quick Start](#quick-start) • [Hardware](#hardware) • [Configuration](#configuration) • [How It Works](#how-it-works)
 
-## Espressif components
-External dependencies (`main/idf_component.yml`):
-- `espressif/esp_audio_codec`
-- `espressif/mdns`
-- `espressif/libsodium`
+</div>
 
-Core ESP-IDF components used (`main/CMakeLists.txt`):
-- `nvs_flash`, `esp_wifi`, `esp_netif`, `esp_event`
-- `esp_ringbuf`, `esp_driver_i2s`, `esp_timer`
+---
+
+## What is this?
+
+This project transforms an ESP32-S3 into a standalone AirPlay 2 audio receiver. Connect it to any amplifier or powered speakers via a simple I2S DAC, and you've got a wireless audio endpoint that appears natively in iOS and macOS.
+
+**No cloud. No app. Just tap and play.**
+
+### Capabilities
+
+- **AirPlay 2 protocol** — appears as a native speaker in Control Center
+- **ALAC & AAC decoding** — handles both realtime and buffered audio streams
+- **Multi-room support** — PTP-based timing for synchronized playback
+- **Web configuration** — set up WiFi and device name from your browser
+- **OTA updates** — update firmware without cables
+
+### Limitations
+
+- Audio only (no AirPlay video or photos)
+- Single device per ESP32 (no multi-instance, new device will replace the old one)
+- Requires decent WiFi signal for stable streaming
+
+---
+
+## Quick Start
+
+### What You Need
+
+| Component                         | Comment                                        |
+| --------------------------------- | ---------------------------------------------- |
+| **ESP32-S3** (N16R8 recommended)  | 8Mb PSRAM is mandatory                         |
+| **PCM5102A DAC**                  | Can't drive passive speakers (like headphones) |
+| **Amplifier or powered speakers** |                                                |
+
+### Wiring
+
+```
+ESP32-S3          PCM5102A
+────────          ────────
+3V3  ──────────►  VCC
+GND  ──────────►  GND
+GPIO5 ─────────►  BCK  (bit clock)
+GPIO6 ─────────►  LCK  (left/right clock)
+GPIO7 ─────────►  DIN  (data)
+```
+
+### Flash & Configure
+
+```bash
+# Clone and build
+git clone https://github.com/rbouteiller/airplay-esp32
+cd airplay-esp32
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/ttyUSB0 flash
+```
+
+**First boot:**
+1. Connect to WiFi network `ESP32-AirPlay-Setup`
+2. Open `http://192.168.4.1` in your browser
+3. Select your WiFi network and set a device name
+4. The device restarts and appears in AirPlay
+
+---
 
 ## Hardware
-- ESP32-S3 (tested on N16R8)
-- PCM5102A I2S DAC board (or compatible)
 
-## Wiring overview:
+### Tested Configuration
 
-```
-AirPlay source (iOS/macOS)
-        |
-        v
-   WiFi + mDNS/RTSP/HAP
-        |
-        v
-     ESP32-S3
-        |
-        v
- I2S (BCK/LRCK/DOUT)
-        |
-        v
-    PCM5102A DAC
-        |
-        v
-   Amplifier/Speakers
-```
+- **MCU:** ESP32-S3-WROOM-1 N16R8 (16MB flash, 8MB PSRAM)
+- **DAC:** PCM5102A breakout board
+- **Power:** USB-C or 5V regulated supply
 
-PCM5102A example wiring (default pins in `main/main.c`):
+### Signal Flow
 
 ```
-ESP32-S3        PCM5102A
--------         --------
-3V3   --------> VCC
-GND   --------> GND
-GPIO5 --------> BCK (SCK)
-GPIO6 --------> LRCK (WS/LCK)
-GPIO7 --------> DIN
+┌─────────────────┐      WiFi       ┌─────────────┐
+│  iPhone / Mac   │ ─────────────►  │   ESP32-S3  │
+│    (AirPlay)    │                 │             │
+└─────────────────┘                 └──────┬──────┘
+                                           │ I2S
+                                    ┌──────▼──────┐
+                                    │  PCM5102A   │
+                                    │    DAC      │
+                                    └──────┬──────┘
+                                           │ Analog
+                                    ┌──────▼──────┐
+                                    │  Amplifier  │
+                                    │  + Speakers │
+                                    └─────────────┘
 ```
 
-I2S signal meaning:
-- BCK is the bit clock.
-- LRCK/WS is the left/right word select.
-- DOUT is serial audio data from ESP32 to the DAC.
-MCLK is unused in this design.
+### I2S Signals
 
-## Get started
+| Signal | Function                              |
+| ------ | ------------------------------------- |
+| BCK    | Bit clock — 44100 × 16 × 2 = 1.41 MHz |
+| LCK    | Word select — toggles at 44.1 kHz     |
+| DIN    | Serial audio data (16-bit stereo)     |
 
-### ESP-IDF Option
-1) Install ESP-IDF v5.x and set up the environment:
-   - `source /path/to/esp-idf/export.sh`
-2) Initialize submodules:
-   - `git submodule update --init --recursive`
-3) Configure the project:
-   - `idf.py set-target esp32s3`
-   - `idf.py menuconfig`
-     - `AirPlay 2 Receiver Configuration`:
-       - `WiFi SSID`
-       - `WiFi Password`
-       - `AirPlay Device Name`
-4) Build, flash, and monitor:
-   - `idf.py build`
-   - `idf.py -p /dev/ttyUSB0 flash monitor`
-     (swap the port if yours is different)
+MCLK is not used; the PCM5102A generates it internally.
 
-### PlatformIO Option
-1) Install [PlatformIO](https://platformio.org/install/cli)
-2) Configure WiFi in `sdkconfig`/`sdkconfig.esp32s3`:
-   - `CONFIG_WIFI_SSID`
-   - `CONFIG_WIFI_PASSWORD`
-   - `CONFIG_AIRPLAY_DEVICE_NAME`
-3) Build and flash:
-   - `pio run -e esp32s3 -t upload`
-4) Monitor:
-   - `pio run -e esp32s3 -t monitor`
+---
 
-## Usage
-After boot and WiFi connection, the device advertises `_airplay._tcp` and
-`_raop._tcp`. It should appear in the AirPlay device list using the configured
-AirPlay device name.
+## Configuration
 
-## Notes
-- I2S output is 16-bit stereo at 44.1 kHz by default; adjust in `main/main.c`.
-- Output attenuation is applied in `main/main.c` to reduce clipping.
-- Credentials are stored via `sdkconfig`; avoid committing secrets.
-- Based on shairport-sync [https://github.com/mikebrady/shairport-sync](https://github.com/mikebrady/shairport-sync)
+On first boot (or when WiFi credentials are missing), the device creates an open access point:
 
-## License
-Non-commercial; commercial use requires permission. See `LICENSE`.
+| Setting | Value                 |
+| ------- | --------------------- |
+| Network | `ESP32-AirPlay-Setup` |
+| IP      | `192.168.4.1`         |
+
+### Web Interface
+
+Navigate to `http://192.168.4.1` to:
+
+- **Scan and connect** to your WiFi network
+- **Set the device name** (appears in AirPlay menu)
+- **Upload firmware** for OTA updates
+- **Restart** the device
+
+Settings persist in flash storage (NVS).
+
+Once connected to WiFi, the access point is disabled. If connection fails after multiple retries, AP mode is re-enabled for reconfiguration.
+
+---
+
+## How It Works
+
+### Protocol Stack
+
+```
+┌────────────────────────────────────────────────┐
+│              AirPlay 2 Source                  │
+│         (iPhone, iPad, Mac, Apple TV)          │
+└───────────────────────┬────────────────────────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+    ┌──────────┐  ┌──────────┐  ┌──────────┐
+    │   mDNS   │  │   RTSP   │  │   PTP    │
+    │ Discovery│  │ Control  │  │  Timing  │
+    └──────────┘  └──────────┘  └──────────┘
+          │             │             │
+          └─────────────┼─────────────┘
+                        ▼
+              ┌──────────────────┐
+              │   HAP Pairing    │
+              │  (Transient)     │
+              └──────────────────┘
+                        │
+                  ┌───────────┐
+                  ▼           ▼ 
+            ┌──────────┐ ┌──────────┐
+            │   ALAC   │ │   AAC    │
+            └──────────┘ └──────────┘
+                  │           │
+                  └─────┬─────┘
+                        ▼
+              ┌──────────────────┐
+              │   Audio Buffer   │
+              │  + Timing Sync   │
+              └──────────────────┘
+                        │
+                        ▼
+              ┌──────────────────┐
+              │    I2S Output    │
+              │   (44.1kHz/16b)  │
+              └──────────────────┘
+```
+
+### Key Components
+
+| Module             | Location        | Purpose                          |
+| ------------------ | --------------- | -------------------------------- |
+| **RTSP Server**    | `main/rtsp/`    | Handles AirPlay control messages |
+| **HAP Pairing**    | `main/hap/`     | Cryptographic device pairing     |
+| **Audio Pipeline** | `main/audio/`   | Decoding, buffering, timing      |
+| **PTP Clock**      | `main/network/` | Synchronization with source      |
+| **Web Server**     | `main/network/` | Configuration interface          |
+
+### Audio Formats
+
+| Format          | Use Case             |
+| --------------- | -------------------- |
+| ALAC (realtime) | Live streaming, Siri |
+| AAC (buffered)  | Music playback       |
+
+---
+
+## Building
+
+### Prerequisites
+
+- [ESP-IDF v5.x](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/)
+- USB cable for initial flash
+
+### Commands
+
+```bash
+# Setup
+source /path/to/esp-idf/export.sh
+git submodule update --init --recursive
+
+# Build
+idf.py set-target esp32s3
+idf.py build
+
+# Flash
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+### [PlatformIO](https://platformio.org/install/cli)
+
+```bash
+# Install PlatformIO CLI (if not already installed)
+pip install platformio
+
+# Build and flash
+pio run -e esp32s3 -t upload
+
+# Monitor serial output
+pio run -e esp32s3 -t monitor
+
+# Or both at once
+pio run -e esp32s3 -t upload -t monitor
+```
+
+---
+
+## Project Structure
+
+```
+main/
+├── audio/          # Decoders, buffers, timing sync
+├── rtsp/           # RTSP server and handlers
+├── hap/            # HomeKit pairing (SRP, Ed25519)
+├── plist/          # Binary plist parsing
+├── network/        # WiFi, mDNS, PTP, web server
+├── main.c          # Entry point
+└── settings.c      # NVS persistence
+```
+
+---
+
+## Acknowledgements
+
+This project builds on the work of many others:
+
+- **[Shairport Sync](https://github.com/mikebrady/shairport-sync)** — The reference AirPlay implementation. Much of the protocol understanding comes from studying this project.
+- **[openairplay/airplay2-receiver](https://github.com/openairplay/airplay2-receiver)** — Python implementation that helped decode AirPlay 2 specifics.
+- **[Espressif](https://github.com/espressif)** — ESP-IDF framework and audio codec libraries.
+
+---
+
+## Legal
+
+### License
+
+This project is licensed for **non-commercial use only**. Commercial use requires explicit permission. See [LICENSE](LICENSE).
+
+### Disclaimer
+
+This is an independent project based on protocol analysis. It is:
+
+- **Not affiliated with Apple Inc.**
+- **Not guaranteed to work** with future iOS/macOS versions
+- **Provided as-is** without warranty
