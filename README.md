@@ -53,11 +53,12 @@ This project transforms an ESP32-S3 into a standalone AirPlay 2 audio receiver. 
 ```
 ESP32-S3          PCM5102A
 ────────          ────────
-3V3  ──────────►  VCC
-GND  ──────────►  GND
-GPIO5 ─────────►  BCK  (bit clock)
-GPIO6 ─────────►  LCK  (left/right clock)
-GPIO7 ─────────►  DIN  (data)
+5V    ─────────►  VIN  (bridge IN/OUT pads on PCB)
+GND   ─────────►  GND
+GPIO11 ────────►  BCK  (bit clock)
+GPIO12 ────────►  DIN  (data)
+GPIO13 ────────►  LCK  (left/right clock)
+GPIO14 ────────►  GND  (software GND, active low)
 ```
 
 ### Flash & Configure
