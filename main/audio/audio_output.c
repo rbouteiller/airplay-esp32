@@ -1,6 +1,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
+#include "led_visual.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -50,6 +51,7 @@ static void playback_task(void *arg) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
       apply_volume(pcm, samples * 2);
+      led_visual_update(pcm, samples);
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       taskYIELD();
     } else {

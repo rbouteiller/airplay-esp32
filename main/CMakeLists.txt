@@ -36,6 +36,7 @@ idf_component_register(
         "network/web_server.c"
         "network/ota.c"
         "network/dns_server.c"
+        "led_visual.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES
         driver
