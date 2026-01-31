@@ -2,6 +2,7 @@
 
 #include "audio_receiver.h"
 #include "driver/i2s_std.h"
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,11 +10,12 @@
 
 #include <stdlib.h>
 
-#define TAG "audio_output"
-
-#define I2S_BCK_PIN   GPIO_NUM_5
-#define I2S_LRCK_PIN  GPIO_NUM_6
-#define I2S_DOUT_PIN  GPIO_NUM_7
+#define TAG          "audio_output"
+#define I2S_BCK_PIN  GPIO_NUM_11
+#define I2S_LRCK_PIN GPIO_NUM_13
+#define I2S_DOUT_PIN GPIO_NUM_12
+#define I2S_GND_PIN  GPIO_NUM_14
+// #define I2S_VCC_PIN   GPIO_NUM_14
 #define SAMPLE_RATE   44100
 #define FRAME_SAMPLES 352
 
@@ -33,8 +35,8 @@ static void apply_volume(int16_t *buf, size_t n) {
 }
 
 static void playback_task(void *arg) {
-  int16_t *pcm = malloc((FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
-  int16_t *silence = calloc(FRAME_SAMPLES * 2, sizeof(int16_t));
+  int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
+  int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
   if (!pcm || !silence) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
@@ -51,7 +53,7 @@ static void playback_task(void *arg) {
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       taskYIELD();
     } else {
-      i2s_channel_write(tx_handle, silence, FRAME_SAMPLES * 4, &written,
+      i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
       vTaskDelay(1);
     }
@@ -80,6 +82,16 @@ esp_err_t audio_output_init(void) {
               .din = I2S_GPIO_UNUSED,
           },
   };
+#ifdef I2S_GND_PIN
+  gpio_reset_pin(I2S_GND_PIN);
+  gpio_set_direction(I2S_GND_PIN, GPIO_MODE_OUTPUT);
+  gpio_set_level(I2S_GND_PIN, 0);
+#endif
+#ifdef I2S_VCC_PIN
+  gpio_reset_pin(I2S_VCC_PIN);
+  gpio_set_direction(I2S_VCC_PIN, GPIO_MODE_OUTPUT);
+  gpio_set_level(I2S_VCC_PIN, 1);
+#endif
 
   ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx_handle, &std_cfg), TAG,
                       "std mode init failed");

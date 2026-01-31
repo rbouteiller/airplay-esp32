@@ -38,6 +38,7 @@ idf_component_register(
         "network/dns_server.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES
+        driver
         nvs_flash
         esp_wifi
         esp_netif

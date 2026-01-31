@@ -10,6 +10,7 @@
 #include "settings.h"
 #include "wifi.h"
 #include "ota.h"
+#include "rtsp_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -379,6 +380,10 @@ static esp_err_t ota_update_handler(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware uploaded");
     return ESP_FAIL;
   }
+
+  // Stop AirPlay to free resources during OTA
+  ESP_LOGI(TAG, "Stopping AirPlay for OTA update");
+  rtsp_server_stop();
 
   esp_err_t err = ota_start_from_http(req);
 

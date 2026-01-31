@@ -12,7 +12,9 @@
 #define HARDWARE_OUTPUT_LATENCY_US    46000  // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
+#define TIMING_THRESHOLD_US           80000  // 80ms early/late threshold
+#define SUBTLE_ADJUST_THRESHOLD_US    500000 // 500ms - below this, adjust subtly
+#define SUBTLE_ADJUST_INTERVAL        10     // Only adjust 1 frame out of N
 
 static const char *TAG = "audio_time";
 
@@ -120,6 +122,9 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_valid = false;
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
+  timing->frame_counter = 0;
+  timing->drift_accumulator = 0;
+  timing->drift_frame_count = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -286,18 +291,47 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       int64_t early_us = 0;
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
+
+        int64_t abs_early_us = early_us > 0 ? early_us : -early_us;
+        // For small desyncs (<500ms), only adjust 1 frame out of 10
+        bool allow_adjust =
+            (abs_early_us >= SUBTLE_ADJUST_THRESHOLD_US) ||
+            (timing->frame_counter % SUBTLE_ADJUST_INTERVAL == 0);
+
         if (early_us > TIMING_THRESHOLD_US) {
-          // Too early: output silence, keep frame for later
-          if (!from_pending && timing->pending_frame &&
-              item_size <= timing->pending_frame_capacity) {
-            memcpy(timing->pending_frame, item, item_size);
-            timing->pending_frame_len = item_size;
-            timing->pending_valid = true;
-            audio_buffer_return(buffer, item);
+          if (!timing->playout_started) {
+            // Initial sync: wait until we're ready (don't insert silence
+            // frame-by-frame)
+            if (!from_pending && timing->pending_frame &&
+                item_size <= timing->pending_frame_capacity) {
+              memcpy(timing->pending_frame, item, item_size);
+              timing->pending_frame_len = item_size;
+              timing->pending_valid = true;
+              audio_buffer_return(buffer, item);
+            }
+            memset(out, 0, samples * channels * sizeof(int16_t));
+            return samples;
           }
-          memset(out, 0, samples * channels * sizeof(int16_t));
-          return samples;
-        } else if (early_us < -TIMING_THRESHOLD_US) {
+          // After playout started: subtle adjustment (1 in 10) for small
+          // desyncs
+          if (allow_adjust) {
+            // Keep frame for later, output silence
+            if (!from_pending && timing->pending_frame &&
+                item_size <= timing->pending_frame_capacity) {
+              memcpy(timing->pending_frame, item, item_size);
+              timing->pending_frame_len = item_size;
+              timing->pending_valid = true;
+              audio_buffer_return(buffer, item);
+            }
+            ESP_LOGD(TAG, "Too early by %lld ms, inserting silence",
+                     early_us / 1000LL);
+            memset(out, 0, samples * channels * sizeof(int16_t));
+            timing->frame_counter++;
+            return samples;
+          }
+          // Small desync but not adjustment frame: play normally (slightly
+          // early)
+        } else if (early_us < -TIMING_THRESHOLD_US && allow_adjust) {
           // Too late: drop frame
           ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
           if (stats) {
@@ -309,6 +343,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
           } else {
             audio_buffer_return(buffer, item);
           }
+          timing->frame_counter++;
           continue;
         }
       }
@@ -329,6 +364,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       timing->playout_started = true;
     }
 
+    timing->frame_counter++;
     return frame_samples;
   }
 

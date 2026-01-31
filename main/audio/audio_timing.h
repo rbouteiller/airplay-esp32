@@ -24,6 +24,9 @@ typedef struct {
   size_t pending_frame_len;
   size_t pending_frame_capacity;
   bool pending_valid;
+  uint32_t frame_counter;      // For subtle timing adjustments (1 in N frames)
+  int64_t drift_accumulator;   // Accumulated drift in microseconds
+  uint32_t drift_frame_count;  // Frames counted for drift calculation
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);

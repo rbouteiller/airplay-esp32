@@ -3,12 +3,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
-#include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 
 #include "wifi.h"
@@ -21,44 +21,65 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-static int s_retry_num = 0;
-#define MAX_RETRY 10
-static bool s_keep_retrying = false;
+// Re-enable AP after this many consecutive failures
+#define AP_REENABLE_THRESHOLD 5
 
+static int s_retry_num = 0;
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_wifi_initialized = false;
 static bool s_sta_connected = false;
+static bool s_bssid_set = false;
+static esp_timer_handle_t s_retry_timer = NULL;
 
-static void wifi_retry_task(void *pvParameters) {
-  while (1) {
-    if (s_keep_retrying && !s_sta_connected) {
-      // Exponential backoff: 5s, 10s, 20s, 30s (max)
-      int delay_ms = 5000;
-      if (s_retry_num > MAX_RETRY) {
-        int backoff_count = s_retry_num - MAX_RETRY;
-        delay_ms = 5000 * (1 << (backoff_count - 1));
-        if (delay_ms > 30000) {
-          delay_ms = 30000;
-        }
-      }
+// Saved AP config from init, used to re-enable AP without duplication
+static wifi_config_t s_ap_config;
 
-      vTaskDelay(pdMS_TO_TICKS(delay_ms));
+static void wifi_select_best_ap(const char *ssid);
 
-      if (!s_sta_connected && s_keep_retrying) {
-        s_retry_num++;
-        ESP_LOGI(TAG, "Background retry attempt %d...", s_retry_num);
-        esp_wifi_connect();
-      }
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1000)); // Check every second
+static void retry_timer_callback(void *arg) {
+  if (!s_sta_connected) {
+    ESP_LOGI(TAG, "Retry timer fired, reconnecting (attempt %d)...",
+             s_retry_num + 1);
+    esp_wifi_connect();
+  }
+}
+
+static void schedule_retry(void) {
+  // Exponential backoff: 5s, 10s, 20s, 30s (max)
+  int delay_s = 5;
+  if (s_retry_num > AP_REENABLE_THRESHOLD) {
+    int backoff_count = s_retry_num - AP_REENABLE_THRESHOLD;
+    delay_s = 5 * (1 << (backoff_count > 3 ? 3 : backoff_count));
+    if (delay_s > 30) {
+      delay_s = 30;
     }
+  }
+  ESP_LOGI(TAG, "Scheduling retry in %d seconds", delay_s);
+  esp_timer_start_once(s_retry_timer, (uint64_t)delay_s * 1000000);
+}
+
+static void enable_ap_mode(void) {
+  wifi_mode_t mode;
+  if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_APSTA) {
+    ESP_LOGI(TAG, "Re-enabling AP mode for configuration access");
+    if (!s_ap_netif) {
+      s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_set_config(WIFI_IF_AP, &s_ap_config);
   }
 }
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    // Scan for best AP before first connection
+    wifi_config_t cfg;
+    if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
+        strlen((char *)cfg.sta.ssid) > 0) {
+      wifi_select_best_ap((char *)cfg.sta.ssid);
+    }
     esp_wifi_connect();
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -67,68 +88,104 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGI(TAG, "Disconnected from AP, reason: %d", disconnected->reason);
 
-    if (s_retry_num < MAX_RETRY) {
+    s_retry_num++;
+
+    if (s_retry_num < AP_REENABLE_THRESHOLD) {
+      // Fast retries — reconnect immediately
+      ESP_LOGI(TAG, "Retrying connection (%d/%d)...", s_retry_num,
+               AP_REENABLE_THRESHOLD);
       esp_wifi_connect();
-      s_retry_num++;
-      ESP_LOGI(TAG, "Retrying connection (%d/%d)...", s_retry_num, MAX_RETRY);
     } else {
-      // After MAX_RETRY, enable background retry task and re-enable AP mode
-      if (s_retry_num == MAX_RETRY) {
+      if (s_retry_num == AP_REENABLE_THRESHOLD) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         ESP_LOGW(TAG,
-                 "WiFi connection failed after %d attempts, will keep retrying "
-                 "in background",
-                 MAX_RETRY);
-        s_keep_retrying = true;
-
-        // Re-enable AP mode when STA connection fails (for configuration
-        // access)
-        wifi_mode_t mode;
-        if (esp_wifi_get_mode(&mode) == ESP_OK) {
-          if (mode == WIFI_MODE_STA) {
-            ESP_LOGI(TAG, "Re-enabling AP mode for configuration access");
-            // Configure AP
-            wifi_config_t ap_config = {0};
-            strncpy((char *)ap_config.ap.ssid, "ESP32-AirPlay-Setup",
-                    sizeof(ap_config.ap.ssid) - 1);
-            ap_config.ap.ssid_len = strlen("ESP32-AirPlay-Setup");
-            ap_config.ap.channel = 1;
-            ap_config.ap.max_connection = 4;
-            ap_config.ap.authmode = WIFI_AUTH_OPEN;
-
-            // Ensure AP netif exists
-            if (!s_ap_netif) {
-              s_ap_netif = esp_netif_create_default_wifi_ap();
-            }
-
-            // Switch to APSTA mode (WiFi is already started, so just change
-            // mode and config)
-            esp_wifi_set_mode(WIFI_MODE_APSTA);
-            esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-          }
-        }
+                 "WiFi connection failed after %d attempts, switching to "
+                 "backoff retries",
+                 AP_REENABLE_THRESHOLD);
+        enable_ap_mode();
       }
-      // Background task will handle retries
+      // Delayed retries with backoff
+      schedule_retry();
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     s_retry_num = 0;
     s_sta_connected = true;
-    s_keep_retrying = false;
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
     // Disable AP mode when STA connects
     wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) == ESP_OK) {
-      if (mode == WIFI_MODE_APSTA) {
-        ESP_LOGI(TAG, "STA connected, disabling AP mode");
-        esp_wifi_set_mode(WIFI_MODE_STA);
-      }
+    if (esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_APSTA) {
+      ESP_LOGI(TAG, "STA connected, disabling AP mode");
+      esp_wifi_set_mode(WIFI_MODE_STA);
     }
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
     ESP_LOGI(TAG, "AP started");
   }
+}
+
+// Scan for the best AP matching our SSID and set its BSSID in the STA config
+static void wifi_select_best_ap(const char *ssid) {
+  wifi_scan_config_t scan_config = {
+      .ssid = (uint8_t *)ssid,
+      .bssid = NULL,
+      .channel = 0,
+      .show_hidden = false,
+      .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+      .scan_time = {.active = {.min = 100, .max = 300}},
+  };
+
+  esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Best-AP scan failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  uint16_t ap_count = 0;
+  esp_wifi_scan_get_ap_num(&ap_count);
+  if (ap_count == 0) {
+    ESP_LOGW(TAG, "Best-AP scan: no APs found for SSID %s", ssid);
+    esp_wifi_scan_get_ap_records(&ap_count, NULL);
+    return;
+  }
+
+  wifi_ap_record_t *ap_list = malloc(sizeof(wifi_ap_record_t) * ap_count);
+  if (!ap_list) {
+    esp_wifi_scan_get_ap_records(&ap_count, NULL);
+    return;
+  }
+
+  esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+
+  // Find AP with strongest signal
+  int best_idx = 0;
+  for (int i = 1; i < ap_count; i++) {
+    if (ap_list[i].rssi > ap_list[best_idx].rssi) {
+      best_idx = i;
+    }
+  }
+
+  ESP_LOGI(TAG, "Found %d APs for SSID '%s', best: " MACSTR " (rssi=%d, ch=%d)",
+           ap_count, ssid, MAC2STR(ap_list[best_idx].bssid),
+           ap_list[best_idx].rssi, ap_list[best_idx].primary);
+
+  for (int i = 0; i < ap_count; i++) {
+    if (i != best_idx) {
+      ESP_LOGI(TAG, "  Other AP: " MACSTR " (rssi=%d, ch=%d)",
+               MAC2STR(ap_list[i].bssid), ap_list[i].rssi, ap_list[i].primary);
+    }
+  }
+
+  // Set BSSID in the STA config to lock to the best AP
+  wifi_config_t sta_cfg;
+  esp_wifi_get_config(WIFI_IF_STA, &sta_cfg);
+  memcpy(sta_cfg.sta.bssid, ap_list[best_idx].bssid, 6);
+  sta_cfg.sta.bssid_set = true;
+  esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+  s_bssid_set = true;
+
+  free(ap_list);
 }
 
 static void wifi_init_base(void) {
@@ -160,83 +217,14 @@ static void wifi_init_base(void) {
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-  // Start background retry task
-  xTaskCreate(wifi_retry_task, "wifi_retry", 2048, NULL, 5, NULL);
+  // Create one-shot retry timer (no background task needed)
+  const esp_timer_create_args_t timer_args = {
+      .callback = retry_timer_callback,
+      .name = "wifi_retry",
+  };
+  ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_retry_timer));
 
   s_wifi_initialized = true;
-}
-
-void wifi_init_sta(void) {
-  wifi_init_base();
-
-  if (!s_sta_netif) {
-    s_sta_netif = esp_netif_create_default_wifi_sta();
-  }
-
-  // Try to get credentials from NVS
-  char ssid[33] = {0};
-  char password[65] = {0};
-  bool has_credentials = false;
-
-  if (settings_get_wifi_ssid(ssid, sizeof(ssid)) == ESP_OK &&
-      settings_get_wifi_password(password, sizeof(password)) == ESP_OK &&
-      strlen(ssid) > 0) {
-    has_credentials = true;
-    ESP_LOGI(TAG, "Using WiFi credentials from NVS: SSID=%s", ssid);
-  } else {
-    ESP_LOGI(TAG, "No WiFi credentials configured");
-  }
-
-  wifi_config_t wifi_config = {0};
-  strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-  strncpy((char *)wifi_config.sta.password, password,
-          sizeof(wifi_config.sta.password) - 1);
-  wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-
-  s_retry_num = 0;
-  s_keep_retrying =
-      has_credentials; // Enable background retry if credentials exist
-
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-  ESP_ERROR_CHECK(esp_wifi_start());
-
-  if (has_credentials) {
-    ESP_LOGI(TAG, "Connecting to WiFi: %s", ssid);
-  }
-}
-
-void wifi_init_ap(const char *ap_ssid, const char *ap_password) {
-  wifi_init_base();
-
-  if (!s_ap_netif) {
-    s_ap_netif = esp_netif_create_default_wifi_ap();
-  }
-
-  // Default AP credentials
-  const char *default_ssid = ap_ssid ? ap_ssid : "ESP32-AirPlay-Setup";
-  const char *default_password = ap_password ? ap_password : "";
-
-  wifi_config_t wifi_config = {0};
-  strncpy((char *)wifi_config.ap.ssid, default_ssid,
-          sizeof(wifi_config.ap.ssid) - 1);
-  wifi_config.ap.ssid_len = strlen(default_ssid);
-  wifi_config.ap.channel = 1;
-  wifi_config.ap.max_connection = 4;
-
-  if (strlen(default_password) == 0) {
-    wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-  } else {
-    strncpy((char *)wifi_config.ap.password, default_password,
-            sizeof(wifi_config.ap.password) - 1);
-    wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-  }
-
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-  ESP_ERROR_CHECK(esp_wifi_start());
-
-  ESP_LOGI(TAG, "AP started: SSID=%s", default_ssid);
 }
 
 void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
@@ -266,38 +254,35 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
           sizeof(sta_config.sta.password) - 1);
   sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-  // Configure AP
+  // Configure AP and save for later re-enable
   const char *default_ssid = ap_ssid ? ap_ssid : "ESP32-AirPlay-Setup";
   const char *default_password = ap_password ? ap_password : "";
 
-  wifi_config_t ap_config = {0};
-  strncpy((char *)ap_config.ap.ssid, default_ssid,
-          sizeof(ap_config.ap.ssid) - 1);
-  ap_config.ap.ssid_len = strlen(default_ssid);
-  ap_config.ap.channel = 1;
-  ap_config.ap.max_connection = 4;
+  memset(&s_ap_config, 0, sizeof(s_ap_config));
+  strncpy((char *)s_ap_config.ap.ssid, default_ssid,
+          sizeof(s_ap_config.ap.ssid) - 1);
+  s_ap_config.ap.ssid_len = strlen(default_ssid);
+  s_ap_config.ap.channel = 1;
+  s_ap_config.ap.max_connection = 4;
 
   if (strlen(default_password) == 0) {
-    ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    s_ap_config.ap.authmode = WIFI_AUTH_OPEN;
   } else {
-    strncpy((char *)ap_config.ap.password, default_password,
-            sizeof(ap_config.ap.password) - 1);
-    ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    strncpy((char *)s_ap_config.ap.password, default_password,
+            sizeof(s_ap_config.ap.password) - 1);
+    s_ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
   }
 
   s_retry_num = 0;
-  s_keep_retrying =
-      has_credentials; // Enable background retry if credentials exist
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &s_ap_config));
   ESP_ERROR_CHECK(esp_wifi_start());
 
   ESP_LOGI(TAG, "AP+STA mode started: AP SSID=%s", default_ssid);
   if (has_credentials) {
-    ESP_LOGI(TAG, "Connecting to WiFi: %s (will keep retrying in background)",
-             ssid);
+    ESP_LOGI(TAG, "Connecting to WiFi: %s", ssid);
   }
 }
 
@@ -350,10 +335,21 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  // Stop retries and disconnect (user will select a network)
-  s_keep_retrying = false;
+  // Stop any pending retry and disconnect cleanly
+  esp_timer_stop(s_retry_timer);
   esp_wifi_disconnect();
   vTaskDelay(pdMS_TO_TICKS(100));
+
+  // Clear BSSID lock so next connect can use a fresh scan result
+  if (s_bssid_set) {
+    wifi_config_t sta_cfg;
+    if (esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK) {
+      memset(sta_cfg.sta.bssid, 0, sizeof(sta_cfg.sta.bssid));
+      sta_cfg.sta.bssid_set = false;
+      esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    }
+    s_bssid_set = false;
+  }
 
   wifi_scan_config_t scan_config = {
       .ssid = NULL,
@@ -400,13 +396,12 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
 
 void wifi_stop(void) {
   if (s_wifi_initialized) {
-    s_keep_retrying = false;
+    esp_timer_stop(s_retry_timer);
     esp_wifi_stop();
     esp_wifi_deinit();
     s_wifi_initialized = false;
     s_sta_connected = false;
     s_retry_num = 0;
-    // Clear event group bits
     if (s_wifi_event_group) {
       xEventGroupClearBits(s_wifi_event_group,
                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);

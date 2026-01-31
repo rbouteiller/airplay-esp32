@@ -5,19 +5,6 @@
 #include <stdbool.h>
 
 /**
- * Initialize WiFi in station mode and connect to configured AP
- * Uses credentials from NVS if available, otherwise uses Kconfig defaults
- */
-void wifi_init_sta(void);
-
-/**
- * Initialize WiFi in Access Point mode
- * @param ssid AP SSID (if NULL, uses default)
- * @param password AP password (if NULL, uses default or open)
- */
-void wifi_init_ap(const char *ssid, const char *password);
-
-/**
  * Initialize WiFi in both AP and STA modes
  * @param ap_ssid AP SSID (if NULL, uses default)
  * @param ap_password AP password (if NULL, uses default or open)
