@@ -53,6 +53,7 @@ typedef struct {
   uint32_t packets_dropped;
   uint32_t decrypt_errors;
   uint32_t buffer_underruns;
+  uint32_t buffer_overruns;
   uint32_t late_frames;
   uint16_t last_seq;
   uint32_t last_timestamp;
@@ -135,6 +136,11 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
  * Enable or pause playout scheduling.
  */
 void audio_receiver_set_playing(bool playing);
+
+/**
+ * Check if playback is currently active (not paused).
+ */
+bool audio_receiver_is_playing(void);
 
 /**
  * Reset timing anchor (call when PTP clock changes, e.g., SETPEERS)

@@ -12,17 +12,16 @@
 #ifdef CONFIG_SQUEEZEAMP
 #include "dac_tas57xx.h"
 #define I2C_PORT_0 0
+#else
+// SIDE NOTE; providing power from GPIO pins is capped ~20mA.
+#define I2S_GND_PIN GPIO_NUM_14
+// #define I2S_VCC_PIN   GPIO_NUM_14
 #endif
 
 #define TAG          "audio_output"
 #define I2S_BCK_PIN   CONFIG_I2S_BCK_IO
 #define I2S_LRCK_PIN  CONFIG_I2S_WS_IO
 #define I2S_DOUT_PIN  CONFIG_I2S_DO_IO
-#ifndef CONFIG_SQUEEZEAMP
-// SIDE NOTE; providing power from GPIO pins is capped ~20mA.
-#define I2S_GND_PIN  GPIO_NUM_14
-// #define I2S_VCC_PIN   GPIO_NUM_14
-#endif
 #define SAMPLE_RATE   44100
 #define FRAME_SAMPLES 352
 
