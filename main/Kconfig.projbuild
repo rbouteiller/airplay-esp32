@@ -1,0 +1,124 @@
+menu "Airplay ESP Configuration"
+    menu "Target Board"
+        choice OUTPUT_TYPE
+            prompt "Board Type"
+            default ESP32S3_DEV_BOARD
+            help
+                Hardware being used
+            config SQUEEZEAMP
+                bool "SqueezeAmp"
+            config ESP32S3_DEV_BOARD
+                bool "ESP32S3-N16R8"
+        endchoice
+    endmenu
+
+    config BAT_CHANNEL
+        int "Battery Monitor GPIO"
+        default 7 if SQUEEZEAMP
+        default -1 
+    config LED_GREEN_GPIO
+        int "Status LED GPIO"
+        default 12 if SQUEEZEAMP
+        default -1
+    config LED_RED_GPIO
+        int "Error LED GPIO"
+        default 13 if SQUEEZEAMP
+        default -1
+
+    menu "DAC settings"
+        menu "I2S settings"
+            config I2S_BCK_IO
+                int "I2S Bit clock GPIO number"
+                default 33 if SQUEEZEAMP
+		        default 11
+                help
+                    I2S Bit Clock gpio pin to use.
+            config I2S_WS_IO
+                int "I2S Word Select GPIO number"
+                default 25 if SQUEEZEAMP
+		        default 13
+                help
+                    I2S Word Select gpio pin to use.
+            config I2S_DO_IO
+                int "I2S Data Output GPIO number"
+                default 32 if SQUEEZEAMP
+		        default 12
+                help
+                    I2S data output gpio pin to use.
+        endmenu
+        menu "DAC I2C settings"
+            config DAC_I2C_SDA
+                int "I2C SDA GPIO number for DAC control"
+                default 27 if SQUEEZEAMP
+                default -1
+                help
+                    I2C data gpio pin to use with DAC (not used mostly, leave it to -1).
+            config DAC_I2C_SCL
+                int "I2C SCL GPIO number for DAC control"
+                default 26 if SQUEEZEAMP
+                default -1
+                help
+                    I2C clock gpio pin to use with DAC (not used mostly, leave it to -1).
+        endmenu
+        
+    config JACK_GPIO
+        int "Headphone Jack Detection GPIO"
+        default 34 if SQUEEZEAMP
+	    default -1
+    config SPKFAULT_GPIO
+        int "DAC / AMP Fault Detection GPIO"
+        default 2
+	    default -1
+    config MUTE_GPIO
+        int "GPIO for muting DAC"
+        default 14 if SQUEEZEAMP
+	    default -1
+        help
+            GPIO used to mute DAC
+    config MUTE_GPIO_LEVEL
+        int "Mute GPIO active level"
+        default 0 if SQUEEZEAMP
+	    default -1
+    endmenu
+
+    menu "SPDIF settings (SqueezeAMP)"
+        config SPDIF_BCK_IO
+            int "SDPIF Bit clock GPIO number"
+            default 33 if SQUEEZEAMP
+            default 11
+            help
+                Must be set as SPDIF re-uses I2S but only needs DO (recommendation: set it to I2S Bit clock value)
+        config SPDIF_WS_IO
+            int "SPDIF Word Select GPIO number"
+            default 25 if SQUEEZEAMP
+	        default 13
+            help
+                Must be set as SPDIF re-uses I2S but only needs DO (recommendation: set it to I2S Word select value)
+        config SPDIF_DO_IO
+            int "SPDIF Data I/O GPIO number"
+            default 15 if SQUEEZEAMP
+	        default -1
+            help
+                I2S data output IO use to simulate SPDIF
+    endmenu
+endmenu
+
+menu "Wifi Configuration"
+  config DEFAULT_AP_SSID
+      string "Access Point SSID"
+      default "esp32"
+      help
+        SSID (network name) the the esp32 will broadcast.
+
+  config DEFAULT_AP_PASSWORD
+      string "Access Point Password"
+      default "esp32pwd"
+      help
+        Password used for the Access Point. Leave empty and set AUTH MODE to WIFI_AUTH_OPEN for no password.
+
+  config DEFAULT_AP_CHANNEL
+      int "Access Point WiFi Channel"
+      default 1
+      help
+        Be careful you might not see the access point if you use a channel not allowed in your country.
+endmenu
