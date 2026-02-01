@@ -594,7 +594,29 @@ static void handle_post(int socket, rtsp_conn_t *conn,
         ESP_LOGI(TAG, "/feedback has networkTimeSecs=%lld", (long long)value);
       }
     }
-    rtsp_send_ok(socket, conn, req->cseq);
+
+    // For buffered audio streams (type 103), send a proper feedback response
+    // with stream status. This acts as a keepalive to prevent iPhone from
+    // sending TEARDOWN during extended pause.
+    if (conn->stream_type == 103) {
+      uint8_t response[128];
+      size_t response_len = bplist_build_feedback_response(
+          response, sizeof(response), conn->stream_type, 44100.0);
+
+      if (response_len > 0) {
+        ESP_LOGD(TAG, "/feedback responding with stream status (type=%lld, sr=44100)",
+                 (long long)conn->stream_type);
+        rtsp_send_response(socket, conn, 200, "OK", req->cseq,
+                           "Content-Type: application/x-apple-binary-plist\r\n",
+                           (const char *)response, response_len);
+      } else {
+        // Fallback to simple OK if response build fails
+        rtsp_send_ok(socket, conn, req->cseq);
+      }
+    } else {
+      // For non-buffered streams, simple OK is fine
+      rtsp_send_ok(socket, conn, req->cseq);
+    }
 
   } else {
     rtsp_send_ok(socket, conn, req->cseq);
@@ -940,9 +962,13 @@ static void handle_record(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
+  ESP_LOGI(TAG, "RECORD received - starting playback, stream_paused was %d",
+           conn->stream_paused);
+
   audio_receiver_start_stream(conn->data_port, conn->control_port,
                               conn->buffered_port);
   audio_receiver_set_playing(true);
+  conn->stream_paused = false;
 
   char headers[128];
   uint32_t output_latency_us = audio_receiver_get_output_latency_us();
@@ -1021,7 +1047,13 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  audio_receiver_flush();
+  ESP_LOGI(TAG, "PAUSE received - keeping buffer, setting paused state");
+
+  // Don't flush buffer on pause - keep audio data for resume
+  // Only stop playback
+  audio_receiver_set_playing(false);
+  conn->stream_paused = true;
+
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
@@ -1110,19 +1142,30 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
              (unsigned long long)network_time_secs,
              (unsigned long long)rtp_time, rate);
 
-    if (network_time_secs != 0 && rtp_time != 0) {
+    // Only set new anchor if NOT resuming from pause with a valid existing
+    // anchor When resuming, the sender provides a new anchor adjusted for
+    // elapsed time, but buffered frames are still timed relative to the old
+    // anchor
+    bool is_resume = (rate != 0.0 && conn->stream_paused);
+    if (network_time_secs != 0 && rtp_time != 0 && !is_resume) {
       uint64_t frac = network_time_frac >> 32;
       frac = (frac * 1000000000ULL) >> 32;
       uint64_t network_time_ns = network_time_secs * 1000000000ULL + frac;
       audio_receiver_set_anchor_time(clock_id, network_time_ns,
                                      (uint32_t)rtp_time);
+    } else if (is_resume) {
+      ESP_LOGI(TAG, "SETRATEANCHORTIME: resume - keeping existing anchor for "
+                    "buffered frames");
     }
   }
 
   if (rate == 0.0) {
+    ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=0 -> PAUSING");
     conn->stream_paused = true;
     audio_receiver_set_playing(false);
   } else {
+    ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
+             rate, conn->stream_paused);
     conn->stream_paused = false;
     audio_receiver_set_playing(true);
   }
