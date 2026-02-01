@@ -53,7 +53,7 @@ int32_t airplay_get_volume_q15(void) {
   if (c->conn && !c->is_old) {
     return rtsp_conn_get_volume_q15(c->conn);
   }
-  return 32768;
+  return 16384; // 50% volume for new clients
 }
 
 // Helper to grow buffer
