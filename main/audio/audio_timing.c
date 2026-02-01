@@ -12,11 +12,13 @@
 #define HARDWARE_OUTPUT_LATENCY_US    46000  // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           80000  // 80ms early/late threshold
-#define SUBTLE_ADJUST_THRESHOLD_US    500000 // 500ms - below this, adjust subtly
-#define SUBTLE_ADJUST_INTERVAL        10     // Only adjust 1 frame out of N
+#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
+#define MAX_EARLY_US                  500000 // 500ms max early - play anyway if older
+#define MAX_CONSECUTIVE_EARLY \
+  50 // Invalidate anchor after this many early frames
 
 static const char *TAG = "audio_time";
+static int consecutive_early_frames = 0;
 
 static uint32_t frame_samples_from_format(const audio_format_t *format) {
   if (format->frame_size > 0) {
@@ -91,7 +93,21 @@ static bool compute_early_us(const audio_timing_t *timing,
   target_ns -= (int64_t)HARDWARE_OUTPUT_LATENCY_US * 1000LL;
 
   int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
-  *early_us = (target_ns - now_ns) / 1000LL;
+
+  // Account for accumulated pause time - shift "now" backwards by pause
+  // duration This effectively makes the buffered frames appear "on time" after
+  // resume
+  int64_t adjusted_now_ns = now_ns - timing->total_pause_duration_ns;
+
+  *early_us = (target_ns - adjusted_now_ns) / 1000LL;
+
+  // Debug: log when pause offset is significant
+  static int log_count = 0;
+  if (timing->total_pause_duration_ns > 0 && (log_count++ % 500 == 0)) {
+    ESP_LOGD(TAG, "Timing: pause_offset=%lld ms, early=%lld ms",
+             timing->total_pause_duration_ns / 1000000LL, *early_us / 1000LL);
+  }
+
   return true;
 }
 
@@ -122,9 +138,8 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_valid = false;
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
-  timing->frame_counter = 0;
-  timing->drift_accumulator = 0;
-  timing->drift_frame_count = 0;
+  timing->pause_start_time_ns = 0;
+  timing->total_pause_duration_ns = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -163,11 +178,21 @@ void audio_timing_set_anchor(audio_timing_t *timing,
   }
 
   (void)clock_id;
+
+  int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
+
+  ESP_LOGI(TAG, "set_anchor: rtp=%lu, network_time=%llu ns",
+           (unsigned long)rtp_time, (unsigned long long)network_time_ns);
+
   timing->anchor_rtp_time = rtp_time;
   timing->anchor_network_time_ns = network_time_ns;
-  timing->anchor_local_time_ns = (int64_t)esp_timer_get_time() * 1000LL;
+  timing->anchor_local_time_ns = now_ns;
   timing->ptp_locked = ptp_clock_is_locked();
   timing->anchor_valid = true;
+
+  // Reset pause tracking on new anchor - fresh timing baseline
+  timing->total_pause_duration_ns = 0;
+  timing->pause_start_time_ns = 0;
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -175,10 +200,36 @@ void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
     return;
   }
 
+  int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
+
+  ESP_LOGI(TAG, "set_playing: %s -> %s, pause_start=%lld, total_pause=%lld ms",
+           timing->playing ? "playing" : "paused",
+           playing ? "playing" : "paused", timing->pause_start_time_ns,
+           timing->total_pause_duration_ns / 1000000LL);
+
+  if (!playing && timing->playing) {
+    // Transitioning to paused state - record pause start time
+    timing->pause_start_time_ns = now_ns;
+    ESP_LOGI(TAG, "Playback paused at %lld ns", now_ns);
+  } else if (playing && !timing->playing) {
+    // Transitioning to playing state - accumulate pause duration
+    if (timing->pause_start_time_ns > 0) {
+      int64_t pause_duration = now_ns - timing->pause_start_time_ns;
+      timing->total_pause_duration_ns += pause_duration;
+      ESP_LOGI(
+          TAG,
+          "Playback resumed after %lld ms pause, total pause offset: %lld ms",
+          pause_duration / 1000000LL,
+          timing->total_pause_duration_ns / 1000000LL);
+    } else {
+      ESP_LOGW(TAG, "Resume but pause_start_time_ns was 0!");
+    }
+    timing->pause_start_time_ns = 0;
+  }
+
   timing->playing = playing;
   if (!playing) {
-    timing->playout_started = false;
-    timing->anchor_valid = false;
+    // Keep anchor_valid and buffer intact - just stop consuming
     timing->pending_valid = false;
     timing->pending_frame_len = 0;
   }
@@ -291,17 +342,28 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       int64_t early_us = 0;
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
-
-        int64_t abs_early_us = early_us > 0 ? early_us : -early_us;
-        // For small desyncs (<500ms), only adjust 1 frame out of 10
-        bool allow_adjust =
-            (abs_early_us >= SUBTLE_ADJUST_THRESHOLD_US) ||
-            (timing->frame_counter % SUBTLE_ADJUST_INTERVAL == 0);
-
         if (early_us > TIMING_THRESHOLD_US) {
-          if (!timing->playout_started) {
-            // Initial sync: wait until we're ready (don't insert silence
-            // frame-by-frame)
+          consecutive_early_frames++;
+
+          // If frame is way too early or we've had too many early frames,
+          // the anchor is probably wrong - invalidate it and play normally
+          if (early_us > MAX_EARLY_US ||
+              consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
+            ESP_LOGW(TAG, "Invalidating anchor: early_us=%lld, consecutive=%d",
+                     early_us / 1000LL, consecutive_early_frames);
+            timing->anchor_valid = false;
+            consecutive_early_frames = 0;
+            // Fall through to play the frame normally
+          } else {
+            // Frame is slightly early - output silence, keep frame for later
+            static int early_count = 0;
+            early_count++;
+            if (early_count % 100 == 1) {
+              ESP_LOGW(TAG,
+                       "Frame too early #%d: %lld ms, buffered=%d, pending=%d",
+                       early_count, early_us / 1000LL, buffered_frames,
+                       timing->pending_valid ? 1 : 0);
+            }
             if (!from_pending && timing->pending_frame &&
                 item_size <= timing->pending_frame_capacity) {
               memcpy(timing->pending_frame, item, item_size);
@@ -312,26 +374,9 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
             memset(out, 0, samples * channels * sizeof(int16_t));
             return samples;
           }
-          // After playout started: subtle adjustment (1 in 10) for small
-          // desyncs
-          if (allow_adjust) {
-            // Keep frame for later, output silence
-            if (!from_pending && timing->pending_frame &&
-                item_size <= timing->pending_frame_capacity) {
-              memcpy(timing->pending_frame, item, item_size);
-              timing->pending_frame_len = item_size;
-              timing->pending_valid = true;
-              audio_buffer_return(buffer, item);
-            }
-            ESP_LOGD(TAG, "Too early by %lld ms, inserting silence",
-                     early_us / 1000LL);
-            memset(out, 0, samples * channels * sizeof(int16_t));
-            timing->frame_counter++;
-            return samples;
-          }
-          // Small desync but not adjustment frame: play normally (slightly
-          // early)
-        } else if (early_us < -TIMING_THRESHOLD_US && allow_adjust) {
+        } else if (early_us < -TIMING_THRESHOLD_US) {
+          // Reset consecutive early counter on late/normal frames
+          consecutive_early_frames = 0;
           // Too late: drop frame
           ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
           if (stats) {
@@ -343,11 +388,13 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
           } else {
             audio_buffer_return(buffer, item);
           }
-          timing->frame_counter++;
           continue;
         }
       }
     }
+
+    // Frame is on time - reset early counter
+    consecutive_early_frames = 0;
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
@@ -364,7 +411,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       timing->playout_started = true;
     }
 
-    timing->frame_counter++;
     return frame_samples;
   }
 

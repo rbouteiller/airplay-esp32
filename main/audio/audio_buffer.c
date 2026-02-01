@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "audio_buffer.h"
+#include "audio_receiver.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -29,6 +30,9 @@ static void audio_buffer_drain(audio_buffer_t *buffer, int frames_to_drain) {
   }
 }
 
+// High water mark - start blocking when buffer is this full
+#define BUFFER_HIGH_WATER_FRAMES ((MAX_BUFFER_FRAMES * 80) / 100)
+
 static bool audio_buffer_queue_chunk(audio_buffer_t *buffer,
                                      audio_stats_t *stats, uint32_t timestamp,
                                      const int16_t *pcm_data, size_t samples,
@@ -38,9 +42,23 @@ static bool audio_buffer_queue_chunk(audio_buffer_t *buffer,
   }
 
   int current_frames = audio_buffer_get_frame_count(buffer);
-  if (current_frames > MAX_BUFFER_FRAMES) {
-    int to_drain = current_frames - MAX_BUFFER_FRAMES + 10;
-    audio_buffer_drain(buffer, to_drain);
+  bool is_paused = !audio_receiver_is_playing();
+
+  // Flow control: if buffer is above high water mark, block until space
+  // available. This creates backpressure to match producer speed to consumer
+  // speed.
+  TickType_t send_timeout = pdMS_TO_TICKS(10); // Normal: 10ms timeout
+
+  if (current_frames > BUFFER_HIGH_WATER_FRAMES) {
+    static bool was_throttling = false;
+    if (!was_throttling) {
+      ESP_LOGI(TAG, "Buffer high (%d/%d frames), throttling producer%s",
+               current_frames, MAX_BUFFER_FRAMES, is_paused ? " (paused)" : "");
+      was_throttling = true;
+    }
+    // Use much longer timeout to let consumer drain the buffer
+    // When paused, consumer won't drain - we'll handle overflow below
+    send_timeout = is_paused ? pdMS_TO_TICKS(100) : pdMS_TO_TICKS(5000);
   }
 
   audio_frame_header_t *hdr = (audio_frame_header_t *)buffer->frame_buffer;
@@ -56,18 +74,62 @@ static bool audio_buffer_queue_chunk(audio_buffer_t *buffer,
   size_t total_bytes = sizeof(*hdr) + pcm_bytes;
 
   BaseType_t ret = xRingbufferSend(buffer->ring, buffer->frame_buffer,
-                                   total_bytes, pdMS_TO_TICKS(10));
+                                   total_bytes, send_timeout);
   if (ret != pdTRUE) {
-    if (stats) {
-      stats->buffer_underruns++;
+    // Ring buffer is full after waiting
+    int frame_count = audio_buffer_get_frame_count(buffer);
+
+    // When paused, don't drain - just drop incoming frames to avoid overflow
+    // The buffered data should be preserved for resume
+    if (is_paused) {
+      static int paused_drop_count = 0;
+      paused_drop_count++;
+      if (paused_drop_count % 100 == 1) {
+        ESP_LOGW(
+            TAG,
+            "Paused: dropping incoming frame #%d (buffer full at %d frames)",
+            paused_drop_count, frame_count);
+      }
+      return false; // Drop this frame, keep buffer intact
     }
-    return false;
+
+    ESP_LOGW(TAG,
+             "Ringbuf full after %ldms wait (frames=%d), forcing drain of 100 "
+             "frames, ts=%lu",
+             (long)(send_timeout * portTICK_PERIOD_MS), frame_count,
+             (unsigned long)timestamp);
+    audio_buffer_drain(buffer, 100);
+
+    // Retry after drain
+    ret = xRingbufferSend(buffer->ring, buffer->frame_buffer, total_bytes,
+                          pdMS_TO_TICKS(100));
+    if (ret != pdTRUE) {
+      if (stats) {
+        stats->buffer_overruns++;
+      }
+      ESP_LOGE(TAG,
+               "Failed to queue chunk after drain: ringbuf still full, "
+               "frames=%d, ts=%lu, overruns=%lu",
+               audio_buffer_get_frame_count(buffer), (unsigned long)timestamp,
+               stats ? (unsigned long)stats->buffer_overruns : 0);
+
+      return false;
+    }
+    ESP_LOGI(TAG, "Queue succeeded after drain");
   }
 
   if (stats) {
     stats->packets_decoded++;
   }
   audio_buffer_adjust_frames(buffer, 1);
+
+  // Periodic status logging (every 500 frames)
+  static int queue_count = 0;
+  if (++queue_count % 500 == 0) {
+    ESP_LOGI(TAG, "Buffer status: frames=%d, decoded=%lu",
+             audio_buffer_get_frame_count(buffer),
+             stats ? (unsigned long)stats->packets_decoded : 0);
+  }
   return true;
 }
 
@@ -169,6 +231,13 @@ bool audio_buffer_take(audio_buffer_t *buffer, void **item, size_t *item_size,
 
   *item = xRingbufferReceive(buffer->ring, item_size, ticks);
   if (!*item) {
+    static int underrun_count = 0;
+    underrun_count++;
+    // Log every 100 underruns to avoid spam
+    if (underrun_count % 100 == 1) {
+      ESP_LOGW(TAG, "Buffer underrun #%d (frames=%d)", underrun_count,
+               audio_buffer_get_frame_count(buffer));
+    }
     return false;
   }
 
