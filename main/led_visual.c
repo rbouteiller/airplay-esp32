@@ -84,13 +84,11 @@ void led_visual_update(const int16_t *pcm, size_t stereo_samples) {
     return;
   }
 
-  // Map RMS to brightness (0-255), log scale feels more natural
+  // Map RMS to brightness (0-255), linear for maximum dynamic range
   float norm = (rms - SILENCE_THRESH) / (16000.0f - SILENCE_THRESH);
   if (norm > 1.0f) norm = 1.0f;
-  // Apply sqrt curve for perceptual brightness
-  norm = sqrtf(norm);
   uint8_t val = (uint8_t)(norm * 255.0f);
-  if (val < 10) val = 10; // minimum visible brightness
+  if (val < 1) val = 1;
 
   // Map to HSV hue: 170 (blue, quiet) -> 85 (green, medium) -> 0 (red, loud)
   // Hue range 0-255 in led_strip HSV

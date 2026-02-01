@@ -55,6 +55,7 @@ static void playback_task(void *arg) {
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       taskYIELD();
     } else {
+      led_visual_update(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
       vTaskDelay(1);
