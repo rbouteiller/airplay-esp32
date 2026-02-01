@@ -1,7 +1,10 @@
-# ESP32 N8R8 Configuration
+# ESP32 SqueezeAmp Configuration
 
 # Target
 CONFIG_IDF_TARGET="esp32"
+
+# Board type - select SqueezeAmp
+CONFIG_SQUEEZEAMP=y
 
 # Flash size (8MB)
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
