@@ -53,7 +53,9 @@ static void led_rgb_update(float norm, float bass_ratio) {
   }
 
   uint8_t val = (uint8_t)(norm * 255.0f);
-  if (val < 1) val = 1;
+  if (val < 1) {
+    val = 1;
+  }
 
   // Map to HSV hue: 170 (blue, quiet) -> 85 (green, medium) -> 0 (red, loud)
   uint16_t hue = (uint16_t)(170.0f * (1.0f - norm));
@@ -61,7 +63,9 @@ static void led_rgb_update(float norm, float bass_ratio) {
   // Shift towards purple/magenta when bassy
   if (bass_ratio > 0.3f) {
     hue = (uint16_t)(hue + (uint16_t)(bass_ratio * 60.0f));
-    if (hue > 255) hue = 255;
+    if (hue > 255) {
+      hue = 255;
+    }
   }
 
   // High saturation, reduce slightly at very high energy for warm white
@@ -130,7 +134,9 @@ static void led_green_update(float norm) {
   }
 
   uint32_t duty = (uint32_t)(norm * 255.0f);
-  if (duty > 255) duty = 255;
+  if (duty > 255) {
+    duty = 255;
+  }
 
   ledc_set_duty(LEDC_LOW_SPEED_MODE, GREEN_LED_CHANNEL, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, GREEN_LED_CHANNEL);
@@ -175,21 +181,27 @@ void led_visual_update(const int16_t *pcm, size_t stereo_samples) {
     int32_t d = (int32_t)pcm[i] - (int32_t)pcm[i - 2];
     diff_sum += (uint64_t)(d < 0 ? -d : d);
   }
-  float high_energy = (float)diff_sum / (float)(total / 2);
+  float high_energy = (float)diff_sum / ((float)total / 2.0f);
 
   // Bass ratio: when high_energy is low relative to rms, content is bassy
   float bass_ratio = 0.0f;
   if (rms > SILENCE_THRESH) {
     bass_ratio = 1.0f - (high_energy / (rms * 2.0f + 1.0f));
-    if (bass_ratio < 0.0f) bass_ratio = 0.0f;
-    if (bass_ratio > 1.0f) bass_ratio = 1.0f;
+    if (bass_ratio < 0.0f) {
+      bass_ratio = 0.0f;
+    }
+    if (bass_ratio > 1.0f) {
+      bass_ratio = 1.0f;
+    }
   }
 
   // Normalized energy (0.0 = silence, 1.0 = loud)
   float norm = 0.0f;
   if (rms >= SILENCE_THRESH) {
     norm = (rms - SILENCE_THRESH) / (16000.0f - SILENCE_THRESH);
-    if (norm > 1.0f) norm = 1.0f;
+    if (norm > 1.0f) {
+      norm = 1.0f;
+    }
   }
 
   led_rgb_update(norm, bass_ratio);

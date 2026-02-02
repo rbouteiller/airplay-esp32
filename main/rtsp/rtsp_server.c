@@ -22,7 +22,7 @@ static const char *TAG = "rtsp_server";
 
 #define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
-#define RTSP_BUFFER_LARGE   (256 * 1024)
+#define RTSP_BUFFER_LARGE   ((size_t)256 * 1024)
 
 static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
@@ -94,14 +94,16 @@ static void process_rtsp_buffer(client_slot_t *slot, uint8_t *buffer,
     header_str[header_len] = '\0';
 
     int content_len = rtsp_parse_content_length(header_str);
-    if (content_len < 0)
+    if (content_len < 0) {
       content_len = 0;
+    }
 
     size_t total_len = header_len + (size_t)content_len;
     if (total_len > RTSP_BUFFER_LARGE || *buf_len < total_len) {
       free(header_str);
-      if (total_len > RTSP_BUFFER_LARGE)
+      if (total_len > RTSP_BUFFER_LARGE) {
         *buf_len = 0;
+      }
       break;
     }
 
@@ -170,12 +172,14 @@ static void client_task(void *pvParameters) {
         if (buf_len >= buf_capacity - 1024) {
           size_t new_cap = buf_capacity < RTSP_BUFFER_LARGE ? RTSP_BUFFER_LARGE
                                                             : buf_capacity * 2;
-          if (new_cap > RTSP_BUFFER_LARGE)
+          if (new_cap > RTSP_BUFFER_LARGE) {
             goto cleanup;
+          }
           uint8_t *new_buf =
               grow_buffer(buffer, buf_capacity, new_cap, buf_len);
-          if (!new_buf)
+          if (!new_buf) {
             goto cleanup;
+          }
           buffer = new_buf;
           buf_capacity = new_cap;
         }
@@ -199,16 +203,18 @@ static void client_task(void *pvParameters) {
     if (buf_len >= buf_capacity - 1024) {
       size_t new_cap = buf_capacity < RTSP_BUFFER_LARGE ? RTSP_BUFFER_LARGE
                                                         : buf_capacity * 2;
-      if (new_cap > RTSP_BUFFER_LARGE)
+      if (new_cap > RTSP_BUFFER_LARGE) {
         break;
+      }
       uint8_t *new_buf = grow_buffer(buffer, buf_capacity, new_cap, buf_len);
-      if (!new_buf)
+      if (!new_buf) {
         break;
+      }
       buffer = new_buf;
       buf_capacity = new_cap;
     }
 
-    int recv_len =
+    ssize_t recv_len =
         recv(slot->socket, buffer + buf_len, buf_capacity - buf_len, 0);
     if (recv_len <= 0) {
       if (recv_len < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {

@@ -155,10 +155,8 @@ void tas57xx_enable_speaker(bool enable) {
 }
 
 void tas57xx_enable_line_out(bool enable) {
+  (void)enable;
   ESP_LOGW(TAG, "Not supported yet");
-  if (enable) {
-  } else {
-  }
 }
 
 static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...) {
@@ -284,8 +282,9 @@ static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
   } else {
     // Allocate buffer for reg + data
     uint8_t *buf = malloc(len + 1);
-    if (buf == NULL)
+    if (buf == NULL) {
       return ESP_ERR_NO_MEM;
+    }
 
     buf[0] = reg;
     memcpy(buf + 1, data, len);

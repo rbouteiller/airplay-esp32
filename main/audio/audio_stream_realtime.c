@@ -61,11 +61,11 @@ static const uint8_t *parse_rtp(const uint8_t *packet, size_t len,
       return NULL;
     }
     uint16_t ext_len = ntohs(*(uint16_t *)(packet + RTP_HEADER_SIZE + 2));
-    header_len += 4 + ext_len * 4;
+    header_len += 4 + (size_t)ext_len * 4;
   }
 
   uint8_t csrc_count = hdr->flags & 0x0F;
-  header_len += csrc_count * 4;
+  header_len += (size_t)csrc_count * 4;
 
   if (len <= header_len) {
     return NULL;
@@ -101,7 +101,7 @@ static void send_resend_request(audio_receiver_state_t *state,
   nack[6] = (uint8_t)(count >> 8);
   nack[7] = (uint8_t)(count & 0xFF);
 
-  int ret = sendto(state->control_socket, nack, sizeof(nack), 0,
+  ssize_t ret = sendto(state->control_socket, nack, sizeof(nack), 0,
                    (struct sockaddr *)&state->client_control_addr,
                    sizeof(state->client_control_addr));
   if (ret < 0) {
@@ -118,8 +118,8 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
                                     socklen_t *addr_len) {
   audio_receiver_state_t *state = audio_stream_state(stream);
 
-  int len = recvfrom(state->data_socket, packet, MAX_RTP_PACKET_SIZE, 0,
-                     (struct sockaddr *)src_addr, addr_len);
+  ssize_t len = recvfrom(state->data_socket, packet, MAX_RTP_PACKET_SIZE, 0,
+                         (struct sockaddr *)src_addr, addr_len);
   if (len < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return true;
@@ -257,8 +257,8 @@ static void control_receiver_task(void *pvParameters) {
   socklen_t addr_len = sizeof(src_addr);
 
   while (stream->running) {
-    int len = recvfrom(state->control_socket, packet, MAX_RTP_PACKET_SIZE, 0,
-                       (struct sockaddr *)&src_addr, &addr_len);
+    ssize_t len = recvfrom(state->control_socket, packet, MAX_RTP_PACKET_SIZE, 0,
+                           (struct sockaddr *)&src_addr, &addr_len);
 
     if (len < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {

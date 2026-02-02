@@ -50,8 +50,10 @@ int base64_encode(const uint8_t *input, size_t input_len, char *output,
 
     output[pos++] = b64_table[(triple >> 18) & 0x3F];
     output[pos++] = b64_table[(triple >> 12) & 0x3F];
-    output[pos++] = (i + 1 < input_len) ? b64_table[(triple >> 6) & 0x3F] : '=';
-    output[pos++] = (i + 2 < input_len) ? b64_table[triple & 0x3F] : '=';
+    output[pos++] =
+        (char)((i + 1 < input_len) ? b64_table[(triple >> 6) & 0x3F] : '=');
+    output[pos++] =
+        (char)((i + 2 < input_len) ? b64_table[triple & 0x3F] : '=');
   }
 
   return (int)out_len;

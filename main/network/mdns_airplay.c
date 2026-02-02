@@ -48,7 +48,7 @@ void mdns_airplay_init(void) {
   // Get real Ed25519 public key from HAP module
   const uint8_t *pk = hap_get_public_key();
   for (int i = 0; i < 32; i++) {
-    snprintf(pk_str + i * 2, 3, "%02x", pk[i]);
+    snprintf(pk_str + (size_t)i * 2, 3, "%02x", pk[i]);
   }
 
   // Format features as "hi,lo" hex string

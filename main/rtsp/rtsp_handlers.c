@@ -199,7 +199,7 @@ static void event_port_task(void *pvParameters) {
         }
         if (ret > 0 && FD_ISSET(event_client_socket, &cfds)) {
           char buf[16];
-          int n = recv(event_client_socket, buf, sizeof(buf), MSG_PEEK);
+          ssize_t n = recv(event_client_socket, buf, sizeof(buf), MSG_PEEK);
           if (n <= 0) {
             close(event_client_socket);
             event_client_socket = -1;
@@ -456,6 +456,8 @@ static void handle_post(int socket, rtsp_conn_t *conn,
 
       if (state && state_len == 1) {
         switch (state[0]) {
+        default:
+          break;
         case 1:
           err = hap_pair_setup_m1(conn->hap_session, body, body_len, response,
                                   2048, &response_len);
@@ -670,17 +672,20 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
       format.rice_initial_history = mb;
       format.rice_limit = kb;
       format.num_channels = num_ch;
-      format.channels = num_ch;
-      format.bits_per_sample = bit_depth;
-      if (matched >= 8)
+      format.channels = (int)num_ch;
+      format.bits_per_sample = (int)bit_depth;
+      if (matched >= 8) {
         format.max_run = max_run;
-      if (matched >= 9)
+      }
+      if (matched >= 9) {
         format.max_coded_frame_size = max_frame;
-      if (matched >= 10)
+      }
+      if (matched >= 10) {
         format.avg_bit_rate = avg_rate;
+      }
       if (matched >= 11) {
         format.sample_rate_config = rate;
-        format.sample_rate = rate;
+        format.sample_rate = (int)rate;
       }
     }
   }
@@ -1006,7 +1011,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
       if (strstr((const char *)body, "volume:")) {
         const char *vol = strstr((const char *)body, "volume:");
         if (vol) {
-          float volume = atof(vol + 7);
+          float volume = (float)atof(vol + 7);
           rtsp_conn_set_volume(conn, volume);
         }
       }

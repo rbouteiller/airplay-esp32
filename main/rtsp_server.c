@@ -21,7 +21,7 @@ static const char *TAG = "rtsp_server";
 
 #define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
-#define RTSP_BUFFER_LARGE   (256 * 1024)
+#define RTSP_BUFFER_LARGE   ((size_t)256 * 1024)
 
 static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
@@ -191,7 +191,7 @@ static void handle_client(int client_socket) {
       buf_capacity = new_capacity;
     }
 
-    int recv_len =
+    ssize_t recv_len =
         recv(client_socket, buffer + buf_len, buf_capacity - buf_len, 0);
     if (recv_len <= 0) {
       if (recv_len < 0) {

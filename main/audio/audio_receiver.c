@@ -98,7 +98,7 @@ esp_err_t audio_receiver_init(void) {
 
   size_t pending_capacity =
       sizeof(audio_frame_header_t) +
-      (MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS * sizeof(int16_t));
+      ((size_t)MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS * sizeof(int16_t));
   audio_timing_init(&receiver.timing, pending_capacity);
   audio_timing_set_format(&receiver.timing, &receiver.stream->format);
 

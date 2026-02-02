@@ -56,10 +56,12 @@ const uint8_t *rtsp_get_body(const char *request, size_t request_len,
 // RTP/AVP/UDP;unicast;mode=record;control_port=6001;timing_port=6002
 void rtsp_parse_transport(const char *request, uint16_t *control_port,
                           uint16_t *timing_port) {
-  if (control_port)
+  if (control_port) {
     *control_port = 0;
-  if (timing_port)
+  }
+  if (timing_port) {
     *timing_port = 0;
+  }
 
   const char *transport = strstr(request, "Transport:");
   if (!transport) {
@@ -125,7 +127,7 @@ int rtsp_request_parse(const uint8_t *data, size_t len, rtsp_request_t *req) {
 static int send_all(int socket, const uint8_t *data, size_t len) {
   size_t sent = 0;
   while (sent < len) {
-    int r = send(socket, data + sent, len - sent, 0);
+    ssize_t r = send(socket, data + sent, len - sent, 0);
     if (r <= 0) {
       return -1;
     }
