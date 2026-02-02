@@ -3,8 +3,12 @@ name: CI & Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
 
 jobs:
   format-check:
@@ -118,17 +122,17 @@ jobs:
           pattern: firmware-*
           merge-multiple: true
 
-      - name: Generate release tag
-        id: tag
+      - name: Read version
+        id: version
         run: |
-          TAG="build-$(date -u +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          VERSION=$(cat version.txt | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Build ${{ steps.tag.outputs.tag }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
           files: release-artifacts/*.bin
           make_latest: true
           generate_release_notes: true
