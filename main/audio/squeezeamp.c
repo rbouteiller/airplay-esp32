@@ -144,32 +144,37 @@ squeezeamp_state_e squeezeamp_get_state() {
   return state;
 }
 
-void squeezeamp_set_state(squeezeamp_state_e state) {
-  switch (state) {
+void squeezeamp_set_state(squeezeamp_state_e new_state) {
+  ESP_LOGD(TAG, "State change: %d -> %d", state, new_state);
+  state = new_state;
+
+  switch (new_state) {
   case SQUEEZEAMP_STANDBY:
-    /* code */
-    tas57xx_set_power_mode(TAS57XX_AMP_ON);
     tas57xx_enable_speaker(true);
+    tas57xx_set_power_mode(TAS57XX_AMP_OFF);
     flash_led(LEDC_GREEN_CHANNEL, 100, 2500);
     break;
-  case SQUEEZEAMP_CLIENT_CONNECTED:
-    /* code */
-    break;
+
   case SQUEEZEAMP_PLAYING:
     tas57xx_set_power_mode(TAS57XX_AMP_ON);
-    tas57xx_enable_speaker(true);
+    flash_led(LEDC_GREEN_CHANNEL, 1, 0);
     break;
-  case SQUEEZEAMP_PAUSED:
-    tas57xx_enable_speaker(false);
-    tas57xx_set_power_mode(TAS57XX_AMP_STANDBY);
 
+  case SQUEEZEAMP_PAUSED:
+    flash_led(LEDC_GREEN_CHANNEL, 500, 500);
+    tas57xx_set_power_mode(TAS57XX_AMP_STANDBY);
     break;
+
   case SQUEEZEAMP_ERROR:
+    tas57xx_enable_speaker(false);
+    tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+
     ledc_set_duty(LEDC_MODE, LEDC_RED_CHANNEL, 80);
     ledc_update_duty(LEDC_MODE, LEDC_RED_CHANNEL);
     break;
+
   default:
-    ESP_LOGE(TAG, "Unhandled state: %d", state);
+    ESP_LOGE(TAG, "Unhandled state: %d", new_state);
     break;
   }
 }
@@ -184,12 +189,16 @@ static void led_cb(TimerHandle_t xTimer) {
   ledc_set_duty(LEDC_MODE, led->channel, led->is_on ? led->duty : 0);
   ledc_update_duty(LEDC_MODE, led->channel);
 
+  // If off_ms is 0, keep LED on (solid) - don't restart timer
   if (!led->is_on && led->off_ms == 0)
     return;
 
-  // regular blinking
-  xTimerChangePeriod(
-      xTimer, (led->is_on ? led->on_ms : led->off_ms) / portTICK_PERIOD_MS, 10);
+  // regular blinking - ensure at least 1 tick
+  uint32_t period_ms = led->is_on ? led->on_ms : led->off_ms;
+  TickType_t period_ticks = pdMS_TO_TICKS(period_ms);
+  if (period_ticks == 0)
+    period_ticks = 1;
+  xTimerChangePeriod(xTimer, period_ticks, 10);
 }
 
 static void flash_led(uint8_t id, uint32_t on_ms, uint32_t off_ms) {
@@ -197,12 +206,32 @@ static void flash_led(uint8_t id, uint32_t on_ms, uint32_t off_ms) {
     return;
   }
 
+  ESP_LOGD(TAG, "flash_led: channel=%d, on_ms=%lu, off_ms=%lu", id, on_ms,
+           off_ms);
+
   leds[id].on_ms = on_ms;
   leds[id].off_ms = off_ms;
 
+  // For solid-on (off_ms == 0), just set the LED and don't use timer
+  if (off_ms == 0) {
+    if (leds[id].timer && xTimerIsTimerActive(leds[id].timer)) {
+      xTimerStop(leds[id].timer, 10);
+    }
+    leds[id].is_on = true;
+    ledc_set_duty(LEDC_MODE, leds[id].channel, leds[id].duty);
+    ledc_update_duty(LEDC_MODE, leds[id].channel);
+    ESP_LOGD(TAG, "LED channel %d set to solid on", id);
+    return;
+  }
+
+  // Ensure at least 1 tick for timer period
+  TickType_t period_ticks = pdMS_TO_TICKS(on_ms);
+  if (period_ticks == 0)
+    period_ticks = 1;
+
   if (!leds[id].timer) {
-    leds[id].timer = xTimerCreate("led", on_ms / portTICK_PERIOD_MS, pdFALSE,
-                                  (void *)&leds[id], led_cb);
+    leds[id].timer =
+        xTimerCreate("led", period_ticks, pdFALSE, (void *)&leds[id], led_cb);
     leds[id].is_on = true;
   }
   if (!xTimerIsTimerActive(leds[id].timer)) {
