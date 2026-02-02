@@ -94,17 +94,20 @@ static inline int64_t get_local_time_ns(void) {
 static int compare_int64(const void *a, const void *b) {
   int64_t va = *(const int64_t *)a;
   int64_t vb = *(const int64_t *)b;
-  if (va < vb)
+  if (va < vb) {
     return -1;
-  if (va > vb)
+  }
+  if (va > vb) {
     return 1;
+  }
   return 0;
 }
 
 // Compute median of samples
 static int64_t compute_median(void) {
-  if (ptp.sample_fill == 0)
+  if (ptp.sample_fill == 0) {
     return 0;
+  }
 
   int64_t sorted[SAMPLE_BUFFER_SIZE];
   memcpy(sorted, ptp.samples, ptp.sample_fill * sizeof(int64_t));
@@ -122,8 +125,9 @@ static void update_offset(int64_t new_offset_ns) {
   // Reject obvious outliers (more than 50ms from current estimate)
   if (ptp.sample_fill > 0) {
     int64_t diff = new_offset_ns - ptp.filtered_offset_ns;
-    if (diff < 0)
+    if (diff < 0) {
       diff = -diff;
+    }
     if (diff > OUTLIER_THRESHOLD_NS) {
       return;
     }
@@ -145,10 +149,12 @@ static void update_offset(int64_t new_offset_ns) {
     int64_t max_dev = 0;
     for (int i = 0; i < ptp.sample_fill; i++) {
       int64_t dev = ptp.samples[i] - ptp.filtered_offset_ns;
-      if (dev < 0)
+      if (dev < 0) {
         dev = -dev;
-      if (dev > max_dev)
+      }
+      if (dev > max_dev) {
         max_dev = dev;
+      }
     }
 
     if (max_dev < LOCK_THRESHOLD_NS) {
@@ -302,13 +308,15 @@ static void ptp_task(void *pvParameters) {
     int max_fd = -1;
     if (ptp.event_socket >= 0) {
       FD_SET(ptp.event_socket, &read_fds);
-      if (ptp.event_socket > max_fd)
+      if (ptp.event_socket > max_fd) {
         max_fd = ptp.event_socket;
+      }
     }
     if (ptp.general_socket >= 0) {
       FD_SET(ptp.general_socket, &read_fds);
-      if (ptp.general_socket > max_fd)
+      if (ptp.general_socket > max_fd) {
         max_fd = ptp.general_socket;
+      }
     }
 
     if (max_fd < 0) {
@@ -333,17 +341,17 @@ static void ptp_task(void *pvParameters) {
 
     // Check event port (SYNC messages)
     if (ptp.event_socket >= 0 && FD_ISSET(ptp.event_socket, &read_fds)) {
-      int len = recv(ptp.event_socket, buffer, sizeof(buffer), 0);
+      ssize_t len = recv(ptp.event_socket, buffer, sizeof(buffer), 0);
       if (len > 0) {
-        process_ptp_message(buffer, len, true);
+        process_ptp_message(buffer, (size_t)len, true);
       }
     }
 
     // Check general port (FOLLOW_UP messages)
     if (ptp.general_socket >= 0 && FD_ISSET(ptp.general_socket, &read_fds)) {
-      int len = recv(ptp.general_socket, buffer, sizeof(buffer), 0);
+      ssize_t len = recv(ptp.general_socket, buffer, sizeof(buffer), 0);
       if (len > 0) {
-        process_ptp_message(buffer, len, false);
+        process_ptp_message(buffer, (size_t)len, false);
       }
     }
   }

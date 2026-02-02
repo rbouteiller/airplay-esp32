@@ -51,15 +51,18 @@ static size_t mpi_to_bytes_min(const mbedtls_mpi *mpi, uint8_t *buf,
                                size_t len) {
   size_t mpi_size = mbedtls_mpi_size(mpi);
   if (mpi_size == 0) {
-    if (len < 1)
+    if (len < 1) {
       return 0;
+    }
     buf[0] = 0;
     return 1;
   }
-  if (mpi_size > len)
+  if (mpi_size > len) {
     return 0;
-  if (mbedtls_mpi_write_binary(mpi, buf, mpi_size) != 0)
+  }
+  if (mbedtls_mpi_write_binary(mpi, buf, mpi_size) != 0) {
     return 0;
+  }
   return mpi_size;
 }
 
@@ -67,8 +70,9 @@ static size_t mpi_to_bytes_min(const mbedtls_mpi *mpi, uint8_t *buf,
 static int mpi_to_bytes_padded(const mbedtls_mpi *mpi, uint8_t *buf,
                                size_t len) {
   size_t mpi_size = mbedtls_mpi_size(mpi);
-  if (mpi_size > len)
+  if (mpi_size > len) {
     return -1;
+  }
   memset(buf, 0, len);
   return mbedtls_mpi_write_binary(mpi, buf + (len - mpi_size), mpi_size);
 }
@@ -173,8 +177,9 @@ esp_err_t srp_start(srp_session_t *session, const char *username,
   }
 
   // v = g^x mod N
-  if (mbedtls_mpi_exp_mod(&v, &g, &x, &N, NULL) != 0)
+  if (mbedtls_mpi_exp_mod(&v, &g, &x, &N, NULL) != 0) {
     goto cleanup;
+  }
 
   // Generate random b (server secret)
   {
@@ -186,12 +191,15 @@ esp_err_t srp_start(srp_session_t *session, const char *username,
   }
 
   // B = (k*v + g^b) mod N
-  if (mbedtls_mpi_exp_mod(&tmp, &g, &b, &N, NULL) != 0)
+  if (mbedtls_mpi_exp_mod(&tmp, &g, &b, &N, NULL) != 0) {
     goto cleanup;
-  if (mbedtls_mpi_mul_mpi(&tmp2, &k, &v) != 0)
+  }
+  if (mbedtls_mpi_mul_mpi(&tmp2, &k, &v) != 0) {
     goto cleanup;
-  if (mbedtls_mpi_add_mpi(&B, &tmp2, &tmp) != 0)
+  }
+  if (mbedtls_mpi_add_mpi(&B, &tmp2, &tmp) != 0) {
     goto cleanup;
+  }
   mbedtls_mpi_mod_mpi(&B, &B, &N);
 
   mpi_to_bytes_padded(&B, session->server_public_key, SRP_PRIME_BYTES);
@@ -217,10 +225,12 @@ const uint8_t *srp_get_salt(srp_session_t *session) {
 }
 
 const uint8_t *srp_get_public_key(srp_session_t *session, size_t *len) {
-  if (!session)
+  if (!session) {
     return NULL;
-  if (len)
+  }
+  if (len) {
     *len = SRP_PRIME_BYTES;
+  }
   return session->server_public_key;
 }
 
@@ -234,8 +244,9 @@ esp_err_t srp_verify_client(srp_session_t *session,
   }
 
   // Store client's public key A (zero-padded)
-  if (client_pk_len > SRP_PRIME_BYTES)
+  if (client_pk_len > SRP_PRIME_BYTES) {
     client_pk_len = SRP_PRIME_BYTES;
+  }
   memset(session->client_public_key, 0, SRP_PRIME_BYTES);
   memcpy(session->client_public_key + (SRP_PRIME_BYTES - client_pk_len),
          client_public_key, client_pk_len);
@@ -317,17 +328,21 @@ esp_err_t srp_verify_client(srp_session_t *session,
   }
 
   // v = g^x mod N
-  if (mbedtls_mpi_exp_mod(&v, &g, &x, &N, NULL) != 0)
+  if (mbedtls_mpi_exp_mod(&v, &g, &x, &N, NULL) != 0) {
     goto cleanup;
+  }
 
   // S = (A * v^u)^b mod N
-  if (mbedtls_mpi_exp_mod(&tmp, &v, &u, &N, NULL) != 0)
+  if (mbedtls_mpi_exp_mod(&tmp, &v, &u, &N, NULL) != 0) {
     goto cleanup;
-  if (mbedtls_mpi_mul_mpi(&tmp2, &A, &tmp) != 0)
+  }
+  if (mbedtls_mpi_mul_mpi(&tmp2, &A, &tmp) != 0) {
     goto cleanup;
+  }
   mbedtls_mpi_mod_mpi(&tmp2, &tmp2, &N);
-  if (mbedtls_mpi_exp_mod(&S, &tmp2, &b, &N, NULL) != 0)
+  if (mbedtls_mpi_exp_mod(&S, &tmp2, &b, &N, NULL) != 0) {
     goto cleanup;
+  }
 
   // K = H(S)
   uint8_t S_bytes[SRP_PRIME_BYTES];
@@ -413,15 +428,18 @@ cleanup:
 }
 
 const uint8_t *srp_get_proof(srp_session_t *session) {
-  if (!session || !session->verified)
+  if (!session || !session->verified) {
     return NULL;
+  }
   return session->proof_m2;
 }
 
 const uint8_t *srp_get_session_key(srp_session_t *session, size_t *len) {
-  if (!session || !session->verified)
+  if (!session || !session->verified) {
     return NULL;
-  if (len)
+  }
+  if (len) {
     *len = session->session_key_len;
+  }
   return session->session_key;
 }

@@ -22,8 +22,8 @@ esp_err_t ota_start_from_http(httpd_req_t *req) {
   }
 
   char buf[1024];
-  int remaining = req->content_len;
-  ESP_LOGI(TAG, "Receiving firmware (%d bytes)...", remaining);
+  size_t remaining = req->content_len;
+  ESP_LOGI(TAG, "Receiving firmware (%zu bytes)...", remaining);
 
   while (remaining > 0) {
     int recv_len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
