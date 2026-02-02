@@ -15,10 +15,12 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE       12
-#define AUDIO_RECV_STACK_SIZE 12288
-#define AUDIO_CTRL_STACK_SIZE 4096
-#define STACK_LOG_INTERVAL_US 5000000
+#define RTP_HEADER_SIZE          12
+#define AUDIO_RECV_STACK_SIZE    12288
+#define AUDIO_CTRL_STACK_SIZE    8192
+#define STACK_LOG_INTERVAL_US    5000000
+#define RESEND_ERROR_BACKOFF_US  100000  // 100ms backoff after sendto failure
+#define MAX_RESEND_GAP           100     // Don't request retransmit for gaps > 100
 
 #if CONFIG_FREERTOS_UNICORE
 #define AUDIO_TASK_CORE 0
@@ -73,6 +75,44 @@ static const uint8_t *parse_rtp(const uint8_t *packet, size_t len,
   return packet + header_len;
 }
 
+/* Send an AirPlay NACK (retransmission request) for missing sequence numbers.
+   Packet format: 0x80 0xD5 <seq_count_minus_1:u16> <first_seq:u16> <count:u16>
+   Sent to the client's control port via our control socket. */
+static void send_resend_request(audio_receiver_state_t *state,
+                                uint16_t first_seq, uint16_t count) {
+  if (!state->retransmit_enabled || state->control_socket <= 0) {
+    return;
+  }
+
+  /* Backoff: skip if we recently had a sendto error */
+  int64_t now = esp_timer_get_time();
+  if (state->last_resend_error_time_us > 0 &&
+      (now - state->last_resend_error_time_us) < RESEND_ERROR_BACKOFF_US) {
+    return;
+  }
+
+  uint8_t nack[8];
+  nack[0] = 0x80;
+  nack[1] = 0xD5;
+  nack[2] = (uint8_t)((count - 1) >> 8);
+  nack[3] = (uint8_t)((count - 1) & 0xFF);
+  nack[4] = (uint8_t)(first_seq >> 8);
+  nack[5] = (uint8_t)(first_seq & 0xFF);
+  nack[6] = (uint8_t)(count >> 8);
+  nack[7] = (uint8_t)(count & 0xFF);
+
+  int ret = sendto(state->control_socket, nack, sizeof(nack), 0,
+                   (struct sockaddr *)&state->client_control_addr,
+                   sizeof(state->client_control_addr));
+  if (ret < 0) {
+    state->last_resend_error_time_us = now;
+    ESP_LOGD(TAG, "NACK sendto failed: %d", errno);
+  } else {
+    state->last_resend_error_time_us = 0;
+    ESP_LOGD(TAG, "NACK sent: seq=%u count=%u", first_seq, count);
+  }
+}
+
 static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
                                     struct sockaddr_in *src_addr,
                                     socklen_t *addr_len) {
@@ -96,32 +136,48 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
 
   state->stats.packets_received++;
 
+  const uint8_t *rtp_data = packet;
+  size_t rtp_len = (size_t)len;
+
+  /* Retransmit packets (type 0x56) have a 4-byte outer header before the
+     inner RTP packet. Strip it and parse the inner RTP normally. */
+  bool is_retransmit = (rtp_len >= 16 && rtp_data[1] == 0x56);
+  if (is_retransmit) {
+    rtp_data += 4;
+    rtp_len -= 4;
+  }
+
   uint16_t seq = 0;
   uint32_t timestamp = 0;
   size_t payload_len = 0;
   const uint8_t *payload =
-      parse_rtp(packet, (size_t)len, &seq, &timestamp, &payload_len);
+      parse_rtp(rtp_data, rtp_len, &seq, &timestamp, &payload_len);
 
   if (!payload || payload_len == 0) {
     state->stats.packets_dropped++;
     return true;
   }
 
-  if (state->stats.packets_decoded > 0) {
-    uint16_t expected_seq = (state->stats.last_seq + 1) & 0xFFFF;
-    if (seq != expected_seq) {
-      int gap = (int)seq - (int)expected_seq;
-      if (gap < 0) {
-        gap += 65536;
-      }
-      if (gap > 0 && gap < 100) {
-        state->stats.packets_dropped += gap;
+  /* Skip gap detection and sequence tracking for retransmits — their seq
+     is old and would corrupt last_seq, causing spurious NACKs. */
+  if (!is_retransmit) {
+    if (state->stats.packets_decoded > 0) {
+      uint16_t expected_seq = (state->stats.last_seq + 1) & 0xFFFF;
+      if (seq != expected_seq) {
+        int gap = (int)seq - (int)expected_seq;
+        if (gap < 0) {
+          gap += 65536;
+        }
+        if (gap > 0 && gap < MAX_RESEND_GAP) {
+          state->stats.packets_dropped += gap;
+          send_resend_request(state, expected_seq, (uint16_t)gap);
+        }
       }
     }
-  }
 
-  state->stats.last_seq = seq;
-  state->stats.last_timestamp = timestamp;
+    state->stats.last_seq = seq;
+    state->stats.last_timestamp = timestamp;
+  }
 
   state->blocks_read++;
   state->blocks_read_in_sequence++;
@@ -132,7 +188,7 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   if (stream->encrypt.type != AUDIO_ENCRYPT_NONE && state->decrypt_buffer) {
     int decrypted_len = audio_crypto_decrypt_rtp(
         &stream->encrypt, payload, payload_len, state->decrypt_buffer,
-        MAX_RTP_PACKET_SIZE, packet, (size_t)len);
+        MAX_RTP_PACKET_SIZE, rtp_data, rtp_len);
     if (decrypted_len < 0) {
       state->stats.decrypt_errors++;
       state->stats.packets_dropped++;
@@ -190,12 +246,18 @@ static void control_receiver_task(void *pvParameters) {
   audio_stream_t *stream = (audio_stream_t *)pvParameters;
   audio_receiver_state_t *state = audio_stream_state(stream);
 
-  uint8_t packet[256];
+  uint8_t *packet = (uint8_t *)malloc(MAX_RTP_PACKET_SIZE);
+  if (!packet) {
+    ESP_LOGE(TAG, "Failed to allocate control packet buffer");
+    state->control_task_handle = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
   struct sockaddr_in src_addr;
   socklen_t addr_len = sizeof(src_addr);
 
   while (stream->running) {
-    int len = recvfrom(state->control_socket, packet, sizeof(packet), 0,
+    int len = recvfrom(state->control_socket, packet, MAX_RTP_PACKET_SIZE, 0,
                        (struct sockaddr *)&src_addr, &addr_len);
 
     if (len < 0) {
@@ -240,8 +302,22 @@ static void control_receiver_task(void *pvParameters) {
       }
       break;
 
-    case 0xD6:
+    case 0xD6: { // Retransmit response — forward inner RTP to data socket
+      if (len < 8 || state->data_socket <= 0) {
+        break;
+      }
+      /* Re-wrap as a 0x56 retransmit and send to our own data socket so the
+         receiver task processes it in the same thread as normal packets.
+         This avoids concurrent access to the decoder and decrypt buffer. */
+      packet[1] = 0x56;
+      struct sockaddr_in self = {0};
+      self.sin_family = AF_INET;
+      self.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      self.sin_port = htons(state->data_port);
+      sendto(state->data_socket, packet, (size_t)len, 0,
+             (struct sockaddr *)&self, sizeof(self));
       break;
+    }
 
     default:
       if (len >= 4) {
@@ -253,6 +329,7 @@ static void control_receiver_task(void *pvParameters) {
     }
   }
 
+  free(packet);
   state->control_task_handle = NULL;
   vTaskDelete(NULL);
 }

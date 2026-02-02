@@ -142,6 +142,14 @@ void audio_receiver_set_playing(bool playing);
 void audio_receiver_reset_timing(void);
 
 /**
+ * Set the client's control address for NACK retransmission requests.
+ * @param client_ip Client IP in network byte order
+ * @param client_control_port Client's control port (host byte order)
+ */
+void audio_receiver_set_client_control(uint32_t client_ip,
+                                       uint16_t client_control_port);
+
+/**
  * Stream types for AirPlay 2
  */
 typedef enum {
