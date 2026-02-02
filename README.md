@@ -7,6 +7,7 @@
 [![License](https://img.shields.io/badge/license-Non--Commercial-blue?style=flat-square)](LICENSE)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32-s3)
+[![Platform](https://img.shields.io/badge/platform-SqueezeAMP-green?style=flat-square)](https://github.com/philippe44/SqueezeAMP)
 
 **Stream music from your Apple devices to any speaker for ~10$**
 
@@ -16,7 +17,7 @@
 
 ## What is this?
 
-This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV.
+This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Also supports the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** board (ESP32 + TAS5756 DAC with built-in amplifier).
 
 **No cloud. No app. Just tap and play.**
 
@@ -33,6 +34,8 @@ You only need 2 boards and a few wires. Everything is available on AliExpress / 
 | **Female 2.54mm header** | "Female pin header 2.54mm single row" (1x6 or longer, then cut to size) | ~0.5$ |
 
 > **Important:** The ESP32-S3 must have **8MB PSRAM** (the N16R8 variant). Boards without enough PSRAM will not work — the audio decoding needs the extra memory.
+
+> **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** board (ESP32 with TAS5756 DAC and built-in amplifier), you don't need a separate DAC — just flash the SqueezeAMP firmware target. See the [SqueezeAMP section](#squeezeamp) below.
 
 Here is what the PCM5102A board looks like:
 Verify the solder bridges are in the same position as the picture.
@@ -166,6 +169,28 @@ Once the device is connected to your WiFi, you can update the firmware wirelessl
 
 ---
 
+## SqueezeAMP
+
+The **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** is an ESP32-based board with a TAS5756 DAC and built-in Class-D amplifier. No external DAC needed — just connect speakers directly.
+
+### Flashing
+
+```bash
+# PlatformIO
+pio run -e squeezeamp -t upload
+
+# ESP-IDF
+idf.py set-target esp32
+idf.py build
+idf.py -p /dev/ttyUSB0 flash
+```
+
+The SqueezeAMP build uses `CONFIG_SQUEEZEAMP` to enable the TAS57xx I2C DAC driver and configures the correct I2S pins via Kconfig. Buffer sizes are automatically reduced (2500 frames vs 5000) to fit the ESP32's more limited PSRAM access.
+
+A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
+
+---
+
 ## Features
 
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
@@ -174,6 +199,7 @@ Once the device is connected to your WiFi, you can update the firmware wirelessl
 - **Web configuration** — set up WiFi and device name from your browser
 - **OTA updates** — update firmware over WiFi, no USB needed after first flash
 - **LED indicator** — visual feedback for playback status
+- **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
 
 ### Limitations
 

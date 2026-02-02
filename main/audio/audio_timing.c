@@ -181,9 +181,6 @@ void audio_timing_set_anchor(audio_timing_t *timing,
 
   int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
 
-  ESP_LOGI(TAG, "set_anchor: rtp=%lu, network_time=%llu ns",
-           (unsigned long)rtp_time, (unsigned long long)network_time_ns);
-
   timing->anchor_rtp_time = rtp_time;
   timing->anchor_network_time_ns = network_time_ns;
   timing->anchor_local_time_ns = now_ns;

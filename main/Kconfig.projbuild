@@ -16,6 +16,12 @@ menu "Airplay ESP Configuration"
         int "Battery Monitor GPIO"
         default 7 if SQUEEZEAMP
         default -1 
+    config LED_RGB_GPIO
+        int "RGB LED GPIO (WS2812)"
+        default -1 if SQUEEZEAMP
+        default 48
+        help
+            GPIO for addressable RGB LED (WS2812). Set to -1 to disable.
     config LED_GREEN_GPIO
         int "Status LED GPIO"
         default 12 if SQUEEZEAMP
