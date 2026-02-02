@@ -257,3 +257,17 @@ size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
                                  int64_t stream_type, uint16_t data_port,
                                  uint16_t control_port,
                                  uint32_t audio_buffer_size);
+
+/**
+ * Build feedback response bplist
+ * Returns a streams array with type and sample rate for keepalive.
+ * This response prevents iPhone from sending TEARDOWN during extended pause.
+ * @param out Output buffer
+ * @param capacity Buffer capacity
+ * @param stream_type Stream type (103 for buffered audio)
+ * @param sample_rate Sample rate (44100.0)
+ * @return Length of generated bplist, or 0 on error
+ */
+size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
+                                      int64_t stream_type,
+                                      double sample_rate);

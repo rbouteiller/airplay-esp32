@@ -180,6 +180,10 @@ void audio_receiver_reset_timing(void) {
   audio_timing_reset(&receiver.timing);
 }
 
+bool audio_receiver_is_playing(void) {
+  return receiver.timing.playing;
+}
+
 void audio_receiver_set_stream_type(audio_stream_type_t type) {
   if (!receiver.realtime_stream || !receiver.buffered_stream) {
     return;
@@ -223,9 +227,11 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   receiver.data_port = data_port;
   receiver.control_port = control_port;
 
+  // Starting a stream resets all timing state (including pause tracking)
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
+
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
 
@@ -245,9 +251,11 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
     return ESP_OK;
   }
 
+  // Starting a stream resets all timing state (including pause tracking)
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
+
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
 
@@ -349,6 +357,8 @@ bool audio_receiver_has_data(void) {
 }
 
 void audio_receiver_flush(void) {
+  // Flush is an explicit reset - clear all timing state including pause tracking
+  // The sender will provide fresh anchor times after flush
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
 
