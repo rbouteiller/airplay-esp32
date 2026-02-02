@@ -5,8 +5,8 @@
 
 #include <math.h>
 
-#define TAG             "led_visual"
-#define SILENCE_THRESH  200
+#define TAG                "led_visual"
+#define SILENCE_THRESH     200
 #define UPDATE_INTERVAL_US (1000000 / 30) // ~30 Hz
 
 static int64_t s_last_update_us;
@@ -79,7 +79,8 @@ static void led_rgb_update(float norm, float bass_ratio) {
 }
 
 #else
-static void led_rgb_init(void) {}
+static void led_rgb_init(void) {
+}
 static void led_rgb_update(float norm, float bass_ratio) {
   (void)norm;
   (void)bass_ratio;
@@ -143,8 +144,11 @@ static void led_green_update(float norm) {
 }
 
 #else
-static void led_green_init(void) {}
-static void led_green_update(float norm) { (void)norm; }
+static void led_green_init(void) {
+}
+static void led_green_update(float norm) {
+  (void)norm;
+}
 #endif
 
 void led_visual_init(void) {

@@ -122,19 +122,17 @@ esp_err_t audio_buffer_init(audio_buffer_t *buffer) {
   buffer->count = 0;
 
   /* Pool in PSRAM */
-  buffer->pool = (uint8_t *)heap_caps_malloc(
-      (size_t)buffer->capacity * buffer->slot_size,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  buffer->pool =
+      (uint8_t *)heap_caps_malloc((size_t)buffer->capacity * buffer->slot_size,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!buffer->pool) {
     ESP_LOGE(TAG, "Failed to allocate pool in PSRAM");
     return ESP_ERR_NO_MEM;
   }
 
   /* Sorted index array + free stack (internal RAM is fine, they're small) */
-  buffer->sorted =
-      (uint16_t *)malloc(buffer->capacity * sizeof(uint16_t));
-  buffer->free_stack =
-      (uint16_t *)malloc(buffer->capacity * sizeof(uint16_t));
+  buffer->sorted = (uint16_t *)malloc(buffer->capacity * sizeof(uint16_t));
+  buffer->free_stack = (uint16_t *)malloc(buffer->capacity * sizeof(uint16_t));
   if (!buffer->sorted || !buffer->free_stack) {
     ESP_LOGE(TAG, "Failed to allocate index arrays");
     audio_buffer_deinit(buffer);
@@ -276,8 +274,9 @@ bool audio_buffer_take(audio_buffer_t *buffer, void **item, size_t *item_size,
   uint8_t *ptr = slot_ptr(buffer, slot);
   audio_frame_header_t *hdr = (audio_frame_header_t *)ptr;
   *item = ptr;
-  *item_size = sizeof(audio_frame_header_t) +
-               (size_t)hdr->samples_per_channel * hdr->channels * sizeof(int16_t);
+  *item_size = sizeof(audio_frame_header_t) + (size_t)hdr->samples_per_channel *
+                                                  hdr->channels *
+                                                  sizeof(int16_t);
 
   return true;
 }

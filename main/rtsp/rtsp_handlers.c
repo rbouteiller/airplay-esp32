@@ -606,8 +606,10 @@ static void handle_post(int socket, rtsp_conn_t *conn,
           response, sizeof(response), conn->stream_type, 44100.0);
 
       if (response_len > 0) {
-        ESP_LOGD(TAG, "/feedback responding with stream status (type=%lld, sr=44100)",
-                 (long long)conn->stream_type);
+        ESP_LOGD(
+            TAG,
+            "/feedback responding with stream status (type=%lld, sr=44100)",
+            (long long)conn->stream_type);
         rtsp_send_response(socket, conn, 200, "OK", req->cseq,
                            "Content-Type: application/x-apple-binary-plist\r\n",
                            (const char *)response, response_len);

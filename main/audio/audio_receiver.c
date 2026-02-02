@@ -289,7 +289,8 @@ void audio_receiver_set_client_control(uint32_t client_ip,
     receiver.retransmit_enabled = false;
     return;
   }
-  memset(&receiver.client_control_addr, 0, sizeof(receiver.client_control_addr));
+  memset(&receiver.client_control_addr, 0,
+         sizeof(receiver.client_control_addr));
   receiver.client_control_addr.sin_family = AF_INET;
   receiver.client_control_addr.sin_addr.s_addr = client_ip;
   receiver.client_control_addr.sin_port = htons(client_control_port);
@@ -323,7 +324,8 @@ void audio_receiver_stop(void) {
   }
 
   receiver.retransmit_enabled = false;
-  memset(&receiver.client_control_addr, 0, sizeof(receiver.client_control_addr));
+  memset(&receiver.client_control_addr, 0,
+         sizeof(receiver.client_control_addr));
 
   audio_receiver_flush();
 }
@@ -357,8 +359,8 @@ bool audio_receiver_has_data(void) {
 }
 
 void audio_receiver_flush(void) {
-  // Flush is an explicit reset - clear all timing state including pause tracking
-  // The sender will provide fresh anchor times after flush
+  // Flush is an explicit reset - clear all timing state including pause
+  // tracking The sender will provide fresh anchor times after flush
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
 

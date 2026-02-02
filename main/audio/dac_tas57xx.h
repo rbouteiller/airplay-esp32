@@ -27,7 +27,7 @@ esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io);
  */
 void tas57xx_enable_speaker(bool enable);
 
-/** 
+/**
  * Enable / disable the line out
  */
 void tas57xx_enable_line_out(bool enable);

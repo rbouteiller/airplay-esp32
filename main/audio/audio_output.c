@@ -19,7 +19,7 @@
 // #define I2S_VCC_PIN   GPIO_NUM_14
 #endif
 
-#define TAG          "audio_output"
+#define TAG           "audio_output"
 #define I2S_BCK_PIN   CONFIG_I2S_BCK_IO
 #define I2S_LRCK_PIN  CONFIG_I2S_WS_IO
 #define I2S_DOUT_PIN  CONFIG_I2S_DO_IO

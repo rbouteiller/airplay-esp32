@@ -198,8 +198,7 @@ size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
 }
 
 size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
-                                      int64_t stream_type,
-                                      double sample_rate) {
+                                      int64_t stream_type, double sample_rate) {
   // Feedback response for buffered audio streams (type 103)
   // Format: { streams: [ { type: 103, sr: 44100.0 } ] }
   // This acts as a keepalive mechanism to prevent iPhone from
@@ -217,31 +216,31 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
 
   // Object 0: "streams" key string
   offsets[obj++] = pos;
-  out[pos++] = 0x57;  // String, length 7
+  out[pos++] = 0x57; // String, length 7
   memcpy(out + pos, "streams", 7);
   pos += 7;
 
   // Object 1: "type" key string
   offsets[obj++] = pos;
-  out[pos++] = 0x54;  // String, length 4
+  out[pos++] = 0x54; // String, length 4
   memcpy(out + pos, "type", 4);
   pos += 4;
 
   // Object 2: "sr" key string (sample rate)
   offsets[obj++] = pos;
-  out[pos++] = 0x52;  // String, length 2
+  out[pos++] = 0x52; // String, length 2
   memcpy(out + pos, "sr", 2);
   pos += 2;
 
   // Object 3: type value (103 for buffered audio)
   offsets[obj++] = pos;
-  out[pos++] = 0x10;  // Int, 1 byte
+  out[pos++] = 0x10; // Int, 1 byte
   out[pos++] = (uint8_t)stream_type;
 
   // Object 4: sample rate value as double
   // IEEE 754 double-precision big-endian
   offsets[obj++] = pos;
-  out[pos++] = 0x23;  // Real, 8 bytes (double)
+  out[pos++] = 0x23; // Real, 8 bytes (double)
   union {
     double d;
     uint8_t bytes[8];
@@ -254,22 +253,22 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
 
   // Object 5: stream dict { type: 3, sr: 4 }
   offsets[obj++] = pos;
-  out[pos++] = 0xD2;  // Dict, 2 key-value pairs
-  out[pos++] = 1;     // Key: object 1 (type)
-  out[pos++] = 2;     // Key: object 2 (sr)
-  out[pos++] = 3;     // Value: object 3 (type value)
-  out[pos++] = 4;     // Value: object 4 (sr value)
+  out[pos++] = 0xD2; // Dict, 2 key-value pairs
+  out[pos++] = 1;    // Key: object 1 (type)
+  out[pos++] = 2;    // Key: object 2 (sr)
+  out[pos++] = 3;    // Value: object 3 (type value)
+  out[pos++] = 4;    // Value: object 4 (sr value)
 
   // Object 6: streams array [ object 5 ]
   offsets[obj++] = pos;
-  out[pos++] = 0xA1;  // Array, 1 element
-  out[pos++] = 5;     // Contains object 5 (stream dict)
+  out[pos++] = 0xA1; // Array, 1 element
+  out[pos++] = 5;    // Contains object 5 (stream dict)
 
   // Object 7: top-level dict { streams: 6 }
   offsets[obj++] = pos;
-  out[pos++] = 0xD1;  // Dict, 1 key-value pair
-  out[pos++] = 0;     // Key: object 0 (streams)
-  out[pos++] = 6;     // Value: object 6 (streams array)
+  out[pos++] = 0xD1; // Dict, 1 key-value pair
+  out[pos++] = 0;    // Key: object 0 (streams)
+  out[pos++] = 6;    // Value: object 6 (streams array)
 
   // Offset table
   size_t offset_table_offset = pos;
@@ -283,8 +282,8 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
   // Trailer: 6 unused bytes, then metadata
   memset(out + pos, 0, 6);
   pos += 6;
-  out[pos++] = 1;  // Offset size
-  out[pos++] = 1;  // Object ref size
+  out[pos++] = 1; // Offset size
+  out[pos++] = 1; // Object ref size
 
   // Number of objects (8 bytes big-endian)
   for (int i = 0; i < 7; i++) {
@@ -296,7 +295,7 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
   for (int i = 0; i < 7; i++) {
     out[pos++] = 0;
   }
-  out[pos++] = 7;  // Top object is object 7
+  out[pos++] = 7; // Top object is object 7
 
   // Offset table offset (8 bytes big-endian)
   for (int i = 0; i < 7; i++) {

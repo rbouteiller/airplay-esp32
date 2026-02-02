@@ -12,7 +12,7 @@
 #define HARDWARE_OUTPUT_LATENCY_US    46000   // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           40000  // 40ms early/late threshold
+#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
 #define MAX_EARLY_US                  500000 // 500ms max early - play anyway if older
 #define MAX_CONSECUTIVE_EARLY \
   50 // Invalidate anchor after this many early frames

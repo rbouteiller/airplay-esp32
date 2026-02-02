@@ -15,12 +15,12 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE          12
-#define AUDIO_RECV_STACK_SIZE    12288
-#define AUDIO_CTRL_STACK_SIZE    8192
-#define STACK_LOG_INTERVAL_US    5000000
-#define RESEND_ERROR_BACKOFF_US  100000  // 100ms backoff after sendto failure
-#define MAX_RESEND_GAP           100     // Don't request retransmit for gaps > 100
+#define RTP_HEADER_SIZE         12
+#define AUDIO_RECV_STACK_SIZE   12288
+#define AUDIO_CTRL_STACK_SIZE   8192
+#define STACK_LOG_INTERVAL_US   5000000
+#define RESEND_ERROR_BACKOFF_US 100000 // 100ms backoff after sendto failure
+#define MAX_RESEND_GAP          100 // Don't request retransmit for gaps > 100
 
 #if CONFIG_FREERTOS_UNICORE
 #define AUDIO_TASK_CORE 0
@@ -102,8 +102,8 @@ static void send_resend_request(audio_receiver_state_t *state,
   nack[7] = (uint8_t)(count & 0xFF);
 
   ssize_t ret = sendto(state->control_socket, nack, sizeof(nack), 0,
-                   (struct sockaddr *)&state->client_control_addr,
-                   sizeof(state->client_control_addr));
+                       (struct sockaddr *)&state->client_control_addr,
+                       sizeof(state->client_control_addr));
   if (ret < 0) {
     state->last_resend_error_time_us = now;
     ESP_LOGD(TAG, "NACK sendto failed: %d", errno);
@@ -257,8 +257,8 @@ static void control_receiver_task(void *pvParameters) {
   socklen_t addr_len = sizeof(src_addr);
 
   while (stream->running) {
-    ssize_t len = recvfrom(state->control_socket, packet, MAX_RTP_PACKET_SIZE, 0,
-                           (struct sockaddr *)&src_addr, &addr_len);
+    ssize_t len = recvfrom(state->control_socket, packet, MAX_RTP_PACKET_SIZE,
+                           0, (struct sockaddr *)&src_addr, &addr_len);
 
     if (len < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
