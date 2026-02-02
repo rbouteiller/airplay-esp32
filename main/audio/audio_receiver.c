@@ -42,7 +42,7 @@ static void audio_receiver_copy_stream_state(audio_stream_t *dst,
 }
 
 esp_err_t audio_receiver_init(void) {
-  if (receiver.buffer.ring) {
+  if (receiver.buffer.pool) {
     return ESP_OK;
   }
 
@@ -316,7 +316,7 @@ void audio_receiver_get_stats(audio_stats_t *stats) {
 }
 
 size_t audio_receiver_read(int16_t *buffer, size_t samples) {
-  if (!receiver.buffer.ring || !buffer || samples == 0) {
+  if (!receiver.buffer.pool || !buffer || samples == 0) {
     return 0;
   }
 

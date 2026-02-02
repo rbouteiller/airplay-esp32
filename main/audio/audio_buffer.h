@@ -7,7 +7,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
-#include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
 
 #include "audio_receiver.h"
 
@@ -24,18 +24,25 @@ typedef struct __attribute__((packed)) {
 } audio_frame_header_t;
 
 #define MAX_RING_BUFFER_FRAMES 5000
-#define BYTES_PER_FRAME           \
-  (sizeof(audio_frame_header_t) + \
-   (AAC_FRAMES_PER_PACKET * AUDIO_MAX_CHANNELS * AUDIO_BYTES_PER_SAMPLE))
+#define BYTES_PER_FRAME                                                         \
+  ((size_t)sizeof(audio_frame_header_t) +                                       \
+   ((size_t)AAC_FRAMES_PER_PACKET * (size_t)AUDIO_MAX_CHANNELS *                \
+    (size_t)AUDIO_BYTES_PER_SAMPLE))
 #define AUDIO_BUFFER_SIZE (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
 #define MAX_BUFFER_FRAMES 5000
 
 typedef struct {
-  RingbufHandle_t ring;
-  int buffered_frames;
-  portMUX_TYPE lock;
-  uint8_t *frame_buffer;
-  int16_t *decode_buffer;
+  uint8_t *pool;                   // Pre-allocated frame data in PSRAM
+  uint16_t *sorted;                // Slot indices sorted by RTP timestamp
+  uint16_t *free_stack;            // Stack of free slot indices
+  int count;                       // Frames currently in buffer
+  int free_top;                    // Top of free stack (next free slot)
+  int capacity;                    // Max frames
+  size_t slot_size;                // BYTES_PER_FRAME
+  portMUX_TYPE lock;               // Spinlock for count/index manipulation
+  SemaphoreHandle_t data_ready;    // Counting semaphore (blocks consumer)
+  uint8_t *frame_buffer;           // Temp assembly buffer
+  int16_t *decode_buffer;          // Decode buffer pointer
   size_t decode_capacity_samples;
 } audio_buffer_t;
 
