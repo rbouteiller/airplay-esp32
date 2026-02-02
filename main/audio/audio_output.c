@@ -11,8 +11,7 @@
 
 #include <stdlib.h>
 #ifdef CONFIG_SQUEEZEAMP
-#include "dac_tas57xx.h"
-#define I2C_PORT_0 0
+#include "squeezeamp.h"
 #else
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
 #define I2S_GND_PIN GPIO_NUM_14
@@ -79,9 +78,9 @@ esp_err_t audio_output_init(void) {
                       "channel create failed");
 #ifdef CONFIG_SQUEEZEAMP
   esp_err_t err = ESP_OK;
-  err = tas57xx_init(I2C_PORT_0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
+  err = squeezeamp_init();
   if (ESP_OK != err) {
-    ESP_LOGE(TAG, "Failed to initialize TAS57xx: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to initialize SqueezeAMP: %s", esp_err_to_name(err));
   };
 #endif
   i2s_std_config_t std_cfg = {
@@ -118,8 +117,7 @@ esp_err_t audio_output_init(void) {
 
 void audio_output_start(void) {
 #ifdef CONFIG_SQUEEZEAMP
-  tas57xx_set_power_mode(TAS57XX_AMP_ON);
-  tas57xx_enable_speaker(true);
+  squeezeamp_set_state(SQUEEZEAMP_STANDBY);
 #endif
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
