@@ -42,7 +42,7 @@ static void audio_receiver_copy_stream_state(audio_stream_t *dst,
 }
 
 esp_err_t audio_receiver_init(void) {
-  if (receiver.buffer.ring) {
+  if (receiver.buffer.pool) {
     return ESP_OK;
   }
 
@@ -275,6 +275,22 @@ uint16_t audio_receiver_get_stream_port(void) {
   return receiver.stream->ops->get_port(receiver.stream);
 }
 
+void audio_receiver_set_client_control(uint32_t client_ip,
+                                       uint16_t client_control_port) {
+  if (client_ip == 0 || client_control_port == 0) {
+    receiver.retransmit_enabled = false;
+    return;
+  }
+  memset(&receiver.client_control_addr, 0, sizeof(receiver.client_control_addr));
+  receiver.client_control_addr.sin_family = AF_INET;
+  receiver.client_control_addr.sin_addr.s_addr = client_ip;
+  receiver.client_control_addr.sin_port = htons(client_control_port);
+  receiver.retransmit_enabled = true;
+  receiver.last_resend_error_time_us = 0;
+  ESP_LOGI(TAG, "NACK retransmission enabled, client control port %u",
+           client_control_port);
+}
+
 void audio_receiver_stop(void) {
   if (receiver.realtime_stream && receiver.realtime_stream->ops &&
       receiver.realtime_stream->ops->stop) {
@@ -298,6 +314,9 @@ void audio_receiver_stop(void) {
            sizeof(receiver.buffered_stream->encrypt));
   }
 
+  receiver.retransmit_enabled = false;
+  memset(&receiver.client_control_addr, 0, sizeof(receiver.client_control_addr));
+
   audio_receiver_flush();
 }
 
@@ -316,7 +335,7 @@ void audio_receiver_get_stats(audio_stats_t *stats) {
 }
 
 size_t audio_receiver_read(int16_t *buffer, size_t samples) {
-  if (!receiver.buffer.ring || !buffer || samples == 0) {
+  if (!receiver.buffer.pool || !buffer || samples == 0) {
     return 0;
   }
 

@@ -8,12 +8,12 @@
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_BUFFER_LATENCY_US     500000 // 500ms buffer for network jitter
-#define HARDWARE_OUTPUT_LATENCY_US    46000  // ~46ms I2S DMA latency
+#define DEFAULT_BUFFER_LATENCY_US     1000000 // 500ms buffer for network jitter
+#define HARDWARE_OUTPUT_LATENCY_US    46000   // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           80000  // 80ms early/late threshold
-#define SUBTLE_ADJUST_THRESHOLD_US    500000 // 500ms - below this, adjust subtly
+#define TIMING_THRESHOLD_US           20000  // 20ms early/late threshold
+#define SUBTLE_ADJUST_THRESHOLD_US    100000 // 100ms - below this, adjust subtly
 #define SUBTLE_ADJUST_INTERVAL        10     // Only adjust 1 frame out of N
 
 static const char *TAG = "audio_time";
@@ -240,7 +240,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       item = timing->pending_frame;
       from_pending = true;
     } else {
-      if (!audio_buffer_take(buffer, &item, &item_size, pdMS_TO_TICKS(10))) {
+      if (!audio_buffer_take(buffer, &item, &item_size, 0)) {
         if (stats) {
           stats->buffer_underruns++;
         }
