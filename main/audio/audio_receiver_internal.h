@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lwip/sockets.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -44,6 +46,11 @@ typedef struct {
 
   uint64_t blocks_read;
   uint64_t blocks_read_in_sequence;
+
+  // NACK retransmission support
+  struct sockaddr_in client_control_addr; // Client's control address for NACKs
+  bool retransmit_enabled;                // True when client address is set
+  int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
 } audio_receiver_state_t;
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,

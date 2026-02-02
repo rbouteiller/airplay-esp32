@@ -1,6 +1,7 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "dns_server.h"
+#include "led_visual.h"
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
@@ -92,6 +93,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  led_visual_init();
 
   // Start WiFi (APSTA mode: AP for config, STA for connection)
   wifi_init_apsta(NULL, NULL);

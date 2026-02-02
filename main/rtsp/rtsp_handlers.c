@@ -747,6 +747,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                 sample_rate = kv[k].int_value;
               } else if (strcmp(kv[k].key, "spf") == 0) {
                 samples_per_frame = kv[k].int_value;
+              } else if (strcmp(kv[k].key, "controlPort") == 0) {
+                conn->client_control_port = (uint16_t)kv[k].int_value;
               }
             }
           }
@@ -928,6 +930,12 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
   audio_receiver_start_stream(conn->data_port, conn->control_port,
                               conn->buffered_port);
+
+  // Enable NACK retransmission if we know the client's control port
+  if (conn->client_control_port > 0 && conn->client_ip != 0) {
+    audio_receiver_set_client_control(conn->client_ip,
+                                      conn->client_control_port);
+  }
 
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
