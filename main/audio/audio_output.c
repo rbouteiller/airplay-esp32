@@ -76,13 +76,7 @@ esp_err_t audio_output_init(void) {
 
   ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &tx_handle, NULL), TAG,
                       "channel create failed");
-#ifdef CONFIG_SQUEEZEAMP
-  esp_err_t err = ESP_OK;
-  err = squeezeamp_init();
-  if (ESP_OK != err) {
-    ESP_LOGE(TAG, "Failed to initialize SqueezeAMP: %s", esp_err_to_name(err));
-  };
-#endif
+
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
