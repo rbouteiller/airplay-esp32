@@ -20,21 +20,37 @@
 
 static const char *TAG = "audio_buf";
 
-static ssize_t read_exact(audio_stream_t *stream, int sock, uint8_t *buf,
-                          size_t len) {
+// Read exact number of bytes, but keep waiting on timeout if paused
+// Returns: positive = bytes read, 0 = connection closed, -1 = error
+static ssize_t read_exact(audio_stream_t *stream, audio_receiver_state_t *state,
+                          int sock, uint8_t *buf, size_t len) {
   size_t total = 0;
   while (total < len && stream->running) {
     ssize_t n = recv(sock, buf + total, len - total, 0);
-    if (n <= 0) {
-      if (n == 0) {
-      } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        ESP_LOGE(TAG, "Buffered audio recv error: %d", errno);
+    if (n > 0) {
+      total += (size_t)n;
+    } else if (n == 0) {
+      // Connection closed by peer
+      ESP_LOGI(TAG, "Buffered audio connection closed by peer");
+      return 0;
+    } else {
+      // n < 0: error or timeout
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Timeout - if we're paused, keep waiting for resume
+        if (!state->timing.playing) {
+          // Still paused, keep the connection alive
+          vTaskDelay(pdMS_TO_TICKS(100));
+          continue;
+        }
+        // Playing but timed out - connection may be dead
+        ESP_LOGW(TAG, "Buffered audio timeout while playing");
+        return -1;
       }
+      ESP_LOGE(TAG, "Buffered audio recv error: %d", errno);
       return -1;
     }
-    total += (size_t)n;
   }
-  return (ssize_t)total;
+  return stream->running ? (ssize_t)total : -1;
 }
 
 static void buffered_audio_task(void *pvParameters) {
@@ -78,7 +94,7 @@ static void buffered_audio_task(void *pvParameters) {
 
     while (stream->running) {
       uint8_t len_buf[2];
-      if (read_exact(stream, client_sock, len_buf, 2) != 2) {
+      if (read_exact(stream, state, client_sock, len_buf, 2) != 2) {
         break;
       }
 
@@ -89,7 +105,7 @@ static void buffered_audio_task(void *pvParameters) {
       }
 
       size_t packet_len = data_len - 2;
-      if (read_exact(stream, client_sock, packet, packet_len) !=
+      if (read_exact(stream, state, client_sock, packet, packet_len) !=
           (ssize_t)packet_len) {
         break;
       }
