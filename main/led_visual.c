@@ -82,7 +82,7 @@ static void led_rgb_update(float norm, float bass_ratio) {
 }
 #endif
 
-#if CONFIG_LED_GREEN_GPIO >= 0
+#if !CONFIG_SQUEEZEAMP && CONFIG_LED_GREEN_GPIO >= 0
 
 #include "driver/ledc.h"
 
