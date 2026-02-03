@@ -26,6 +26,10 @@
 #include "socket_utils.h"
 #include "tlv8.h"
 
+#ifdef CONFIG_SQUEEZEAMP
+#include "squeezeamp.h"
+#endif
+
 static const char *TAG = "rtsp_handlers";
 
 // ============================================================================
@@ -182,6 +186,9 @@ static void event_port_task(void *pvParameters) {
       event_client_socket = client;
       ESP_LOGI(TAG, "Event client connected");
 
+#ifdef CONFIG_SQUEEZEAMP
+      squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+#endif
       // Monitor connection for disconnection
       while (event_client_socket >= 0 && !event_task_should_stop) {
         fd_set cfds;
@@ -984,6 +991,9 @@ static void handle_record(int socket, rtsp_conn_t *conn,
                               conn->buffered_port);
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
+#ifdef CONFIG_SQUEEZEAMP
+  squeezeamp_set_state(SQUEEZEAMP_PLAYING);
+#endif
 
   char headers[128];
   uint32_t output_latency_us = audio_receiver_get_output_latency_us();
@@ -1107,6 +1117,9 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
+#ifdef CONFIG_SQUEEZEAMP
+    squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+#endif
     // Full teardown - stop NTP timing
     ntp_clock_stop();
     conn->timing_port = 0;
@@ -1178,11 +1191,17 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=0 -> PAUSING");
     conn->stream_paused = true;
     audio_receiver_set_playing(false);
+#ifdef CONFIG_SQUEEZEAMP
+    squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+#endif
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
              rate, conn->stream_paused);
     conn->stream_paused = false;
     audio_receiver_set_playing(true);
+#ifdef CONFIG_SQUEEZEAMP
+    squeezeamp_set_state(SQUEEZEAMP_PLAYING);
+#endif
   }
 
   rtsp_send_ok(socket, conn, req->cseq);

@@ -50,10 +50,12 @@ set( DEPS
     app_update
     json
     mbedtls
+    esp_driver_ledc
 )
 
 if(CONFIG_SQUEEZEAMP)
     list(APPEND SRC_FILES "audio/dac_tas57xx.c")
+    list(APPEND SRC_FILES "audio/squeezeamp.c")
     list(APPEND DEPS "esp_driver_i2c")
 endif()
 

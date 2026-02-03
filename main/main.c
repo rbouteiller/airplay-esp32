@@ -14,6 +14,9 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#ifdef CONFIG_SQUEEZEAMP
+#include "squeezeamp.h"
+#endif
 
 static const char *TAG = "main";
 
@@ -94,6 +97,14 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
   led_visual_init();
+
+#ifdef CONFIG_SQUEEZEAMP
+  esp_err_t err = ESP_OK;
+  err = squeezeamp_init();
+  if (ESP_OK != err) {
+    ESP_LOGE(TAG, "Failed to initialize SqueezeAMP: %s", esp_err_to_name(err));
+  };
+#endif
 
   // Start WiFi (APSTA mode: AP for config, STA for connection)
   wifi_init_apsta(NULL, NULL);
