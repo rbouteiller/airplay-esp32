@@ -1,7 +1,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
-#include "led_visual.h"
+#include "led.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -10,9 +10,8 @@
 #include "rtsp_server.h"
 
 #include <stdlib.h>
-#ifdef CONFIG_SQUEEZEAMP
-#include "squeezeamp.h"
-#else
+
+#ifndef CONFIG_SQUEEZEAMP
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
 #define I2S_GND_PIN GPIO_NUM_14
 // #define I2S_VCC_PIN   GPIO_NUM_14
@@ -56,11 +55,11 @@ static void playback_task(void *arg) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
       apply_volume(pcm, samples * 2);
-      led_visual_update(pcm, samples);
+      led_audio_feed(pcm, samples);
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       taskYIELD();
     } else {
-      led_visual_update(silence, FRAME_SAMPLES);
+      led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
       vTaskDelay(1);
@@ -110,9 +109,6 @@ esp_err_t audio_output_init(void) {
 }
 
 void audio_output_start(void) {
-#ifdef CONFIG_SQUEEZEAMP
-  squeezeamp_set_state(SQUEEZEAMP_STANDBY);
-#endif
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }

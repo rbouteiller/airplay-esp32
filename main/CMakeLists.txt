@@ -36,7 +36,7 @@ set( SRC_FILES
     "network/web_server.c"
     "network/ota.c"
     "network/dns_server.c"
-    "led_visual.c"
+    "led.c"
 )
 set( DEPS
     driver
