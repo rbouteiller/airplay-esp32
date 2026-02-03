@@ -18,9 +18,7 @@
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
 
-#ifdef CONFIG_SQUEEZEAMP
-#include "squeezeamp.h"
-#endif
+#include "rtsp_events.h"
 
 static const char *TAG = "rtsp_server";
 
@@ -234,9 +232,7 @@ cleanup:
   ESP_LOGI(TAG, "Client slot %d disconnected", slot_idx);
   free(buffer);
   close(slot->socket);
-#ifdef CONFIG_SQUEEZEAMP
-  squeezeamp_set_state(SQUEEZEAMP_STANDBY);
-#endif
+  rtsp_events_emit(RTSP_EVENT_DISCONNECTED);
 
   // Always stop event task before closing its socket
   rtsp_stop_event_port_task();

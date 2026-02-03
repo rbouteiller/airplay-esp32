@@ -1,6 +1,7 @@
 #include "squeezeamp.h"
 
 #include "dac_tas57xx.h"
+#include "rtsp_events.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_check.h"
@@ -49,8 +50,29 @@ static esp_err_t init_gpio(void);
 
 static void flash_led(uint8_t id, uint32_t on_ms, uint32_t off_ms);
 
+static void on_rtsp_event(rtsp_event_t event, void *user_data) {
+  (void)user_data;
+  switch (event) {
+  case RTSP_EVENT_CLIENT_CONNECTED:
+    squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+    break;
+  case RTSP_EVENT_PLAYING:
+    squeezeamp_set_state(SQUEEZEAMP_PLAYING);
+    break;
+  case RTSP_EVENT_PAUSED:
+    squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+    break;
+  case RTSP_EVENT_DISCONNECTED:
+    squeezeamp_set_state(SQUEEZEAMP_STANDBY);
+    break;
+  }
+}
+
 esp_err_t squeezeamp_init(void) {
   esp_err_t err = ESP_OK;
+
+  // Register for RTSP events
+  rtsp_events_register(on_rtsp_event, NULL);
 
   // Initialize I2C for DAC control
   err = tas57xx_init(I2C_PORT_0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
@@ -135,6 +157,7 @@ static esp_err_t init_gpio() {
 }
 
 esp_err_t squeezeamp_deinit() {
+  rtsp_events_unregister(on_rtsp_event);
   tas57xx_enable_speaker(false);
   tas57xx_set_power_mode(TAS57XX_AMP_OFF);
   return ESP_OK;

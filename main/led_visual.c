@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "rtsp_events.h"
 
 #include <math.h>
 
@@ -151,9 +152,27 @@ static void led_green_update(float norm) {
 }
 #endif
 
+static void led_visual_clear(void) {
+  led_rgb_update(0.0f, 0.0f);
+  led_green_update(0.0f);
+}
+
+static void on_rtsp_event(rtsp_event_t event, void *user_data) {
+  (void)user_data;
+  switch (event) {
+  case RTSP_EVENT_PAUSED:
+  case RTSP_EVENT_DISCONNECTED:
+    led_visual_clear();
+    break;
+  default:
+    break;
+  }
+}
+
 void led_visual_init(void) {
   led_rgb_init();
   led_green_init();
+  rtsp_events_register(on_rtsp_event, NULL);
 }
 
 void led_visual_update(const int16_t *pcm, size_t stereo_samples) {
