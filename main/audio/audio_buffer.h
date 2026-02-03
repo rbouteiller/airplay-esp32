@@ -30,7 +30,7 @@ typedef struct __attribute__((packed)) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 #define MAX_RING_BUFFER_FRAMES 5000
 #else
-#define MAX_RING_BUFFER_FRAMES 2500
+#define MAX_RING_BUFFER_FRAMES 1000
 #endif
 #define BYTES_PER_FRAME                                          \
   ((size_t)sizeof(audio_frame_header_t) +                        \
@@ -40,7 +40,7 @@ typedef struct __attribute__((packed)) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 #define MAX_BUFFER_FRAMES 5000
 #else
-#define MAX_BUFFER_FRAMES 2500
+#define MAX_BUFFER_FRAMES 1000
 #endif
 
 typedef struct {
