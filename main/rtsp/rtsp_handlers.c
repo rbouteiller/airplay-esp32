@@ -984,6 +984,9 @@ static void handle_record(int socket, rtsp_conn_t *conn,
                               conn->buffered_port);
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
+#ifdef CONFIG_SQUEEZEAMP
+  squeezeamp_set_state(SQUEEZEAMP_PLAYING);
+#endif
 
   char headers[128];
   uint32_t output_latency_us = audio_receiver_get_output_latency_us();
@@ -1107,6 +1110,9 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
+#ifdef CONFIG_SQUEEZEAMP
+    squeezeamp_set_state(SQUEEZEAMP_PAUSED);
+#endif
     // Full teardown - stop NTP timing
     ntp_clock_stop();
     conn->timing_port = 0;
