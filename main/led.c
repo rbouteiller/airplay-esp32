@@ -148,8 +148,8 @@ static void status_led_init(void) {
     return;
   }
 
-  s_status_timer =
-      xTimerCreate("status_led", pdMS_TO_TICKS(500), pdFALSE, NULL, status_timer_cb);
+  s_status_timer = xTimerCreate("status_led", pdMS_TO_TICKS(500), pdFALSE, NULL,
+                                status_timer_cb);
 
   ESP_LOGI(TAG, "Status LED initialized on GPIO %d", CONFIG_LED_STATUS_GPIO);
 }
@@ -195,9 +195,14 @@ static void status_led_set_vu(float norm) {
 }
 
 #else
-static void status_led_init(void) {}
-static void status_led_set_mode(led_mode_t mode) { (void)mode; }
-static void status_led_set_vu(float norm) { (void)norm; }
+static void status_led_init(void) {
+}
+static void status_led_set_mode(led_mode_t mode) {
+  (void)mode;
+}
+static void status_led_set_vu(float norm) {
+  (void)norm;
+}
 #endif
 
 // ============================================================================
@@ -234,8 +239,11 @@ static void error_led_set(bool on) {
 }
 
 #else
-static void error_led_init(void) {}
-static void error_led_set(bool on) { (void)on; }
+static void error_led_init(void) {
+}
+static void error_led_set(bool on) {
+  (void)on;
+}
 #endif
 
 // ============================================================================
@@ -344,14 +352,18 @@ static void rgb_led_set_vu(float norm, float bass_ratio) {
 }
 
 #else
-static void rgb_led_init(void) {}
-static void rgb_led_set_mode(led_mode_t mode) { (void)mode; }
+static void rgb_led_init(void) {
+}
+static void rgb_led_set_mode(led_mode_t mode) {
+  (void)mode;
+}
 static void rgb_led_set_color(uint8_t r, uint8_t g, uint8_t b) {
   (void)r;
   (void)g;
   (void)b;
 }
-static void rgb_led_clear(void) {}
+static void rgb_led_clear(void) {
+}
 static void rgb_led_set_vu(float norm, float bass_ratio) {
   (void)norm;
   (void)bass_ratio;
