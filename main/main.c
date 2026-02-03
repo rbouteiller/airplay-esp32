@@ -1,7 +1,7 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "dns_server.h"
-#include "led_visual.h"
+#include "led.h"
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
@@ -96,7 +96,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
-  led_visual_init();
+  led_init();
 
 #ifdef CONFIG_SQUEEZEAMP
   esp_err_t err = ESP_OK;
