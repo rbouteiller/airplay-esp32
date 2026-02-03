@@ -66,11 +66,11 @@ The connections through the header are:
 ESP32-S3 pin     →  PCM5102A pin    What it does
 ─────────────────────────────────────────────────
 5V               →  VIN             Power for the DAC
-GND              →  GND             Ground
 GPIO11           →  BCK             Bit clock (audio timing)
 GPIO12           →  DIN             Audio data
 GPIO13           →  LCK             Left/right channel select
 GPIO14           →  GND             Software ground (pulled low by code)
+Or GND           →  GND             Ground (GPIO14 software ground is sufficient)
 ```
 
 > **Tip:** On the ESP32S3 board, bridge the VIN/VOUT solder pads if they are not already connected. This lets the board use 5V power directly.
