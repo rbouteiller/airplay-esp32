@@ -1,0 +1,118 @@
+# SqueezeAMP board pin configuration
+# This file is sourced by boards/Kconfig for all SqueezeAMP variants
+
+if BOARD_SQUEEZEAMP_COMMON
+
+menu "SqueezeAMP Pin Configuration"
+
+    config BAT_CHANNEL
+        int "Battery Monitor GPIO"
+        default 7
+        help
+            GPIO for battery voltage monitoring ADC channel.
+
+    menu "LED GPIOs"
+        config LED_STATUS_GPIO
+            int "Status LED GPIO"
+            default 12
+            help
+                GPIO for status LED (single color). Set to -1 to disable.
+
+        config LED_ERROR_GPIO
+            int "Error LED GPIO"
+            default 13
+            help
+                GPIO for error LED. Set to -1 to disable.
+
+        config LED_RGB_GPIO
+            int "RGB LED GPIO (WS2812)"
+            default -1
+            help
+                GPIO for addressable RGB LED (WS2812). Set to -1 to disable.
+    endmenu
+
+    menu "I2S Pins"
+        config I2S_BCK_IO
+            int "I2S Bit Clock GPIO"
+            default 33
+            help
+                I2S Bit Clock gpio pin to use.
+
+        config I2S_WS_IO
+            int "I2S Word Select GPIO"
+            default 25
+            help
+                I2S Word Select gpio pin to use.
+
+        config I2S_DO_IO
+            int "I2S Data Output GPIO"
+            default 32
+            help
+                I2S data output gpio pin to use.
+    endmenu
+
+    menu "DAC I2C Pins"
+        config DAC_I2C_SDA
+            int "I2C SDA GPIO for DAC"
+            default 27
+            help
+                I2C data gpio pin to use with TAS57xx DAC.
+
+        config DAC_I2C_SCL
+            int "I2C SCL GPIO for DAC"
+            default 26
+            help
+                I2C clock gpio pin to use with TAS57xx DAC.
+    endmenu
+
+    menu "Control GPIOs"
+        config JACK_GPIO
+            int "Headphone Jack Detection GPIO"
+            default 34
+            help
+                GPIO for headphone jack detection.
+
+        config SPKFAULT_GPIO
+            int "DAC/AMP Fault Detection GPIO"
+            default 2
+            help
+                GPIO for speaker fault detection.
+
+        config MUTE_GPIO
+            int "Mute GPIO"
+            default 14
+            help
+                GPIO used to mute DAC.
+
+        config MUTE_GPIO_LEVEL
+            int "Mute GPIO Active Level"
+            default 0
+            help
+                Active level for mute GPIO (0 or 1).
+    endmenu
+
+    menu "SPDIF Pins"
+        config SPDIF_BCK_IO
+            int "SPDIF Bit Clock GPIO"
+            default 33
+            help
+                Must be set as SPDIF re-uses I2S but only needs DO.
+                Recommendation: set to I2S Bit clock value.
+
+        config SPDIF_WS_IO
+            int "SPDIF Word Select GPIO"
+            default 25
+            help
+                Must be set as SPDIF re-uses I2S but only needs DO.
+                Recommendation: set to I2S Word select value.
+
+        config SPDIF_DO_IO
+            int "SPDIF Data Output GPIO"
+            default 15
+            help
+                I2S data output IO use to simulate SPDIF.
+    endmenu
+
+endmenu
+
+endif # BOARD_SQUEEZEAMP_COMMON

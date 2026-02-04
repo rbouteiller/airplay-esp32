@@ -11,10 +11,12 @@
 
 #include <stdlib.h>
 
-#ifndef CONFIG_SQUEEZEAMP
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
-#define I2S_GND_PIN GPIO_NUM_14
-// #define I2S_VCC_PIN   GPIO_NUM_14
+#if CONFIG_I2S_GND_IO >= 0
+#define I2S_GND_PIN CONFIG_I2S_GND_IO
+#endif
+#if CONFIG_I2S_VCC_IO >= 0
+#define I2S_VCC_PIN CONFIG_I2S_VCC_IO
 #endif
 
 #define TAG           "audio_output"

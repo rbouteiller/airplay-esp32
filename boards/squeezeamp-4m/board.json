@@ -4,8 +4,7 @@
     "extra_flags": [
       "-DBOARD_HAS_PSRAM",
       "-mfix-esp32-psram-cache-issue",
-      "-mfix-esp32-psram-cache-strategy=memw",
-      "-DCONFIG_SQUEEZEAMP"
+      "-mfix-esp32-psram-cache-strategy=memw"
     ],
     "f_cpu": "240000000L",
     "f_flash": "40000000L",
@@ -18,7 +17,7 @@
     "openocd_board": "esp32-wrover.cfg"
   },
   "frameworks": ["espidf"],
-  "name": "SqueezeAMP ESP32",
+  "name": "SqueezeAMP ESP32 4MB",
   "upload": {
     "flash_size": "4MB",
     "maximum_ram_size": 327680,

@@ -11,12 +11,10 @@
 #include "web_server.h"
 #include "wifi.h"
 
+#include "board.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#ifdef CONFIG_SQUEEZEAMP
-#include "squeezeamp.h"
-#endif
 
 static const char *TAG = "main";
 
@@ -98,13 +96,13 @@ void app_main(void) {
   ESP_ERROR_CHECK(settings_init());
   led_init();
 
-#ifdef CONFIG_SQUEEZEAMP
-  esp_err_t err = ESP_OK;
-  err = squeezeamp_init();
-  if (ESP_OK != err) {
-    ESP_LOGE(TAG, "Failed to initialize SqueezeAMP: %s", esp_err_to_name(err));
-  };
-#endif
+  // Initialize board-specific hardware
+  const board_info_t *board = board_get_info();
+  ESP_LOGI(TAG, "Board: %s", board->name);
+  esp_err_t err = board_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Board init failed: %s", esp_err_to_name(err));
+  }
 
   // Start WiFi (APSTA mode: AP for config, STA for connection)
   wifi_init_apsta(NULL, NULL);

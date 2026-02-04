@@ -1,3 +1,6 @@
+# Include board configuration for auto-discovery
+include(${CMAKE_SOURCE_DIR}/boards/CMakeLists.txt)
+
 set( SRC_FILES
     "main.c"
     "alac_magic_cookie.c"
@@ -54,14 +57,12 @@ set( DEPS
     esp_driver_ledc
 )
 
-if(CONFIG_SQUEEZEAMP)
-    list(APPEND SRC_FILES "audio/dac_tas57xx.c")
-    list(APPEND SRC_FILES "audio/squeezeamp.c")
-    list(APPEND DEPS "esp_driver_i2c")
-endif()
+# Add board-specific sources and dependencies
+list(APPEND SRC_FILES ${BOARD_SRCS})
+list(APPEND DEPS ${BOARD_DEPS})
 
 idf_component_register(
     SRCS ${SRC_FILES}
-    INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
+    INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network" ${BOARD_INCLUDE_DIRS}
     PRIV_REQUIRES ${DEPS}
 )
