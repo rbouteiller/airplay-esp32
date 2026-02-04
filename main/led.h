@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -22,3 +23,9 @@ void led_init(void);
  * Call this from the audio path when playing.
  */
 void led_audio_feed(const int16_t *pcm, size_t stereo_samples);
+
+/**
+ * Set error state (e.g., speaker fault, decode failure).
+ * Clears automatically on next playback state change.
+ */
+void led_set_error(bool error);

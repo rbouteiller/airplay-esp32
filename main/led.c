@@ -6,6 +6,10 @@
 #include "freertos/timers.h"
 #include "rtsp_events.h"
 
+#if CONFIG_LED_STATUS_GPIO >= 0 || CONFIG_LED_ERROR_GPIO >= 0
+#include "driver/ledc.h"
+#endif
+
 #include <math.h>
 
 static const char *TAG = "led";
@@ -77,8 +81,6 @@ static led_mode_t get_rgb_mode_standby(void) {
 // ============================================================================
 
 #if CONFIG_LED_STATUS_GPIO >= 0
-
-#include "driver/ledc.h"
 
 #define STATUS_LED_CHANNEL LEDC_CHANNEL_0
 #define STATUS_LED_TIMER   LEDC_TIMER_0
@@ -211,15 +213,26 @@ static void status_led_set_vu(float norm) {
 
 #if CONFIG_LED_ERROR_GPIO >= 0
 
-#include "driver/ledc.h"
-
 #define ERROR_LED_CHANNEL LEDC_CHANNEL_1
+#define ERROR_LED_TIMER   LEDC_TIMER_1
 
 static void error_led_init(void) {
+  ledc_timer_config_t timer_cfg = {
+      .speed_mode = LEDC_LOW_SPEED_MODE,
+      .timer_num = ERROR_LED_TIMER,
+      .duty_resolution = LEDC_TIMER_8_BIT,
+      .freq_hz = 1000,
+      .clk_cfg = LEDC_AUTO_CLK,
+  };
+  if (ledc_timer_config(&timer_cfg) != ESP_OK) {
+    ESP_LOGE(TAG, "Error LED timer init failed");
+    return;
+  }
+
   ledc_channel_config_t ch_cfg = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
       .channel = ERROR_LED_CHANNEL,
-      .timer_sel = STATUS_LED_TIMER, // Reuse timer from status LED
+      .timer_sel = ERROR_LED_TIMER,
       .intr_type = LEDC_INTR_DISABLE,
       .gpio_num = CONFIG_LED_ERROR_GPIO,
       .duty = 0,
@@ -532,4 +545,13 @@ void led_init(void) {
   apply_state(STATE_STANDBY);
 
   ESP_LOGI(TAG, "LED subsystem initialized");
+}
+
+void led_set_error(bool error) {
+  if (error) {
+    apply_state(STATE_ERROR);
+  } else {
+    // Return to appropriate state based on current playback
+    apply_state(STATE_STANDBY);
+  }
 }
