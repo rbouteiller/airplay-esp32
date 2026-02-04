@@ -423,7 +423,13 @@ static void apply_state(led_state_t state) {
     break;
 
   case STATE_ERROR:
+#if CONFIG_LED_ERROR_GPIO >= 0
+    // Dedicated error LED - turn off status to avoid mixed signals
+    status_led_set_mode(LED_OFF);
+#else
+    // No error LED - use status LED to indicate error
     status_led_set_mode(LED_BLINK_FAST);
+#endif
     rgb_led_set_color(0x80, 0, 0);
     error_led_set(true);
     break;
