@@ -10,6 +10,10 @@ menu "Airplay ESP Configuration"
             config ESP32S3_DEV_BOARD
                 bool "ESP32S3-N16R8"
         endchoice
+        config DAC_CONTROLS_VOLUME
+            bool "Enable DAC volume control"
+            default true if SQUEEZEAMP
+            default false
     endmenu
 
     config BAT_CHANNEL
@@ -186,6 +190,13 @@ menu "Airplay ESP Configuration"
         int "Mute GPIO active level"
         default 0 if SQUEEZEAMP
 	    default -1
+    config DAC_MAX_VOLUME
+        int "Max gain limiter (db) for the DAC/AMP"
+        default -20 if SQUEEZEAMP
+        default 0
+        help
+            Can be used to limit the maximum volume of the integrated amplifier to avoid speaker damage. 
+            Zero is no limit, -100 is almost silent
     endmenu
 
     menu "SPDIF settings (SqueezeAMP)"
