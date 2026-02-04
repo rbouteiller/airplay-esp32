@@ -1,7 +1,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
-#include "led_visual.h"
+#include "led.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -10,10 +10,8 @@
 #include "rtsp_server.h"
 
 #include <stdlib.h>
-#ifdef CONFIG_SQUEEZEAMP
-#include "dac_tas57xx.h"
-#define I2C_PORT_0 0
-#else
+
+#ifndef CONFIG_SQUEEZEAMP
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
 #define I2S_GND_PIN GPIO_NUM_14
 // #define I2S_VCC_PIN   GPIO_NUM_14
@@ -57,11 +55,11 @@ static void playback_task(void *arg) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
       apply_volume(pcm, samples * 2);
-      led_visual_update(pcm, samples);
+      led_audio_feed(pcm, samples);
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       taskYIELD();
     } else {
-      led_visual_update(silence, FRAME_SAMPLES);
+      led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
       vTaskDelay(1);
@@ -77,13 +75,7 @@ esp_err_t audio_output_init(void) {
 
   ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &tx_handle, NULL), TAG,
                       "channel create failed");
-#ifdef CONFIG_SQUEEZEAMP
-  esp_err_t err = ESP_OK;
-  err = tas57xx_init(I2C_PORT_0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
-  if (ESP_OK != err) {
-    ESP_LOGE(TAG, "Failed to initialize TAS57xx: %s", esp_err_to_name(err));
-  };
-#endif
+
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
@@ -117,10 +109,6 @@ esp_err_t audio_output_init(void) {
 }
 
 void audio_output_start(void) {
-#ifdef CONFIG_SQUEEZEAMP
-  tas57xx_set_power_mode(TAS57XX_AMP_ON);
-  tas57xx_enable_speaker(true);
-#endif
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }

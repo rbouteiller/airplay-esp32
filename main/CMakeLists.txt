@@ -17,6 +17,7 @@ set( SRC_FILES
     "rtsp/rtsp_handlers.c"
     "rtsp/rtsp_fairplay.c"
     "rtsp/rtsp_crypto.c"
+    "rtsp/rtsp_events.c"
     "plist/plist_xml.c"
     "plist/bplist_parser.c"
     "plist/bplist_builder.c"
@@ -35,7 +36,7 @@ set( SRC_FILES
     "network/web_server.c"
     "network/ota.c"
     "network/dns_server.c"
-    "led_visual.c"
+    "led.c"
 )
 set( DEPS
     driver
@@ -50,10 +51,12 @@ set( DEPS
     app_update
     json
     mbedtls
+    esp_driver_ledc
 )
 
 if(CONFIG_SQUEEZEAMP)
     list(APPEND SRC_FILES "audio/dac_tas57xx.c")
+    list(APPEND SRC_FILES "audio/squeezeamp.c")
     list(APPEND DEPS "esp_driver_i2c")
 endif()
 
