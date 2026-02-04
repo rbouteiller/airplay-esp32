@@ -38,6 +38,13 @@ menu "Airplay ESP Configuration"
             help
                 GPIO for addressable RGB LED (WS2812). Set to -1 to disable.
 
+        config LED_STATUS_BRIGHTNESS
+            int "Status LED brightness (0-255)"
+            range 0 255
+            default 80
+            help
+                Brightness level for the status LED (0=off, 255=max).
+
         menu "Status LED Behavior (optional overrides)"
             choice LED_STATUS_ON_PLAYING
                 prompt "Status LED when playing"

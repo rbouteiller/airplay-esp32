@@ -86,7 +86,7 @@ static led_mode_t get_rgb_mode_standby(void) {
 static led_mode_t s_status_mode = LED_OFF;
 static TimerHandle_t s_status_timer = NULL;
 static bool s_status_on = false;
-static uint8_t s_status_duty = 80;
+static uint8_t s_status_duty = CONFIG_LED_STATUS_BRIGHTNESS;
 
 static void status_led_set_duty(uint8_t duty) {
   ledc_set_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL, duty);
@@ -234,7 +234,8 @@ static void error_led_init(void) {
 }
 
 static void error_led_set(bool on) {
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL, on ? 80 : 0);
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL,
+                on ? CONFIG_LED_STATUS_BRIGHTNESS : 0);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL);
 }
 
