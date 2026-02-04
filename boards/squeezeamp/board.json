@@ -4,8 +4,7 @@
     "extra_flags": [
       "-DBOARD_HAS_PSRAM",
       "-mfix-esp32-psram-cache-issue",
-      "-mfix-esp32-psram-cache-strategy=memw",
-      "-DCONFIG_SQUEEZEAMP"
+      "-mfix-esp32-psram-cache-strategy=memw"
     ],
     "f_cpu": "240000000L",
     "f_flash": "40000000L",
