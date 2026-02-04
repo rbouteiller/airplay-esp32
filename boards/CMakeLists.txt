@@ -7,12 +7,19 @@ set(BOARD_SRCS "")
 set(BOARD_DEPS "")
 set(BOARD_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}")
 
-# List of supported boards (folder names under boards/)
-set(SUPPORTED_BOARDS
-    squeezeamp
-    squeezeamp-4m
-    esp32s3-generic
-)
+# Auto-discover supported boards (folder names under boards/)
+# A board is any subdirectory containing at least one of: board.c, board.json, Kconfig
+set(SUPPORTED_BOARDS "")
+file(GLOB BOARD_DIRS RELATIVE "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_LIST_DIR}/*")
+foreach(BOARD_CANDIDATE IN LISTS BOARD_DIRS)
+    if(IS_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/${BOARD_CANDIDATE}")
+        if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/${BOARD_CANDIDATE}/board.c"
+           OR EXISTS "${CMAKE_CURRENT_LIST_DIR}/${BOARD_CANDIDATE}/board.json"
+           OR EXISTS "${CMAKE_CURRENT_LIST_DIR}/${BOARD_CANDIDATE}/Kconfig")
+            list(APPEND SUPPORTED_BOARDS "${BOARD_CANDIDATE}")
+        endif()
+    endif()
+endforeach()
 
 foreach(BOARD IN LISTS SUPPORTED_BOARDS)
     # Convert board name to CONFIG variable name
