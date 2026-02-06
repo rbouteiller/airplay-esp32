@@ -3,8 +3,7 @@
 #include "esp_err.h"
 
 /**
- * SqueezeAMP board support - DAC control via TAS57xx.
- * LED handling is done by the led.c module.
+ * SqueezeAMP board support (https://github.com/philippe44/SqueezeAMP)
  */
 
 /**
