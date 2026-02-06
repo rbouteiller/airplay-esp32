@@ -395,9 +395,11 @@ typedef enum {
   STATE_ERROR,
 } led_state_t;
 
+static led_state_t s_prev_state = STATE_STANDBY;
 static led_state_t s_current_state = STATE_STANDBY;
 
 static void apply_state(led_state_t state) {
+  s_prev_state = s_current_state;
   s_current_state = state;
 
   switch (state) {
@@ -551,7 +553,6 @@ void led_set_error(bool error) {
   if (error) {
     apply_state(STATE_ERROR);
   } else {
-    // Return to appropriate state based on current playback
-    apply_state(STATE_STANDBY);
+    apply_state(s_prev_state);
   }
 }

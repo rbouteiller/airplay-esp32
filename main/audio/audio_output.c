@@ -8,7 +8,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "rtsp_server.h"
-
 #include <stdlib.h>
 
 #ifndef CONFIG_SQUEEZEAMP
@@ -33,10 +32,12 @@
 static i2s_chan_handle_t tx_handle;
 
 static void apply_volume(int16_t *buf, size_t n) {
+#ifndef DAC_CONTROLS_VOLUME
   int32_t vol = airplay_get_volume_q15();
   for (size_t i = 0; i < n; i++) {
     buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15);
   }
+#endif
 }
 
 static void playback_task(void *arg) {

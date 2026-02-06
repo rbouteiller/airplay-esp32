@@ -36,3 +36,8 @@ void tas57xx_enable_line_out(bool enable);
  * Set the power mode for the amplifier
  */
 void tas57xx_set_power_mode(tas57xx_power_mode_e mode);
+
+/**
+ * Set the DAC output volume, using airplay values of -30 to 0
+ */
+void tas57xx_set_volume(float volume_airplay_db);
