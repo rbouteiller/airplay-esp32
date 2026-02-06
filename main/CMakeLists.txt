@@ -65,3 +65,8 @@ idf_component_register(
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES ${DEPS}
 )
+
+# Enable function wrapping for abort() to intercept panics and mute GPIO
+if(CONFIG_SQUEEZEAMP)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=abort")
+endif()

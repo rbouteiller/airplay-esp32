@@ -4,10 +4,12 @@
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "rtsp_events.h"
 #include "led.h"
+#include "soc/gpio_struct.h"
 
 /**
  * Features
@@ -58,6 +60,7 @@ static volatile bool speaker_fault_active = false;
 static volatile bool headphone_inserted = false;
 
 static esp_err_t init_spdif_gpio(void);
+static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
 static esp_err_t init_jack_gpio(void);
 static esp_err_t ensure_gpio_task_exists(void);
@@ -180,6 +183,12 @@ esp_err_t squeezeamp_init(void) {
     return err;
   }
 
+  // Configure mute GPIO
+  err = init_mute_gpio();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Mute GPIO not available");
+  }
+
   // Configure speaker fault detection
   err = init_spkfault_gpio();
   if (err != ESP_OK) {
@@ -216,6 +225,28 @@ static esp_err_t init_spdif_gpio(void) {
   gpio_set_level(CONFIG_SPDIF_DO_IO, 0);
 #endif
   return ESP_OK;
+}
+
+static esp_err_t init_mute_gpio(void) {
+#if CONFIG_MUTE_GPIO >= 0
+  gpio_config_t mute_gpio_cfg = {
+      .pin_bit_mask = (1ULL << CONFIG_MUTE_GPIO),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  esp_err_t err = gpio_config(&mute_gpio_cfg);
+  ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure mute GPIO");
+
+  // Initialize to unmuted state (active low, so set high to unmute)
+  gpio_set_level(CONFIG_MUTE_GPIO, !CONFIG_MUTE_GPIO_LEVEL);
+
+  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)",
+           CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL ? "high" : "low");
+  return ESP_OK;
+#endif
+  return ESP_ERR_NOT_FOUND;
 }
 
 static esp_err_t ensure_gpio_task_exists(void) {
@@ -314,6 +345,26 @@ static esp_err_t init_jack_gpio(void) {
   return ESP_ERR_NOT_FOUND;
 }
 
+// Override the abort() function to mute GPIO during system panics
+// This is called by ESP-IDF during panic/abort situations
+void IRAM_ATTR __wrap_abort(void) {
+#if CONFIG_MUTE_GPIO >= 0
+  // Immediately mute the amplifier using direct register access
+  // This must be fast and not rely on any complex systems
+  if (CONFIG_MUTE_GPIO_LEVEL) {
+    // Active high - set bit
+    GPIO.out_w1ts = (1ULL << CONFIG_MUTE_GPIO);
+  } else {
+    // Active low - clear bit  
+    GPIO.out_w1tc = (1ULL << CONFIG_MUTE_GPIO);
+  }
+#endif
+  
+  // Call the original abort function
+  extern void __real_abort(void) __attribute__((noreturn));
+  __real_abort();
+}
+
 esp_err_t squeezeamp_deinit(void) {
 #if CONFIG_JACK_GPIO >= 0
   gpio_isr_handler_remove(CONFIG_JACK_GPIO);
@@ -326,6 +377,12 @@ esp_err_t squeezeamp_deinit(void) {
     gpio_task_handle = NULL;
   }
   rtsp_events_unregister(on_rtsp_event);
+
+  // Ensure mute GPIO is active (muted) during shutdown for safety
+#if CONFIG_MUTE_GPIO >= 0
+  gpio_set_level(CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL);
+#endif
+
   tas57xx_enable_speaker(false);
   tas57xx_set_power_mode(TAS57XX_AMP_OFF);
   return ESP_OK;
