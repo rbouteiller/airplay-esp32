@@ -42,12 +42,12 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.2
+    version: 5.5.0
 direct_dependencies:
 - espressif/esp_audio_codec
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
 manifest_hash: a249e5454765e28ca268e00cb1898483003796cd0014a08d2651317235bec032
-target: esp32
+target: esp32s3
 version: 2.0.0

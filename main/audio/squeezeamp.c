@@ -43,7 +43,7 @@
  * └─────────────────────────────────────────────────────────────┘
  */
 
-#define I2C_PORT_0 0
+#define I2C_PORT_0                  0
 #define ISR_HANDLER_TASK_STACK_SIZE 2048
 #define ISR_HANDLER_TASK_PRIORITY   5
 #define JACK_DEBOUNCE_MS            200
@@ -355,11 +355,11 @@ void IRAM_ATTR __wrap_abort(void) {
     // Active high - set bit
     GPIO.out_w1ts = (1ULL << CONFIG_MUTE_GPIO);
   } else {
-    // Active low - clear bit  
+    // Active low - clear bit
     GPIO.out_w1tc = (1ULL << CONFIG_MUTE_GPIO);
   }
 #endif
-  
+
   // Call the original abort function
   extern void __real_abort(void) __attribute__((noreturn));
   __real_abort();
