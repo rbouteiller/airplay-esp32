@@ -40,7 +40,7 @@ set( SRC_FILES
 
 # Select audio output implementation at compile time
 if(CONFIG_SPDIF_OUTPUT)
-    list(APPEND SRC_FILES "audio/audio_out_spdif.c")
+    list(APPEND SRC_FILES "audio/audio_output_spdif.c")
 else()
     list(APPEND SRC_FILES "audio/audio_output.c")
 endif()

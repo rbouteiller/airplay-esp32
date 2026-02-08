@@ -36,11 +36,8 @@ static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x54, 0x02}, // Mute output control
     {0x3D, 0x6C}, // Set chan B volume -70db
     {0x3E, 0x6C}, // Set chan A volume -70db
-#if BYTES_PER_FRAME == 8
-    {0x28, 0x03}, // I2S length 32 bits
-#else
+    // {0x28, 0x03}, // I2S length 32 bits
     {0x28, 0x00}, // I2S length 16 bits
-#endif
     {0x02, 0x00}, // restart
     {0xff, 0xff}  // end of table
 };
