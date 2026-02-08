@@ -199,6 +199,14 @@ menu "Airplay ESP Configuration"
             Zero is no limit, -100 is almost silent
     endmenu
 
+    config SPDIF_OUTPUT
+        bool "Use SPDIF output instead of I2S DAC"
+        default false
+        help
+            When enabled, audio is output as an SPDIF bitstream on the
+            SPDIF DO GPIO using I2S bit-banging (BMC encoding). The I2S
+            DAC output is not used. Configure the SPDIF GPIOs below.
+
     menu "SPDIF settings (SqueezeAMP)"
         config SPDIF_BCK_IO
             int "SDPIF Bit clock GPIO number"
