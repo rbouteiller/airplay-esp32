@@ -21,7 +21,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          find main boards \( -name "*.c" -o -name "*.h" \) -print0 \
+          find main components \( -name "*.c" -o -name "*.h" \) -print0 \
             | xargs -0 clang-format --dry-run --Werror
 
   lint-check:
@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'boards/*/pio_env.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
       - name: Install PlatformIO
@@ -61,7 +61,7 @@ jobs:
               echo "$FILTERED" | grep -E "(: warning:|: note:)"
               WARNINGS=1
             fi
-          done < <(find main boards \( -name "*.c" -o -name "*.h" \) -print0)
+          done < <(find main components \( -name "*.c" -o -name "*.h" \) -print0)
           if [ "$WARNINGS" -ne 0 ]; then
             echo ""
             echo "clang-tidy found issues"
@@ -86,7 +86,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'boards/*/pio_env.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
       - name: Install PlatformIO
