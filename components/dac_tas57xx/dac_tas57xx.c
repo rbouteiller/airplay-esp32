@@ -5,7 +5,6 @@
  */
 
 #include "dac_tas57xx.h"
-#include "settings.h"
 #include <math.h>
 #include <sys/param.h>
 
@@ -83,11 +82,11 @@ static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *dev_handle);
 static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
 
-esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io) {
+esp_err_t tas57xx_init(int sda_io, int scl_io) {
   esp_err_t err = ESP_OK;
 
-  // Set up I2C
-  err = i2c_init(i2c_port, sda_io, scl_io);
+  // Set up I2C (always uses port 0)
+  err = i2c_init(0, sda_io, scl_io);
   if (ESP_OK != err) {
     ESP_LOGE(TAG, "Could not configure i2c bus: %d", err);
     return err;
@@ -120,16 +119,10 @@ esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io) {
              tas57xx_init_seq[i].value);
   }
 
-  // Restore volume level
-  float vol_db = -50;
-  if (ESP_OK == settings_get_volume(&vol_db)) {
-    tas57xx_set_volume(vol_db);
-  }
-
   return err;
 }
 
-esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io) {
+esp_err_t tas57xx_deinit(int sda_io, int scl_io) {
   esp_err_t err = ESP_OK;
 
   if (tas57xx_device_handle) {
@@ -140,7 +133,7 @@ esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io) {
     }
   }
 
-  err = i2c_deinit(i2c_port, sda_io, scl_io);
+  err = i2c_deinit(0, sda_io, scl_io);
   return err;
 }
 
@@ -176,10 +169,12 @@ void tas57xx_enable_line_out(bool enable) {
 
 void tas57xx_set_volume(float volume_airplay_db) {
   // Clamp AirPlay input range (-30 to 0)
-  if (volume_airplay_db > 0.0f)
+  if (volume_airplay_db > 0.0f) {
     volume_airplay_db = 0.0f;
-  if (volume_airplay_db < -30.0f)
+  }
+  if (volume_airplay_db < -30.0f) {
     volume_airplay_db = -30.0f;
+  }
 
   // Volume mapping:
   // AirPlay 0 dB -> DAC CONFIG_DAC_MAX_VOLUME
@@ -201,10 +196,12 @@ void tas57xx_set_volume(float volume_airplay_db) {
   }
 
   // Clamp to DAC valid range
-  if (db_level > 0.0f)
+  if (db_level > 0.0f) {
     db_level = 0.0f;
-  if (db_level < -127.0f)
+  }
+  if (db_level < -127.0f) {
     db_level = -127.0f;
+  }
 
   // Convert dB to DAC register: reg = -dB * 2 (0x00=0dB, 0xFE=-127dB)
   uint8_t reg_val = (uint8_t)(-db_level * 2.0f);

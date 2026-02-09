@@ -1,6 +1,6 @@
 # During component requirements scanning, CONFIG_ vars are not yet available.
 # We must declare all possible dependencies upfront.
-set(PRIV_REQUIRES driver nvs_flash esp_driver_i2c dac_tas57xx main)
+set(PRIV_REQUIRES driver nvs_flash esp_driver_i2c dac main)
 
 if(CONFIG_BOARD_TARGET_PATH)
     set(boards_dir ${CONFIG_BOARD_TARGET_PATH})

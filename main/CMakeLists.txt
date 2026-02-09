@@ -60,6 +60,7 @@ set( DEPS
     mbedtls
     esp_driver_ledc
     boards
+    dac
 )
 
 idf_component_register(
@@ -69,6 +70,6 @@ idf_component_register(
 )
 
 # Enable function wrapping for abort() to intercept panics and mute GPIO
-if(CONFIG_SQUEEZEAMP)
+if(CONFIG_BOARD_SQUEEZEAMP_COMMON)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=abort")
 endif()

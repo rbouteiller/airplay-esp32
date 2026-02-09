@@ -37,7 +37,8 @@
 
 #include "iot_board.h"
 
-#include "dac_tas57xx.h"
+#include "dac.h"
+#include "settings.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -116,7 +117,7 @@ static void spkfault_task(void *arg) {
         if (!speaker_fault_active) {
           speaker_fault_active = true;
           ESP_LOGW(TAG, "Speaker fault detected");
-          tas57xx_enable_speaker(false);
+          dac_enable_speaker(false);
           led_set_error(true);
         }
       }
@@ -127,7 +128,7 @@ static void spkfault_task(void *arg) {
           ESP_LOGI(TAG, "Speaker fault cleared");
           // Only re-enable speaker if no headphone inserted
           if (!headphone_inserted) {
-            tas57xx_enable_speaker(true);
+            dac_enable_speaker(true);
           }
           led_set_error(false);
         }
@@ -143,12 +144,12 @@ static void spkfault_task(void *arg) {
 
         if (jack_inserted && !headphone_inserted) {
           headphone_inserted = true;
-          tas57xx_enable_speaker(false);
+          dac_enable_speaker(false);
         } else if (!jack_inserted && headphone_inserted) {
           headphone_inserted = false;
           // Only re-enable speaker if no fault active
           if (!speaker_fault_active) {
-            tas57xx_enable_speaker(true);
+            dac_enable_speaker(true);
           }
         }
       }
@@ -161,13 +162,13 @@ static void on_rtsp_event(rtsp_event_t event, void *user_data) {
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
   case RTSP_EVENT_PAUSED:
-    tas57xx_set_power_mode(TAS57XX_AMP_STANDBY);
+    dac_set_power_mode(DAC_POWER_STANDBY);
     break;
   case RTSP_EVENT_PLAYING:
-    tas57xx_set_power_mode(TAS57XX_AMP_ON);
+    dac_set_power_mode(DAC_POWER_ON);
     break;
   case RTSP_EVENT_DISCONNECTED:
-    tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+    dac_set_power_mode(DAC_POWER_OFF);
     break;
   }
 }
@@ -194,11 +195,17 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
-  // Initialize I2C for DAC control
-  err = tas57xx_init(BOARD_I2C_PORT, BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
+  // Initialize DAC
+  err = dac_init();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to initialize TAS57xx: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to initialize DAC: %s", esp_err_to_name(err));
     return err;
+  }
+
+  // Restore saved volume
+  float vol_db;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    dac_set_volume(vol_db);
   }
 
   // Configure mute GPIO
@@ -223,7 +230,7 @@ esp_err_t iot_board_init(void) {
   rtsp_events_register(on_rtsp_event, NULL);
 
   // Start in standby
-  tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+  dac_set_power_mode(DAC_POWER_OFF);
 
   s_board_initialized = true;
   ESP_LOGI(TAG, "SqueezeAMP DAC initialized");
@@ -252,8 +259,8 @@ esp_err_t iot_board_deinit(void) {
   gpio_set_level(BOARD_MUTE_GPIO, BOARD_MUTE_GPIO_LEVEL);
 #endif
 
-  tas57xx_enable_speaker(false);
-  tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+  dac_enable_speaker(false);
+  dac_set_power_mode(DAC_POWER_OFF);
 
   s_board_initialized = false;
   return ESP_OK;
@@ -274,8 +281,8 @@ static esp_err_t init_mute_gpio(void) {
   // Initialize to unmuted state (active low, so set high to unmute)
   gpio_set_level(BOARD_MUTE_GPIO, !BOARD_MUTE_GPIO_LEVEL);
 
-  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)",
-           BOARD_MUTE_GPIO, BOARD_MUTE_GPIO_LEVEL ? "high" : "low");
+  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)", BOARD_MUTE_GPIO,
+           BOARD_MUTE_GPIO_LEVEL ? "high" : "low");
   return ESP_OK;
 #endif
   return ESP_ERR_NOT_FOUND;
@@ -370,8 +377,7 @@ static esp_err_t init_jack_gpio(void) {
     xTaskNotify(gpio_task_handle, JACK_NOTIFY_CHANGED, eSetBits);
   }
 
-  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d",
-           BOARD_JACK_GPIO);
+  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d", BOARD_JACK_GPIO);
   return ESP_OK;
 #endif
   return ESP_ERR_NOT_FOUND;

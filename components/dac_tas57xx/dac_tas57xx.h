@@ -17,10 +17,10 @@ typedef enum {
 
 /**
  * Initialize the TI TAS57xx DAC/Amp chip
- * Aassumes dedicated I2C bus
+ * Assumes dedicated I2C bus on port 0
  */
-esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io);
-esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io);
+esp_err_t tas57xx_init(int sda_io, int scl_io);
+esp_err_t tas57xx_deinit(int sda_io, int scl_io);
 
 /**
  * Enable / disable the main amp out

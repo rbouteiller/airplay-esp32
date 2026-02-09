@@ -1,0 +1,12 @@
+if DAC_TAS57XX
+
+    config DAC_MAX_VOLUME
+        int "Maximum DAC volume (dB)"
+        range -100 0
+        default -20
+        help
+            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
+            The TAS57xx register range is 0 dB to -127 dB.
+            A value of -20 means AirPlay full volume maps to -20 dB on the DAC.
+
+endif # DAC_TAS57XX

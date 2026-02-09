@@ -83,6 +83,7 @@
 /* ── BMC lookup table ──────────────────────────────────────────────────
  * 8-bit PCM → 16-bit BMC, LSb first, ending with a "1" level.          */
 
+// NOLINTBEGIN(bugprone-narrowing-conversions)
 static const int16_t bmc_tab[256] = {
     0x3333, 0xb333, 0xd333, 0x5333, 0xcb33, 0x4b33, 0x2b33, 0xab33, 0xcd33,
     0x4d33, 0x2d33, 0xad33, 0x3533, 0xb533, 0xd533, 0x5533, 0xccb3, 0x4cb3,
@@ -114,6 +115,7 @@ static const int16_t bmc_tab[256] = {
     0x5355, 0xcb55, 0x4b55, 0x2b55, 0xab55, 0xcd55, 0x4d55, 0x2d55, 0xad55,
     0x3555, 0xb555, 0xd555, 0x5555,
 };
+// NOLINTEND(bugprone-narrowing-conversions)
 
 /* ── I2S handle ────────────────────────────────────────────────────────── */
 
@@ -127,7 +129,7 @@ static uint32_t *spdif_ptr;
 /* ── Volume ────────────────────────────────────────────────────────────── */
 
 static void apply_volume(int16_t *buf, size_t n) {
-#ifndef DAC_CONTROLS_VOLUME
+#ifndef CONFIG_DAC_CONTROLS_VOLUME
   int32_t vol = airplay_get_volume_q15();
   for (size_t i = 0; i < n; i++) {
     buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15);
