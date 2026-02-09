@@ -20,7 +20,7 @@ menu "Board Configuration"
     config BOARD_TARGET_PATH
         string
         default "squeezeamp" if BOARD_SQUEEZEAMP
-        default "squeezeamp-4m" if BOARD_SQUEEZEAMP_4M
+        default "squeezeamp" if BOARD_SQUEEZEAMP_4M
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
 
     config BOARD_SQUEEZEAMP_COMMON
@@ -28,7 +28,6 @@ menu "Board Configuration"
         default y if BOARD_SQUEEZEAMP || BOARD_SQUEEZEAMP_4M
 
     orsource "./squeezeamp/kconfig.in"
-    orsource "./squeezeamp-4m/kconfig.in"
     orsource "./esp32s3-generic/kconfig.in"
     rsource "Kconfig.common"
 endmenu

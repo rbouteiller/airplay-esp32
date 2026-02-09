@@ -3,13 +3,13 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
-typedef void* board_res_handle_t;
+typedef void *board_res_handle_t;
 
 typedef enum {
-    NULL_RESOURCE = 0,
-    BOARD_I2C0_ID,
-    BOARD_SPI2_ID,
-    BOARD_DAC_ID,
+  NULL_RESOURCE = 0,
+  BOARD_I2C0_ID,
+  BOARD_SPI2_ID,
+  BOARD_DAC_ID,
 } board_res_id_t;
 
 /**

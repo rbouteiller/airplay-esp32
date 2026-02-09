@@ -6,22 +6,22 @@
  */
 
 __attribute__((weak)) esp_err_t iot_board_init(void) {
-    return ESP_OK;
+  return ESP_OK;
 }
 
 __attribute__((weak)) esp_err_t iot_board_deinit(void) {
-    return ESP_OK;
+  return ESP_OK;
 }
 
 __attribute__((weak)) bool iot_board_is_init(void) {
-    return false;
+  return false;
 }
 
 __attribute__((weak)) board_res_handle_t iot_board_get_handle(int id) {
-    (void)id;
-    return NULL;
+  (void)id;
+  return NULL;
 }
 
 __attribute__((weak)) const char *iot_board_get_info(void) {
-    return "Unknown Board";
+  return "Unknown Board";
 }
