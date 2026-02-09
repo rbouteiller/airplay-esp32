@@ -199,26 +199,20 @@ menu "Airplay ESP Configuration"
             Zero is no limit, -100 is almost silent
     endmenu
 
-    menu "SPDIF settings (SqueezeAMP)"
-        config SPDIF_BCK_IO
-            int "SDPIF Bit clock GPIO number"
-            default 33 if SQUEEZEAMP
-            default 11
-            help
-                Must be set as SPDIF re-uses I2S but only needs DO (recommendation: set it to I2S Bit clock value)
-        config SPDIF_WS_IO
-            int "SPDIF Word Select GPIO number"
-            default 25 if SQUEEZEAMP
-	        default 13
-            help
-                Must be set as SPDIF re-uses I2S but only needs DO (recommendation: set it to I2S Word select value)
-        config SPDIF_DO_IO
-            int "SPDIF Data I/O GPIO number"
-            default 15 if SQUEEZEAMP
-	        default -1
-            help
-                I2S data output IO use to simulate SPDIF
-    endmenu
+    config SPDIF_OUTPUT
+        bool "Use SPDIF output instead of I2S DAC"
+        default false
+        help
+            When enabled, audio is output as an SPDIF bitstream on the
+            SPDIF DO GPIO using I2S bit-banging (BMC encoding). The I2S
+            DAC output is not used. Configure the SPDIF GPIOs below.
+    config SPDIF_DO_IO
+        int "SPDIF Data I/O GPIO number"
+        depends on SPDIF_OUTPUT
+        default 15 if SQUEEZEAMP
+        default -1
+        help
+            I2S data output IO use to simulate SPDIF
 endmenu
 
 menu "Wifi Configuration"
