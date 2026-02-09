@@ -1,9 +1,9 @@
-# ESP32-S3 Generic board pin configuration
-# This file is sourced by boards/Kconfig when BOARD_ESP32S3_GENERIC is selected
+# ESP32-S3 Generic board configuration
+# Only shown when BOARD_ESP32S3_GENERIC is selected
 
 if BOARD_ESP32S3_GENERIC
 
-menu "ESP32-S3 Generic Pin Configuration"
+menu "Pin Configuration"
 
     config BAT_CHANNEL
         int "Battery Monitor GPIO"
@@ -36,36 +36,48 @@ menu "ESP32-S3 Generic Pin Configuration"
             int "I2S Bit Clock GPIO"
             default 11
             help
-                I2S Bit Clock gpio pin to use.
+                I2S Bit Clock GPIO pin to use.
 
         config I2S_WS_IO
             int "I2S Word Select GPIO"
             default 13
             help
-                I2S Word Select gpio pin to use.
+                I2S Word Select GPIO pin to use.
 
         config I2S_DO_IO
             int "I2S Data Output GPIO"
             default 12
             help
-                I2S data output gpio pin to use.
+                I2S Data Output GPIO pin to use.
+
+        config I2S_GND_IO
+            int "I2S GND GPIO"
+            default 14
+            help
+                GPIO to provide GND to I2S DAC if powered from GPIO. Set to -1 to disable.
+
+        config I2S_VCC_IO
+            int "I2S VCC GPIO"
+            default -1
+            help
+                GPIO to provide VCC to I2S DAC if powered from GPIO. Set to -1 to disable.
     endmenu
 
-    menu "DAC I2C Pins (optional)"
+    menu "DAC I2C Pins"
         config DAC_I2C_SDA
             int "I2C SDA GPIO for DAC"
             default -1
             help
-                I2C data gpio pin for DAC control. Set to -1 if not used.
+                I2C data GPIO pin for DAC control. Set to -1 if not used.
 
         config DAC_I2C_SCL
             int "I2C SCL GPIO for DAC"
             default -1
             help
-                I2C clock gpio pin for DAC control. Set to -1 if not used.
+                I2C clock GPIO pin for DAC control. Set to -1 if not used.
     endmenu
 
-    menu "Control GPIOs (optional)"
+    menu "Control GPIOs"
         config JACK_GPIO
             int "Headphone Jack Detection GPIO"
             default -1
@@ -76,39 +88,41 @@ menu "ESP32-S3 Generic Pin Configuration"
             int "DAC/AMP Fault Detection GPIO"
             default -1
             help
-                GPIO for speaker fault detection. Set to -1 to disable.
+                GPIO for speaker/amplifier fault detection. Set to -1 to disable.
 
         config MUTE_GPIO
             int "Mute GPIO"
             default -1
             help
-                GPIO used to mute DAC. Set to -1 to disable.
+                GPIO used to mute DAC/amplifier. Set to -1 to disable.
 
         config MUTE_GPIO_LEVEL
             int "Mute GPIO Active Level"
             default -1
             help
-                Active level for mute GPIO (0 or 1). Set to -1 if not used.
+                Active level for mute GPIO (0=active low, 1=active high). Set to -1 if not used.
     endmenu
 
-    menu "SPDIF Pins (optional)"
+    menu "SPDIF Pins"
         config SPDIF_BCK_IO
             int "SPDIF Bit Clock GPIO"
             default 11
             help
-                Must be set as SPDIF re-uses I2S but only needs DO.
+                SPDIF re-uses I2S peripheral but only needs Data Output.
+                Set to same value as I2S Bit Clock.
 
         config SPDIF_WS_IO
             int "SPDIF Word Select GPIO"
             default 13
             help
-                Must be set as SPDIF re-uses I2S but only needs DO.
+                SPDIF re-uses I2S peripheral but only needs Data Output.
+                Set to same value as I2S Word Select.
 
         config SPDIF_DO_IO
             int "SPDIF Data Output GPIO"
             default -1
             help
-                I2S data output for SPDIF. Set to -1 to disable.
+                GPIO for SPDIF data output. Set to -1 to disable SPDIF.
     endmenu
 
 endmenu

@@ -1,9 +1,9 @@
-# SqueezeAMP board pin configuration
-# This file is sourced by boards/Kconfig for all SqueezeAMP variants
+# SqueezeAMP board-specific configuration
+# Only shown when BOARD_SQUEEZEAMP or BOARD_SQUEEZEAMP_4M is selected
 
 if BOARD_SQUEEZEAMP_COMMON
 
-menu "SqueezeAMP Pin Configuration"
+menu "Pin Configuration"
 
     config BAT_CHANNEL
         int "Battery Monitor GPIO"
@@ -36,19 +36,31 @@ menu "SqueezeAMP Pin Configuration"
             int "I2S Bit Clock GPIO"
             default 33
             help
-                I2S Bit Clock gpio pin to use.
+                I2S Bit Clock GPIO pin to use.
 
         config I2S_WS_IO
             int "I2S Word Select GPIO"
             default 25
             help
-                I2S Word Select gpio pin to use.
+                I2S Word Select GPIO pin to use.
 
         config I2S_DO_IO
             int "I2S Data Output GPIO"
             default 32
             help
-                I2S data output gpio pin to use.
+                I2S Data Output GPIO pin to use.
+
+        config I2S_GND_IO
+            int "I2S GND GPIO"
+            default -1
+            help
+                GPIO to provide GND to I2S DAC if powered from GPIO. Set to -1 to disable.
+
+        config I2S_VCC_IO
+            int "I2S VCC GPIO"
+            default -1
+            help
+                GPIO to provide VCC to I2S DAC if powered from GPIO. Set to -1 to disable.
     endmenu
 
     menu "DAC I2C Pins"
@@ -56,13 +68,13 @@ menu "SqueezeAMP Pin Configuration"
             int "I2C SDA GPIO for DAC"
             default 27
             help
-                I2C data gpio pin to use with TAS57xx DAC.
+                I2C data GPIO pin for TAS57xx DAC control.
 
         config DAC_I2C_SCL
             int "I2C SCL GPIO for DAC"
             default 26
             help
-                I2C clock gpio pin to use with TAS57xx DAC.
+                I2C clock GPIO pin for TAS57xx DAC control.
     endmenu
 
     menu "Control GPIOs"
@@ -76,19 +88,19 @@ menu "SqueezeAMP Pin Configuration"
             int "DAC/AMP Fault Detection GPIO"
             default 2
             help
-                GPIO for speaker fault detection.
+                GPIO for speaker/amplifier fault detection.
 
         config MUTE_GPIO
             int "Mute GPIO"
             default 14
             help
-                GPIO used to mute DAC.
+                GPIO used to mute DAC/amplifier.
 
         config MUTE_GPIO_LEVEL
             int "Mute GPIO Active Level"
             default 0
             help
-                Active level for mute GPIO (0 or 1).
+                Active level for mute GPIO (0=active low, 1=active high).
     endmenu
 
     menu "SPDIF Pins"
@@ -96,21 +108,21 @@ menu "SqueezeAMP Pin Configuration"
             int "SPDIF Bit Clock GPIO"
             default 33
             help
-                Must be set as SPDIF re-uses I2S but only needs DO.
-                Recommendation: set to I2S Bit clock value.
+                SPDIF re-uses I2S peripheral but only needs Data Output.
+                Set to same value as I2S Bit Clock.
 
         config SPDIF_WS_IO
             int "SPDIF Word Select GPIO"
             default 25
             help
-                Must be set as SPDIF re-uses I2S but only needs DO.
-                Recommendation: set to I2S Word select value.
+                SPDIF re-uses I2S peripheral but only needs Data Output.
+                Set to same value as I2S Word Select.
 
         config SPDIF_DO_IO
             int "SPDIF Data Output GPIO"
             default 15
             help
-                I2S data output IO use to simulate SPDIF.
+                GPIO for SPDIF data output.
     endmenu
 
 endmenu

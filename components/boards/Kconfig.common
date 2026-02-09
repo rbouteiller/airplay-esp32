@@ -93,27 +93,12 @@ menu "LED Configuration"
     endmenu
 endmenu
 
-menu "I2S GPIOs (optional)"
-    config I2S_GND_IO
-        int "I2S GND GPIO"
-        default 14 if BOARD_ESP32S3_GENERIC
-        default -1
-        help
-            GPIO to tie I2S GND if powered from GPIO. Set to -1 to disable.
-
-    config I2S_VCC_IO
-        int "I2S VCC GPIO"
-        default -1
-        help
-            GPIO to tie I2S VCC if powered from GPIO. Set to -1 to disable.
-endmenu
-
 menu "WiFi Configuration"
     config DEFAULT_AP_SSID
         string "Access Point SSID"
-        default "esp32"
+        default "Airplay ESP32"
         help
-            SSID (network name) the esp32 will broadcast.
+            SSID (network name) the ESP32 will broadcast.
 
     config DEFAULT_AP_PASSWORD
         string "Access Point Password"

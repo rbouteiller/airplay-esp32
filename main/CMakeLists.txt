@@ -1,6 +1,3 @@
-# Include board configuration for auto-discovery
-include(${CMAKE_SOURCE_DIR}/boards/CMakeLists.txt)
-
 set( SRC_FILES
     "main.c"
     "alac_magic_cookie.c"
@@ -55,14 +52,11 @@ set( DEPS
     json
     mbedtls
     esp_driver_ledc
+    boards
 )
-
-# Add board-specific sources and dependencies
-list(APPEND SRC_FILES ${BOARD_SRCS})
-list(APPEND DEPS ${BOARD_DEPS})
 
 idf_component_register(
     SRCS ${SRC_FILES}
-    INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network" ${BOARD_INCLUDE_DIRS}
+    INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES ${DEPS}
 )

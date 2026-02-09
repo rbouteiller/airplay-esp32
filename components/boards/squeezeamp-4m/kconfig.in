@@ -1,0 +1,2 @@
+# SqueezeAMP-4M shares configuration with SqueezeAMP
+# All options are defined in squeezeamp/kconfig.in with BOARD_SQUEEZEAMP_COMMON guard

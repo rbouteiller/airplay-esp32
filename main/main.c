@@ -11,7 +11,7 @@
 #include "web_server.h"
 #include "wifi.h"
 
-#include "board.h"
+#include "iot_board.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -97,9 +97,8 @@ void app_main(void) {
   led_init();
 
   // Initialize board-specific hardware
-  const board_info_t *board = board_get_info();
-  ESP_LOGI(TAG, "Board: %s", board->name);
-  esp_err_t err = board_init();
+  ESP_LOGI(TAG, "Board: %s", iot_board_get_info());
+  esp_err_t err = iot_board_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Board init failed: %s", esp_err_to_name(err));
   }

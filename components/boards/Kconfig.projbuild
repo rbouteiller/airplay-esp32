@@ -1,0 +1,34 @@
+menu "Board Configuration"
+    choice BOARD_TARGET
+        prompt "Select Target Board"
+        default BOARD_SQUEEZEAMP if IDF_TARGET_ESP32
+        default BOARD_ESP32S3_GENERIC if IDF_TARGET_ESP32S3
+
+        config BOARD_SQUEEZEAMP
+            bool "SqueezeAMP (8MB flash)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_SQUEEZEAMP_4M
+            bool "SqueezeAMP (4MB flash)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_ESP32S3_GENERIC
+            bool "ESP32-S3 Generic"
+            depends on IDF_TARGET_ESP32S3
+    endchoice
+
+    config BOARD_TARGET_PATH
+        string
+        default "squeezeamp" if BOARD_SQUEEZEAMP
+        default "squeezeamp-4m" if BOARD_SQUEEZEAMP_4M
+        default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
+
+    config BOARD_SQUEEZEAMP_COMMON
+        bool
+        default y if BOARD_SQUEEZEAMP || BOARD_SQUEEZEAMP_4M
+
+    orsource "./squeezeamp/kconfig.in"
+    orsource "./squeezeamp-4m/kconfig.in"
+    orsource "./esp32s3-generic/kconfig.in"
+    rsource "Kconfig.common"
+endmenu
