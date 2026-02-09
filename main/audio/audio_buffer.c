@@ -239,6 +239,22 @@ int audio_buffer_get_frame_count(audio_buffer_t *buffer) {
   return frames;
 }
 
+/* ---------- nearly full check (for back-pressure) ---------- */
+
+bool audio_buffer_is_nearly_full(audio_buffer_t *buffer) {
+  if (!buffer) {
+    return false;
+  }
+
+  int count = 0;
+  portENTER_CRITICAL(&buffer->lock);
+  count = buffer->count;
+  portEXIT_CRITICAL(&buffer->lock);
+
+  // Consider buffer "nearly full" when > 90% capacity
+  return count > (buffer->capacity * 9 / 10);
+}
+
 /* ---------- take (consumer) ---------- */
 
 bool audio_buffer_take(audio_buffer_t *buffer, void **item, size_t *item_size,

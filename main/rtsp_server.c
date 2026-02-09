@@ -41,7 +41,7 @@ int32_t airplay_get_volume_q15(void) {
   if (current_conn) {
     return rtsp_conn_get_volume_q15(current_conn);
   }
-  return 32768; // Default full volume
+  return 16384; // Default half volume
 }
 
 // Helper to grow buffer using PSRAM if possible

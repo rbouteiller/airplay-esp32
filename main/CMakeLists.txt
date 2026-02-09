@@ -10,7 +10,6 @@ set( SRC_FILES
     "audio/audio_buffer.c"
     "audio/audio_timing.c"
     "audio/audio_crypto.c"
-    "audio/audio_output.c"
     "rtsp/rtsp_server.c"
     "rtsp/rtsp_conn.c"
     "rtsp/rtsp_message.c"
@@ -38,6 +37,14 @@ set( SRC_FILES
     "network/dns_server.c"
     "led.c"
 )
+
+# Select audio output implementation at compile time
+if(CONFIG_SPDIF_OUTPUT)
+    list(APPEND SRC_FILES "audio/audio_output_spdif.c")
+else()
+    list(APPEND SRC_FILES "audio/audio_output.c")
+endif()
+
 set( DEPS
     driver
     nvs_flash
@@ -60,3 +67,8 @@ idf_component_register(
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES ${DEPS}
 )
+
+# Enable function wrapping for abort() to intercept panics and mute GPIO
+if(CONFIG_SQUEEZEAMP)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=abort")
+endif()

@@ -5,6 +5,9 @@
  */
 
 #include "dac_tas57xx.h"
+#include "settings.h"
+#include <math.h>
+#include <sys/param.h>
 
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
@@ -29,13 +32,12 @@ static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x02, 0x10}, // standby
     {0x0d, 0x10}, // use SCK for PLL
     {0x25, 0x08}, // ignore SCK halt
-    {0x08, 0x10}, // Mute control enable (from TAS5780)
-    {0x54, 0x02}, // Mute output control (from TAS5780)
-#if BYTES_PER_FRAME == 8
-    {0x28, 0x03}, // I2S length 32 bits
-#else
+    {0x08, 0x10}, // Mute control enable
+    {0x54, 0x02}, // Mute output control
+    {0x3D, 0x6C}, // Set chan B volume -70db
+    {0x3E, 0x6C}, // Set chan A volume -70db
+    // {0x28, 0x03}, // I2S length 32 bits
     {0x28, 0x00}, // I2S length 16 bits
-#endif
     {0x02, 0x00}, // restart
     {0xff, 0xff}  // end of table
 };
@@ -47,7 +49,10 @@ typedef enum {
   TAS57XX_DOWN,
   TAS57XX_ANALOGUE_OFF,
   TAS57XX_ANALOGUE_ON,
-  TAS57XX_VOLUME_ADJUST // For TAS5754m, R61/2 are used to set this
+  TAS57XX_SET_VOLUME_A_L,
+  TAS57XX_SET_VOLUME_B_R,
+  TAS57XX_MUTE,
+  TAS57XX_UNMUTE,
 } tas57xx_cmd_e;
 
 static const struct tas57xx_cmd_s tas57xx_cmd[] = {
@@ -56,6 +61,10 @@ static const struct tas57xx_cmd_s tas57xx_cmd[] = {
     {0x02, 0x01}, // TAS57XX_DOWN
     {0x56, 0x10}, // TAS57XX_ANALOGUE_OFF
     {0x56, 0x00}, // TAS57XX_ANALOGUE_ON
+    {0x3E, 0x30}, // TAS57XX_SET_VOLUME_A_L - Channel A
+    {0x3D, 0x30}, // TAS57XX_SET_VOLUME_B_R - Channel B
+    {0x03, 0x11}, // TAS57XX_MUTE (BA)
+    {0x03, 0x00}, // TAS57XX_UNMUTE (BA)
 };
 
 static uint8_t tas57xx_addr;
@@ -111,6 +120,12 @@ esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io) {
              tas57xx_init_seq[i].value);
   }
 
+  // Restore volume level
+  float vol_db = -50;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    tas57xx_set_volume(vol_db);
+  }
+
   return err;
 }
 
@@ -159,15 +174,55 @@ void tas57xx_enable_line_out(bool enable) {
   ESP_LOGW(TAG, "Not supported yet");
 }
 
+void tas57xx_set_volume(float volume_airplay_db) {
+  // Clamp AirPlay input range (-30 to 0)
+  if (volume_airplay_db > 0.0f)
+    volume_airplay_db = 0.0f;
+  if (volume_airplay_db < -30.0f)
+    volume_airplay_db = -30.0f;
+
+  // Volume mapping:
+  // AirPlay 0 dB -> DAC CONFIG_DAC_MAX_VOLUME
+  // AirPlay -25 to 0 dB  -> DAC (MAX-25) to MAX (linear, 1:1 offset)
+  // AirPlay -30 to -25 dB -> DAC mute(-127) to (MAX-25) (steep roll-off)
+  float max_db = (float)CONFIG_DAC_MAX_VOLUME;
+  float db_level;
+
+  if (volume_airplay_db >= -25.0f) {
+    // Linear mapping with offset: AirPlay + MAX
+    // AirPlay 0 -> MAX, AirPlay -25 -> MAX-25
+    db_level = volume_airplay_db + max_db;
+  } else {
+    // Roll-off: map -30..-25 to -127..(MAX-25)
+    // normalized: 0 at -30, 1 at -25
+    float normalized = (volume_airplay_db + 30.0f) / 5.0f;
+    float rolloff_top = max_db - 25.0f;
+    db_level = -127.0f + normalized * (127.0f + rolloff_top);
+  }
+
+  // Clamp to DAC valid range
+  if (db_level > 0.0f)
+    db_level = 0.0f;
+  if (db_level < -127.0f)
+    db_level = -127.0f;
+
+  // Convert dB to DAC register: reg = -dB * 2 (0x00=0dB, 0xFE=-127dB)
+  uint8_t reg_val = (uint8_t)(-db_level * 2.0f);
+  write_cmd(TAS57XX_SET_VOLUME_A_L, reg_val);
+  write_cmd(TAS57XX_SET_VOLUME_B_R, reg_val);
+}
+
 static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...) {
   va_list args;
   esp_err_t err = ESP_OK;
   va_start(args, cmd);
 
   switch (cmd) {
-  case TAS57XX_VOLUME_ADJUST:
-    ESP_LOGE(TAG, "Volume Change: WIP");
-    // TODO: look up command in datasheet, send values to chip
+  case TAS57XX_SET_VOLUME_A_L:
+  case TAS57XX_SET_VOLUME_B_R:
+    uint8_t val = (uint8_t)va_arg(args, int);
+    err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr,
+                        tas57xx_cmd[cmd].reg, &val, sizeof(uint8_t));
     break;
   default:
     err =

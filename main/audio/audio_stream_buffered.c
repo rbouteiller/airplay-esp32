@@ -93,6 +93,13 @@ static void buffered_audio_task(void *pvParameters) {
     }
 
     while (stream->running) {
+      // Back-pressure: if buffer is nearly full, pause reading to let TCP
+      // flow control slow down the sender. This prevents buffer overflow
+      // and keeps frames in order.
+      while (audio_buffer_is_nearly_full(&state->buffer) && stream->running) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+
       uint8_t len_buf[2];
       if (read_exact(stream, state, client_sock, len_buf, 2) != 2) {
         break;

@@ -4,6 +4,10 @@
 #include "nvs.h"
 #include <string.h>
 
+#ifdef CONFIG_SQUEEZEAMP
+#include "dac_tas57xx.h"
+#endif
+
 static const char *TAG = "settings";
 
 #define NVS_NAMESPACE         "airplay"
@@ -56,6 +60,10 @@ esp_err_t settings_set_volume(float volume_db) {
   if (g_volume_loaded && volume_db == g_volume_db) {
     return ESP_OK;
   }
+
+#ifdef CONFIG_SQUEEZEAMP
+  tas57xx_set_volume(volume_db);
+#endif
 
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
