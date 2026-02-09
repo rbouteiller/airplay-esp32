@@ -42,7 +42,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.2
+    version: 5.5.0
 direct_dependencies:
 - espressif/esp_audio_codec
 - espressif/led_strip
