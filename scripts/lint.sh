@@ -29,7 +29,7 @@ if [ ! -f build/compile_commands.json ]; then
 fi
 
 # Find all C source files in main/
-SOURCES=$(find main \( -name "*.c" -o -name "*.h" \))
+SOURCES=$(find main components \( -name "*.c" -o -name "*.h" \))
 
 echo "=== Running clang-tidy ==="
 WARNINGS=0
