@@ -104,20 +104,6 @@ menu "Pin Configuration"
     endmenu
 
     menu "SPDIF Pins"
-        config SPDIF_BCK_IO
-            int "SPDIF Bit Clock GPIO"
-            default 33
-            help
-                SPDIF re-uses I2S peripheral but only needs Data Output.
-                Set to same value as I2S Bit Clock.
-
-        config SPDIF_WS_IO
-            int "SPDIF Word Select GPIO"
-            default 25
-            help
-                SPDIF re-uses I2S peripheral but only needs Data Output.
-                Set to same value as I2S Word Select.
-
         config SPDIF_DO_IO
             int "SPDIF Data Output GPIO"
             default 15
