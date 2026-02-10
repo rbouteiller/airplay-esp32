@@ -1,43 +1,9 @@
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
-
-#include "esp_err.h"
+#include "dac.h"
 
 /**
- * Power control for the amplifier
+ * TAS57xx DAC driver ops — register with dac_register() before calling
+ * dac_init().
  */
-typedef enum {
-  TAS57XX_AMP_ON = 0,
-  TAS57XX_AMP_STANDBY,
-  TAS57XX_AMP_OFF,
-} tas57xx_power_mode_e;
-
-/**
- * Initialize the TI TAS57xx DAC/Amp chip
- * Assumes dedicated I2C bus on port 0
- */
-esp_err_t tas57xx_init(int sda_io, int scl_io);
-esp_err_t tas57xx_deinit(int sda_io, int scl_io);
-
-/**
- * Enable / disable the main amp out
- */
-void tas57xx_enable_speaker(bool enable);
-
-/**
- * Enable / disable the line out
- */
-void tas57xx_enable_line_out(bool enable);
-
-/**
- * Set the power mode for the amplifier
- */
-void tas57xx_set_power_mode(tas57xx_power_mode_e mode);
-
-/**
- * Set the DAC output volume, using airplay values of -30 to 0
- */
-void tas57xx_set_volume(float volume_airplay_db);
+extern const dac_ops_t dac_tas57xx_ops;

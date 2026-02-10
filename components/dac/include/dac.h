@@ -3,13 +3,6 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
-/**
- * Abstract DAC API
- *
- * Dispatches to the selected DAC driver (CONFIG_DAC_TAS57XX, etc.)
- * or compiles as no-op stubs when no DAC is selected.
- */
-
 typedef enum {
   DAC_POWER_ON = 0,
   DAC_POWER_STANDBY,
@@ -17,7 +10,25 @@ typedef enum {
 } dac_power_mode_t;
 
 /**
- * Initialize the DAC using Kconfig pin settings
+ * DAC driver operations — each DAC driver provides one of these.
+ * NULL function pointers are treated as no-ops.
+ */
+typedef struct {
+  esp_err_t (*init)(void);
+  esp_err_t (*deinit)(void);
+  void (*set_volume)(float volume_db);
+  void (*set_power_mode)(dac_power_mode_t mode);
+  void (*enable_speaker)(bool enable);
+  void (*enable_line_out)(bool enable);
+} dac_ops_t;
+
+/**
+ * Register a DAC driver. Must be called before dac_init().
+ */
+void dac_register(const dac_ops_t *ops);
+
+/**
+ * Initialize the registered DAC driver
  */
 esp_err_t dac_init(void);
 

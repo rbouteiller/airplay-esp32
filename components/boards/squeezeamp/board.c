@@ -38,6 +38,7 @@
 #include "iot_board.h"
 
 #include "dac.h"
+#include "dac_tas57xx.h"
 #include "settings.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -195,7 +196,8 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
-  // Initialize DAC
+  // Register and initialize DAC
+  dac_register(&dac_tas57xx_ops);
   err = dac_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize DAC: %s", esp_err_to_name(err));
