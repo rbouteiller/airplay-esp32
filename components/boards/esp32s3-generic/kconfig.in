@@ -5,12 +5,6 @@ if BOARD_ESP32S3_GENERIC
 
 menu "Pin Configuration"
 
-    config BAT_CHANNEL
-        int "Battery Monitor GPIO"
-        default -1
-        help
-            GPIO for battery voltage monitoring ADC channel. Set to -1 to disable.
-
     menu "LED GPIOs"
         config LED_STATUS_GPIO
             int "Status LED GPIO"
@@ -103,21 +97,7 @@ menu "Pin Configuration"
                 Active level for mute GPIO (0=active low, 1=active high). Set to -1 if not used.
     endmenu
 
-    menu "SPDIF Pins"
-        config SPDIF_BCK_IO
-            int "SPDIF Bit Clock GPIO"
-            default 11
-            help
-                SPDIF re-uses I2S peripheral but only needs Data Output.
-                Set to same value as I2S Bit Clock.
-
-        config SPDIF_WS_IO
-            int "SPDIF Word Select GPIO"
-            default 13
-            help
-                SPDIF re-uses I2S peripheral but only needs Data Output.
-                Set to same value as I2S Word Select.
-
+    menu "SPDIF Pin"
         config SPDIF_DO_IO
             int "SPDIF Data Output GPIO"
             default -1

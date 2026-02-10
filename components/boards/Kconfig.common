@@ -92,34 +92,3 @@ menu "LED Configuration"
                 RGB color in hex (0xRRGGBB) for standby state.
     endmenu
 endmenu
-
-menu "Audio Output"
-    config SPDIF_OUTPUT
-        bool "Use SPDIF output instead of I2S"
-        default n
-        help
-            Enable SPDIF audio output via I2S bit-banging.
-            When enabled, the SPDIF output driver is compiled instead of the
-            standard I2S output driver. Configure the SPDIF data output GPIO
-            in the board pin configuration.
-endmenu
-
-menu "WiFi Configuration"
-    config DEFAULT_AP_SSID
-        string "Access Point SSID"
-        default "Airplay ESP32"
-        help
-            SSID (network name) the ESP32 will broadcast.
-
-    config DEFAULT_AP_PASSWORD
-        string "Access Point Password"
-        default "esp32pwd"
-        help
-            Password used for the Access Point. Leave empty and set AUTH MODE to WIFI_AUTH_OPEN for no password.
-
-    config DEFAULT_AP_CHANNEL
-        int "Access Point WiFi Channel"
-        default 1
-        help
-            Be careful you might not see the access point if you use a channel not allowed in your country.
-endmenu

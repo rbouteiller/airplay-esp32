@@ -255,8 +255,9 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
   // Configure AP and save for later re-enable
-  const char *default_ssid = ap_ssid ? ap_ssid : "ESP32-AirPlay-Setup";
-  const char *default_password = ap_password ? ap_password : "";
+  const char *default_ssid = ap_ssid ? ap_ssid : CONFIG_DEFAULT_AP_SSID;
+  const char *default_password =
+      ap_password ? ap_password : CONFIG_DEFAULT_AP_PASSWORD;
 
   memset(&s_ap_config, 0, sizeof(s_ap_config));
   strncpy((char *)s_ap_config.ap.ssid, default_ssid,

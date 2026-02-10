@@ -103,14 +103,13 @@ menu "Pin Configuration"
                 Active level for mute GPIO (0=active low, 1=active high).
     endmenu
 
-    menu "SPDIF Pins"
+    menu "SPDIF Pin"
         config SPDIF_DO_IO
             int "SPDIF Data Output GPIO"
             default 15
             help
                 GPIO for SPDIF data output.
     endmenu
-
 endmenu
 
 endif # BOARD_SQUEEZEAMP_COMMON
