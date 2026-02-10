@@ -93,6 +93,17 @@ menu "LED Configuration"
     endmenu
 endmenu
 
+menu "Audio Output"
+    config SPDIF_OUTPUT
+        bool "Use SPDIF output instead of I2S"
+        default n
+        help
+            Enable SPDIF audio output via I2S bit-banging.
+            When enabled, the SPDIF output driver is compiled instead of the
+            standard I2S output driver. Configure the SPDIF data output GPIO
+            in the board pin configuration.
+endmenu
+
 menu "WiFi Configuration"
     config DEFAULT_AP_SSID
         string "Access Point SSID"
