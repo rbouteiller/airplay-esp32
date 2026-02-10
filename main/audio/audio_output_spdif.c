@@ -120,6 +120,7 @@ static const int16_t bmc_tab[256] = {
 /* ── I2S handle ────────────────────────────────────────────────────────── */
 
 static i2s_chan_handle_t tx_handle;
+static volatile bool flush_requested = false;
 
 /* ── SPDIF encode buffer and write pointer ─────────────────────────────── */
 
@@ -200,6 +201,13 @@ static void playback_task(void *arg) {
   }
 
   while (true) {
+    if (flush_requested) {
+      flush_requested = false;
+      i2s_channel_disable(tx_handle);
+      spdif_buf_init();
+      spdif_ptr = spdif_buf;
+      i2s_channel_enable(tx_handle);
+    }
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
       apply_volume(pcm, samples * 2);
@@ -279,4 +287,8 @@ esp_err_t audio_output_init(void) {
 void audio_output_start(void) {
   xTaskCreatePinnedToCore(playback_task, "spdif_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
+}
+
+void audio_output_flush(void) {
+  flush_requested = true;
 }
