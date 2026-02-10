@@ -185,7 +185,7 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash
 ```
 
-The SqueezeAMP build uses `CONFIG_SQUEEZEAMP` to enable the TAS57xx I2C DAC driver and configures the correct I2S pins via Kconfig. Buffer sizes are automatically reduced (2500 frames vs 5000) to fit the ESP32's more limited PSRAM access.
+The SqueezeAMP build selects the TAS57xx DAC driver automatically via Kconfig (`CONFIG_DAC_TAS57XX`) and configures the correct I2S/I2C pins. Buffer sizes are automatically reduced (2500 frames vs 5000) to fit the ESP32's more limited PSRAM access.
 
 A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
 
@@ -291,13 +291,15 @@ MCLK is not used; the PCM5102A generates it internally.
 
 ### Key Components
 
-| Module             | Location        | Purpose                          |
-| ------------------ | --------------- | -------------------------------- |
-| **RTSP Server**    | `main/rtsp/`    | Handles AirPlay control messages |
-| **HAP Pairing**    | `main/hap/`     | Cryptographic device pairing     |
-| **Audio Pipeline** | `main/audio/`   | Decoding, buffering, timing      |
-| **PTP Clock**      | `main/network/` | Synchronization with source      |
-| **Web Server**     | `main/network/` | Configuration interface          |
+| Module             | Location               | Purpose                              |
+| ------------------ | ---------------------- | ------------------------------------ |
+| **RTSP Server**    | `main/rtsp/`           | Handles AirPlay control messages     |
+| **HAP Pairing**    | `main/hap/`            | Cryptographic device pairing         |
+| **Audio Pipeline** | `main/audio/`          | Decoding, buffering, timing          |
+| **PTP Clock**      | `main/network/`        | Synchronization with source          |
+| **Web Server**     | `main/network/`        | Configuration interface              |
+| **DAC Abstraction**| `components/dac/`      | Abstract DAC API (Kconfig-selected)  |
+| **Board Support**  | `components/boards/`   | Per-board HAL (GPIOs, init, events)  |
 
 ### Project Structure
 
@@ -310,6 +312,10 @@ main/
 ├── network/        # WiFi, mDNS, PTP, web server
 ├── main.c          # Entry point
 └── settings.c      # NVS persistence
+components/
+├── dac/            # Abstract DAC API (dispatch layer)
+├── dac_tas57xx/    # TI TAS57xx DAC driver
+└── boards/         # Board support (SqueezeAMP, ESP32-S3 generic)
 ```
 
 ---

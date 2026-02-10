@@ -2,7 +2,7 @@
 .claude/
 .pio/
 .vscode/
-build/
+build*
 managed_components/
 sdkconfig
 sdkconfig.old

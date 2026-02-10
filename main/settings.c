@@ -1,12 +1,9 @@
 #include "settings.h"
 
+#include "dac.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include <string.h>
-
-#ifdef CONFIG_SQUEEZEAMP
-#include "dac_tas57xx.h"
-#endif
 
 static const char *TAG = "settings";
 
@@ -61,9 +58,7 @@ esp_err_t settings_set_volume(float volume_db) {
     return ESP_OK;
   }
 
-#ifdef CONFIG_SQUEEZEAMP
-  tas57xx_set_volume(volume_db);
-#endif
+  dac_set_volume(volume_db);
 
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);

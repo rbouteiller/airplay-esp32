@@ -59,13 +59,9 @@ set( DEPS
     json
     mbedtls
     esp_driver_ledc
+    boards
+    dac
 )
-
-if(CONFIG_SQUEEZEAMP)
-    list(APPEND SRC_FILES "audio/dac_tas57xx.c")
-    list(APPEND SRC_FILES "audio/squeezeamp.c")
-    list(APPEND DEPS "esp_driver_i2c")
-endif()
 
 idf_component_register(
     SRCS ${SRC_FILES}
@@ -74,6 +70,6 @@ idf_component_register(
 )
 
 # Enable function wrapping for abort() to intercept panics and mute GPIO
-if(CONFIG_SQUEEZEAMP)
+if(CONFIG_BOARD_SQUEEZEAMP_COMMON)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=abort")
 endif()

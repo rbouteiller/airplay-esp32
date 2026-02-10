@@ -35,6 +35,6 @@ if [ -z "$CLANG_FORMAT" ]; then
   exit 1
 fi
 
-find main -name "*.c" -o -name "*.h" | xargs "$CLANG_FORMAT" -i
+find main components -name "*.c" -o -name "*.h" | xargs "$CLANG_FORMAT" -i
 
 echo "Formatted all source files"

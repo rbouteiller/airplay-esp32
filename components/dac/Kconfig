@@ -1,0 +1,18 @@
+menu "DAC Configuration"
+
+    config DAC_TAS57XX
+        bool "TI TAS57xx (TAS5754/TAS5756)"
+        default y if BOARD_SQUEEZEAMP_COMMON
+        help
+            Build the TI TAS5754M / TAS5756M DAC/amplifier driver.
+            The board must register it at runtime via dac_register().
+
+    config DAC_CONTROLS_VOLUME
+        bool
+        default y if DAC_TAS57XX
+        help
+            Hidden option. Set automatically when a hardware DAC driver is enabled.
+            When true, the DAC handles volume control and software attenuation
+            is skipped in the audio output path.
+
+endmenu

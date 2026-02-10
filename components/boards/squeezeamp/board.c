@@ -1,17 +1,9 @@
-#include "squeezeamp.h"
-
-#include "dac_tas57xx.h"
-#include "driver/gpio.h"
-#include "esp_check.h"
-#include "esp_log.h"
-#include "esp_attr.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "rtsp_events.h"
-#include "led.h"
-#include "soc/gpio_struct.h"
-
 /**
+ * @file board.c
+ * @brief SqueezeAMP board implementation
+ *
+ * Initializes the TAS57xx DAC and handles RTSP events to control DAC power.
+ *
  * Features
  *  - DAC control via TAS57xx
  *  - Speaker fault auto-mute and recovery
@@ -43,7 +35,21 @@
  * └─────────────────────────────────────────────────────────────┘
  */
 
-#define I2C_PORT_0                  0
+#include "iot_board.h"
+
+#include "dac.h"
+#include "dac_tas57xx.h"
+#include "settings.h"
+#include "driver/gpio.h"
+#include "esp_check.h"
+#include "esp_log.h"
+#include "esp_attr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "rtsp_events.h"
+#include "led.h"
+#include "soc/gpio_struct.h"
+
 #define ISR_HANDLER_TASK_STACK_SIZE 2048
 #define ISR_HANDLER_TASK_PRIORITY   5
 #define JACK_DEBOUNCE_MS            200
@@ -55,6 +61,7 @@
 
 static const char TAG[] = "SqueezeAMP";
 
+static bool s_board_initialized = false;
 static TaskHandle_t gpio_task_handle = NULL;
 static volatile bool speaker_fault_active = false;
 static volatile bool headphone_inserted = false;
@@ -63,6 +70,7 @@ static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
 static esp_err_t init_jack_gpio(void);
 static esp_err_t ensure_gpio_task_exists(void);
+static void on_rtsp_event(rtsp_event_t event, void *user_data);
 
 // Speaker fault ISR - just notifies the task, no I2C calls
 static void IRAM_ATTR spkfault_isr_handler(void *arg) {
@@ -70,7 +78,7 @@ static void IRAM_ATTR spkfault_isr_handler(void *arg) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Check current GPIO level to determine fault or clear
-  int level = gpio_get_level(CONFIG_SPKFAULT_GPIO);
+  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
   uint32_t notify_bit =
       (level == 0) ? SPKFAULT_NOTIFY_FAULT : SPKFAULT_NOTIFY_CLEAR;
 
@@ -110,7 +118,7 @@ static void spkfault_task(void *arg) {
         if (!speaker_fault_active) {
           speaker_fault_active = true;
           ESP_LOGW(TAG, "Speaker fault detected");
-          tas57xx_enable_speaker(false);
+          dac_enable_speaker(false);
           led_set_error(true);
         }
       }
@@ -121,7 +129,7 @@ static void spkfault_task(void *arg) {
           ESP_LOGI(TAG, "Speaker fault cleared");
           // Only re-enable speaker if no headphone inserted
           if (!headphone_inserted) {
-            tas57xx_enable_speaker(true);
+            dac_enable_speaker(true);
           }
           led_set_error(false);
         }
@@ -133,16 +141,16 @@ static void spkfault_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(JACK_DEBOUNCE_MS));
 
         // Read stable state after debounce
-        bool jack_inserted = (gpio_get_level(CONFIG_JACK_GPIO) == 0);
+        bool jack_inserted = (gpio_get_level(BOARD_JACK_GPIO) == 0);
 
         if (jack_inserted && !headphone_inserted) {
           headphone_inserted = true;
-          tas57xx_enable_speaker(false);
+          dac_enable_speaker(false);
         } else if (!jack_inserted && headphone_inserted) {
           headphone_inserted = false;
           // Only re-enable speaker if no fault active
           if (!speaker_fault_active) {
-            tas57xx_enable_speaker(true);
+            dac_enable_speaker(true);
           }
         }
       }
@@ -155,25 +163,51 @@ static void on_rtsp_event(rtsp_event_t event, void *user_data) {
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
   case RTSP_EVENT_PAUSED:
-    tas57xx_set_power_mode(TAS57XX_AMP_STANDBY);
+    dac_set_power_mode(DAC_POWER_STANDBY);
     break;
   case RTSP_EVENT_PLAYING:
-    tas57xx_set_power_mode(TAS57XX_AMP_ON);
+    dac_set_power_mode(DAC_POWER_ON);
     break;
   case RTSP_EVENT_DISCONNECTED:
-    tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+    dac_set_power_mode(DAC_POWER_OFF);
     break;
   }
 }
 
-esp_err_t squeezeamp_init(void) {
+const char *iot_board_get_info(void) {
+  return BOARD_NAME;
+}
+
+bool iot_board_is_init(void) {
+  return s_board_initialized;
+}
+
+board_res_handle_t iot_board_get_handle(int id) {
+  (void)id;
+  // No dynamic resource handles on SqueezeAMP
+  return NULL;
+}
+
+esp_err_t iot_board_init(void) {
   esp_err_t err = ESP_OK;
 
-  // Initialize I2C for DAC control
-  err = tas57xx_init(I2C_PORT_0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
+  if (s_board_initialized) {
+    ESP_LOGW(TAG, "Board already initialized");
+    return ESP_OK;
+  }
+
+  // Register and initialize DAC
+  dac_register(&dac_tas57xx_ops);
+  err = dac_init();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to initialize TAS57xx: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to initialize DAC: %s", esp_err_to_name(err));
     return err;
+  }
+
+  // Restore saved volume
+  float vol_db;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    dac_set_volume(vol_db);
   }
 
   // Configure mute GPIO
@@ -198,16 +232,46 @@ esp_err_t squeezeamp_init(void) {
   rtsp_events_register(on_rtsp_event, NULL);
 
   // Start in standby
-  tas57xx_set_power_mode(TAS57XX_AMP_OFF);
+  dac_set_power_mode(DAC_POWER_OFF);
 
+  s_board_initialized = true;
   ESP_LOGI(TAG, "SqueezeAMP DAC initialized");
   return ESP_OK;
 }
 
+esp_err_t iot_board_deinit(void) {
+  if (!s_board_initialized) {
+    return ESP_OK;
+  }
+
+#if BOARD_JACK_GPIO >= 0
+  gpio_isr_handler_remove(BOARD_JACK_GPIO);
+#endif
+#if BOARD_SPKFAULT_GPIO >= 0
+  gpio_isr_handler_remove(BOARD_SPKFAULT_GPIO);
+#endif
+  if (gpio_task_handle != NULL) {
+    vTaskDelete(gpio_task_handle);
+    gpio_task_handle = NULL;
+  }
+  rtsp_events_unregister(on_rtsp_event);
+
+  // Ensure mute GPIO is active (muted) during shutdown for safety
+#if BOARD_MUTE_GPIO >= 0
+  gpio_set_level(BOARD_MUTE_GPIO, BOARD_MUTE_GPIO_LEVEL);
+#endif
+
+  dac_enable_speaker(false);
+  dac_set_power_mode(DAC_POWER_OFF);
+
+  s_board_initialized = false;
+  return ESP_OK;
+}
+
 static esp_err_t init_mute_gpio(void) {
-#if CONFIG_MUTE_GPIO >= 0
+#if BOARD_MUTE_GPIO >= 0
   gpio_config_t mute_gpio_cfg = {
-      .pin_bit_mask = (1ULL << CONFIG_MUTE_GPIO),
+      .pin_bit_mask = (1ULL << BOARD_MUTE_GPIO),
       .mode = GPIO_MODE_OUTPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -217,10 +281,10 @@ static esp_err_t init_mute_gpio(void) {
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure mute GPIO");
 
   // Initialize to unmuted state (active low, so set high to unmute)
-  gpio_set_level(CONFIG_MUTE_GPIO, !CONFIG_MUTE_GPIO_LEVEL);
+  gpio_set_level(BOARD_MUTE_GPIO, !BOARD_MUTE_GPIO_LEVEL);
 
-  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)",
-           CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL ? "high" : "low");
+  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)", BOARD_MUTE_GPIO,
+           BOARD_MUTE_GPIO_LEVEL ? "high" : "low");
   return ESP_OK;
 #endif
   return ESP_ERR_NOT_FOUND;
@@ -250,7 +314,7 @@ static esp_err_t ensure_gpio_task_exists(void) {
 }
 
 static esp_err_t init_spkfault_gpio(void) {
-#if CONFIG_SPKFAULT_GPIO >= 0
+#if BOARD_SPKFAULT_GPIO >= 0
   // Ensure the handler task exists
   esp_err_t err = ensure_gpio_task_exists();
   if (err != ESP_OK) {
@@ -258,7 +322,7 @@ static esp_err_t init_spkfault_gpio(void) {
   }
 
   gpio_config_t spkfault_cfg = {
-      .pin_bit_mask = (1ULL << CONFIG_SPKFAULT_GPIO),
+      .pin_bit_mask = (1ULL << BOARD_SPKFAULT_GPIO),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_ENABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -268,25 +332,25 @@ static esp_err_t init_spkfault_gpio(void) {
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure speaker fault GPIO");
 
   // Add handler for speaker fault interrupt
-  err = gpio_isr_handler_add(CONFIG_SPKFAULT_GPIO, spkfault_isr_handler, NULL);
+  err = gpio_isr_handler_add(BOARD_SPKFAULT_GPIO, spkfault_isr_handler, NULL);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to add speaker fault ISR handler");
 
   // Check initial state
-  int level = gpio_get_level(CONFIG_SPKFAULT_GPIO);
+  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
   if (level == 0) {
     ESP_LOGW(TAG, "Speaker fault already active at startup");
     xTaskNotify(gpio_task_handle, SPKFAULT_NOTIFY_FAULT, eSetBits);
   }
 
   ESP_LOGI(TAG, "Speaker fault detection enabled on GPIO %d",
-           CONFIG_SPKFAULT_GPIO);
+           BOARD_SPKFAULT_GPIO);
   return ESP_OK;
 #endif
   return ESP_ERR_NOT_FOUND;
 }
 
 static esp_err_t init_jack_gpio(void) {
-#if CONFIG_JACK_GPIO >= 0
+#if BOARD_JACK_GPIO >= 0
   // Ensure the handler task exists
   esp_err_t err = ensure_gpio_task_exists();
   if (err != ESP_OK) {
@@ -296,7 +360,7 @@ static esp_err_t init_jack_gpio(void) {
   // Note: GPIO 34-39 on ESP32 are input-only and have no internal pull-up.
   // An external pull-up resistor is required on the jack detect pin.
   gpio_config_t jack_cfg = {
-      .pin_bit_mask = (1ULL << CONFIG_JACK_GPIO),
+      .pin_bit_mask = (1ULL << BOARD_JACK_GPIO),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE, // GPIO 34 has no internal pull-up
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -306,17 +370,16 @@ static esp_err_t init_jack_gpio(void) {
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure jack GPIO");
 
   // Add handler for jack interrupt
-  err = gpio_isr_handler_add(CONFIG_JACK_GPIO, jack_isr_handler, NULL);
+  err = gpio_isr_handler_add(BOARD_JACK_GPIO, jack_isr_handler, NULL);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to add jack ISR handler");
 
   // Check initial state in case headphone is already inserted
-  if (gpio_get_level(CONFIG_JACK_GPIO) == 0) {
+  if (gpio_get_level(BOARD_JACK_GPIO) == 0) {
     ESP_LOGI(TAG, "Headphone already inserted at startup");
     xTaskNotify(gpio_task_handle, JACK_NOTIFY_CHANGED, eSetBits);
   }
 
-  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d",
-           CONFIG_JACK_GPIO);
+  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d", BOARD_JACK_GPIO);
   return ESP_OK;
 #endif
   return ESP_ERR_NOT_FOUND;
@@ -325,42 +388,19 @@ static esp_err_t init_jack_gpio(void) {
 // Override the abort() function to mute GPIO during system panics
 // This is called by ESP-IDF during panic/abort situations
 void IRAM_ATTR __wrap_abort(void) {
-#if CONFIG_MUTE_GPIO >= 0
+#if BOARD_MUTE_GPIO >= 0
   // Immediately mute the amplifier using direct register access
   // This must be fast and not rely on any complex systems
-  if (CONFIG_MUTE_GPIO_LEVEL) {
+  if (BOARD_MUTE_GPIO_LEVEL) {
     // Active high - set bit
-    GPIO.out_w1ts = (1ULL << CONFIG_MUTE_GPIO);
+    GPIO.out_w1ts = (1ULL << BOARD_MUTE_GPIO);
   } else {
     // Active low - clear bit
-    GPIO.out_w1tc = (1ULL << CONFIG_MUTE_GPIO);
+    GPIO.out_w1tc = (1ULL << BOARD_MUTE_GPIO);
   }
 #endif
 
   // Call the original abort function
   extern void __real_abort(void) __attribute__((noreturn));
   __real_abort();
-}
-
-esp_err_t squeezeamp_deinit(void) {
-#if CONFIG_JACK_GPIO >= 0
-  gpio_isr_handler_remove(CONFIG_JACK_GPIO);
-#endif
-#if CONFIG_SPKFAULT_GPIO >= 0
-  gpio_isr_handler_remove(CONFIG_SPKFAULT_GPIO);
-#endif
-  if (gpio_task_handle != NULL) {
-    vTaskDelete(gpio_task_handle);
-    gpio_task_handle = NULL;
-  }
-  rtsp_events_unregister(on_rtsp_event);
-
-  // Ensure mute GPIO is active (muted) during shutdown for safety
-#if CONFIG_MUTE_GPIO >= 0
-  gpio_set_level(CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL);
-#endif
-
-  tas57xx_enable_speaker(false);
-  tas57xx_set_power_mode(TAS57XX_AMP_OFF);
-  return ESP_OK;
 }

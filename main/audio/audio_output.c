@@ -10,10 +10,12 @@
 #include "rtsp_server.h"
 #include <stdlib.h>
 
-#ifndef CONFIG_SQUEEZEAMP
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
-#define I2S_GND_PIN GPIO_NUM_14
-// #define I2S_VCC_PIN   GPIO_NUM_14
+#if CONFIG_I2S_GND_IO >= 0
+#define I2S_GND_PIN CONFIG_I2S_GND_IO
+#endif
+#if CONFIG_I2S_VCC_IO >= 0
+#define I2S_VCC_PIN CONFIG_I2S_VCC_IO
 #endif
 
 #define TAG           "audio_output"
@@ -32,7 +34,7 @@
 static i2s_chan_handle_t tx_handle;
 
 static void apply_volume(int16_t *buf, size_t n) {
-#ifndef DAC_CONTROLS_VOLUME
+#ifndef CONFIG_DAC_CONTROLS_VOLUME
   int32_t vol = airplay_get_volume_q15();
   for (size_t i = 0; i < n; i++) {
     buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15);

@@ -1,0 +1,125 @@
+menu "LED Configuration"
+    config LED_STATUS_BRIGHTNESS
+        int "Status LED brightness (0-255)"
+        range 0 255
+        default 80
+        help
+            Brightness level for the status LED (0=off, 255=max).
+
+    menu "Status LED Behavior"
+        choice LED_STATUS_ON_PLAYING
+            prompt "Status LED when playing"
+            default LED_STATUS_PLAYING_STEADY
+
+            config LED_STATUS_PLAYING_STEADY
+                bool "Steady"
+            config LED_STATUS_PLAYING_BLINK_FAST
+                bool "Blink fast"
+            config LED_STATUS_PLAYING_VU
+                bool "VU meter"
+        endchoice
+
+        choice LED_STATUS_ON_PAUSED
+            prompt "Status LED when paused"
+            default LED_STATUS_PAUSED_BLINK_MEDIUM
+
+            config LED_STATUS_PAUSED_OFF
+                bool "Off"
+            config LED_STATUS_PAUSED_STEADY
+                bool "Steady"
+            config LED_STATUS_PAUSED_BLINK_SLOW
+                bool "Blink slow"
+            config LED_STATUS_PAUSED_BLINK_MEDIUM
+                bool "Blink medium"
+        endchoice
+
+        choice LED_STATUS_ON_STANDBY
+            prompt "Status LED when standby"
+            default LED_STATUS_STANDBY_BLINK_SLOW
+
+            config LED_STATUS_STANDBY_OFF
+                bool "Off"
+            config LED_STATUS_STANDBY_BLINK_SLOW
+                bool "Blink slow"
+            config LED_STATUS_STANDBY_BLINK_MEDIUM
+                bool "Blink medium"
+        endchoice
+    endmenu
+
+    menu "RGB LED Behavior"
+        choice LED_RGB_ON_PLAYING
+            prompt "RGB LED when playing"
+            default LED_RGB_PLAYING_VU
+
+            config LED_RGB_PLAYING_OFF
+                bool "Off"
+            config LED_RGB_PLAYING_STEADY
+                bool "Steady color"
+            config LED_RGB_PLAYING_VU
+                bool "VU meter"
+        endchoice
+
+        choice LED_RGB_ON_PAUSED
+            prompt "RGB LED when paused"
+            default LED_RGB_PAUSED_STEADY
+
+            config LED_RGB_PAUSED_OFF
+                bool "Off"
+            config LED_RGB_PAUSED_STEADY
+                bool "Steady color"
+        endchoice
+
+        choice LED_RGB_ON_STANDBY
+            prompt "RGB LED when standby"
+            default LED_RGB_STANDBY_OFF
+
+            config LED_RGB_STANDBY_OFF
+                bool "Off"
+            config LED_RGB_STANDBY_STEADY
+                bool "Steady color"
+        endchoice
+
+        config LED_RGB_COLOR_PAUSED
+            hex "RGB color when paused (hex)"
+            default 0x000033
+            help
+                RGB color in hex (0xRRGGBB) for paused state.
+
+        config LED_RGB_COLOR_STANDBY
+            hex "RGB color when standby (hex)"
+            default 0x001100
+            help
+                RGB color in hex (0xRRGGBB) for standby state.
+    endmenu
+endmenu
+
+menu "Audio Output"
+    config SPDIF_OUTPUT
+        bool "Use SPDIF output instead of I2S"
+        default n
+        help
+            Enable SPDIF audio output via I2S bit-banging.
+            When enabled, the SPDIF output driver is compiled instead of the
+            standard I2S output driver. Configure the SPDIF data output GPIO
+            in the board pin configuration.
+endmenu
+
+menu "WiFi Configuration"
+    config DEFAULT_AP_SSID
+        string "Access Point SSID"
+        default "Airplay ESP32"
+        help
+            SSID (network name) the ESP32 will broadcast.
+
+    config DEFAULT_AP_PASSWORD
+        string "Access Point Password"
+        default "esp32pwd"
+        help
+            Password used for the Access Point. Leave empty and set AUTH MODE to WIFI_AUTH_OPEN for no password.
+
+    config DEFAULT_AP_CHANNEL
+        int "Access Point WiFi Channel"
+        default 1
+        help
+            Be careful you might not see the access point if you use a channel not allowed in your country.
+endmenu

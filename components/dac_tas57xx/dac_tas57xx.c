@@ -5,7 +5,6 @@
  */
 
 #include "dac_tas57xx.h"
-#include "settings.h"
 #include <math.h>
 #include <sys/param.h>
 
@@ -83,11 +82,11 @@ static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *dev_handle);
 static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
 
-esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io) {
+static esp_err_t tas57xx_init(void) {
   esp_err_t err = ESP_OK;
 
-  // Set up I2C
-  err = i2c_init(i2c_port, sda_io, scl_io);
+  // Set up I2C (always uses port 0)
+  err = i2c_init(0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
   if (ESP_OK != err) {
     ESP_LOGE(TAG, "Could not configure i2c bus: %d", err);
     return err;
@@ -120,16 +119,10 @@ esp_err_t tas57xx_init(int i2c_port, int sda_io, int scl_io) {
              tas57xx_init_seq[i].value);
   }
 
-  // Restore volume level
-  float vol_db = -50;
-  if (ESP_OK == settings_get_volume(&vol_db)) {
-    tas57xx_set_volume(vol_db);
-  }
-
   return err;
 }
 
-esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io) {
+static esp_err_t tas57xx_deinit(void) {
   esp_err_t err = ESP_OK;
 
   if (tas57xx_device_handle) {
@@ -140,19 +133,19 @@ esp_err_t tas57xx_deinit(int i2c_port, int sda_io, int scl_io) {
     }
   }
 
-  err = i2c_deinit(i2c_port, sda_io, scl_io);
+  err = i2c_deinit(0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
   return err;
 }
 
-void tas57xx_set_power_mode(tas57xx_power_mode_e mode) {
+static void tas57xx_set_power_mode(dac_power_mode_t mode) {
   switch (mode) {
-  case TAS57XX_AMP_STANDBY:
+  case DAC_POWER_STANDBY:
     write_cmd(TAS57XX_STANDBY);
     break;
-  case TAS57XX_AMP_ON:
+  case DAC_POWER_ON:
     write_cmd(TAS57XX_ACTIVE);
     break;
-  case TAS57XX_AMP_OFF:
+  case DAC_POWER_OFF:
     write_cmd(TAS57XX_DOWN);
     break;
   default:
@@ -161,7 +154,7 @@ void tas57xx_set_power_mode(tas57xx_power_mode_e mode) {
   }
 }
 
-void tas57xx_enable_speaker(bool enable) {
+static void tas57xx_enable_speaker(bool enable) {
   if (enable) {
     write_cmd(TAS57XX_ANALOGUE_ON);
   } else {
@@ -169,17 +162,19 @@ void tas57xx_enable_speaker(bool enable) {
   }
 }
 
-void tas57xx_enable_line_out(bool enable) {
+static void tas57xx_enable_line_out(bool enable) {
   (void)enable;
   ESP_LOGW(TAG, "Not supported yet");
 }
 
-void tas57xx_set_volume(float volume_airplay_db) {
+static void tas57xx_set_volume(float volume_airplay_db) {
   // Clamp AirPlay input range (-30 to 0)
-  if (volume_airplay_db > 0.0f)
+  if (volume_airplay_db > 0.0f) {
     volume_airplay_db = 0.0f;
-  if (volume_airplay_db < -30.0f)
+  }
+  if (volume_airplay_db < -30.0f) {
     volume_airplay_db = -30.0f;
+  }
 
   // Volume mapping:
   // AirPlay 0 dB -> DAC CONFIG_DAC_MAX_VOLUME
@@ -201,16 +196,27 @@ void tas57xx_set_volume(float volume_airplay_db) {
   }
 
   // Clamp to DAC valid range
-  if (db_level > 0.0f)
+  if (db_level > 0.0f) {
     db_level = 0.0f;
-  if (db_level < -127.0f)
+  }
+  if (db_level < -127.0f) {
     db_level = -127.0f;
+  }
 
   // Convert dB to DAC register: reg = -dB * 2 (0x00=0dB, 0xFE=-127dB)
   uint8_t reg_val = (uint8_t)(-db_level * 2.0f);
   write_cmd(TAS57XX_SET_VOLUME_A_L, reg_val);
   write_cmd(TAS57XX_SET_VOLUME_B_R, reg_val);
 }
+
+const dac_ops_t dac_tas57xx_ops = {
+    .init = tas57xx_init,
+    .deinit = tas57xx_deinit,
+    .set_volume = tas57xx_set_volume,
+    .set_power_mode = tas57xx_set_power_mode,
+    .enable_speaker = tas57xx_enable_speaker,
+    .enable_line_out = tas57xx_enable_line_out,
+};
 
 static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...) {
   va_list args;
