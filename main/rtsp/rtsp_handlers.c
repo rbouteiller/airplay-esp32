@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "sodium.h"
 
+#include "audio_output.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "hap.h"
@@ -1066,11 +1067,11 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  ESP_LOGI(TAG, "PAUSE received - keeping buffer, setting paused state");
+  ESP_LOGI(TAG, "PAUSE received - flushing all buffers");
 
-  // Don't flush buffer on pause - keep audio data for resume
-  // Only stop playback
+  audio_receiver_flush();
   audio_receiver_set_playing(false);
+  audio_output_flush();
   conn->stream_paused = true;
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1083,6 +1084,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw_len;
 
   audio_receiver_flush();
+  audio_output_flush();
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
@@ -1106,6 +1108,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   // TEARDOWN with streams = stream teardown (may be followed by new SETUP)
   // TEARDOWN without streams = full session teardown (disconnect)
   audio_receiver_stop();
+  audio_output_flush();
   conn->stream_active = false;
   conn->stream_paused =
       has_streams; // Keep session ready if only streams torn down
@@ -1162,27 +1165,21 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
              (unsigned long long)network_time_secs,
              (unsigned long long)rtp_time, rate);
 
-    // Only set new anchor if NOT resuming from pause with a valid existing
-    // anchor When resuming, the sender provides a new anchor adjusted for
-    // elapsed time, but buffered frames are still timed relative to the old
-    // anchor
-    bool is_resume = (rate != 0.0 && conn->stream_paused);
-    if (network_time_secs != 0 && rtp_time != 0 && !is_resume) {
+    if (network_time_secs != 0 && rtp_time != 0) {
       uint64_t frac = network_time_frac >> 32;
       frac = (frac * 1000000000ULL) >> 32;
       uint64_t network_time_ns = network_time_secs * 1000000000ULL + frac;
       audio_receiver_set_anchor_time(clock_id, network_time_ns,
                                      (uint32_t)rtp_time);
-    } else if (is_resume) {
-      ESP_LOGI(TAG, "SETRATEANCHORTIME: resume - keeping existing anchor for "
-                    "buffered frames");
     }
   }
 
   if (rate == 0.0) {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=0 -> PAUSING");
     conn->stream_paused = true;
+    audio_receiver_flush();
     audio_receiver_set_playing(false);
+    audio_output_flush();
     rtsp_events_emit(RTSP_EVENT_PAUSED);
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
