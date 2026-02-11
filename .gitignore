@@ -10,3 +10,4 @@ sdkconfig.esp32
 sdkconfig.esp32s3
 sdkconfig.squeezeamp
 sdkconfig.squeezeamp-4m
+sdkconfig.**.old

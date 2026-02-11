@@ -1,5 +1,6 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "display.h"
 #include "dns_server.h"
 #include "led.h"
 #include "hap.h"
@@ -95,6 +96,7 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
   led_init();
+  display_init();
 
   // Initialize board-specific hardware
   ESP_LOGI(TAG, "Board: %s", iot_board_get_info());
