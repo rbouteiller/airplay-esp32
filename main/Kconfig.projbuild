@@ -3,9 +3,9 @@ menu "Airplay ESP Configuration"
     
     menu "LED Configuration"
         config LED_STATUS_BRIGHTNESS
-            int "Status LED brightness (0-255)"
+            int "Status LED brightness (0-100% duty for the on phase)"
             range 0 255
-            default 80
+            default 60
             help
                 Brightness level for the status LED (0=off, 255=max).
 
