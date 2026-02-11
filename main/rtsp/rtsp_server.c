@@ -232,7 +232,7 @@ cleanup:
   ESP_LOGI(TAG, "Client slot %d disconnected", slot_idx);
   free(buffer);
   close(slot->socket);
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED);
+  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
 
   // Always stop event task before closing its socket
   rtsp_stop_event_port_task();

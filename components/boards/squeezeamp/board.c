@@ -70,7 +70,8 @@ static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
 static esp_err_t init_jack_gpio(void);
 static esp_err_t ensure_gpio_task_exists(void);
-static void on_rtsp_event(rtsp_event_t event, void *user_data);
+static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
+                          void *user_data);
 
 // Speaker fault ISR - just notifies the task, no I2C calls
 static void IRAM_ATTR spkfault_isr_handler(void *arg) {
@@ -158,7 +159,9 @@ static void spkfault_task(void *arg) {
   }
 }
 
-static void on_rtsp_event(rtsp_event_t event, void *user_data) {
+static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
+                          void *user_data) {
+  (void)data;
   (void)user_data;
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
@@ -170,6 +173,8 @@ static void on_rtsp_event(rtsp_event_t event, void *user_data) {
     break;
   case RTSP_EVENT_DISCONNECTED:
     dac_set_power_mode(DAC_POWER_OFF);
+    break;
+  case RTSP_EVENT_METADATA:
     break;
   }
 }

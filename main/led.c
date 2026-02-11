@@ -451,9 +451,8 @@ static void apply_state(led_state_t state) {
   }
 }
 
-static void on_rtsp_event(rtsp_event_t event, void *user_data) {
-  (void)user_data;
-
+static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
+                          void *user_data) {
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
     apply_state(STATE_PAUSED);
@@ -466,6 +465,8 @@ static void on_rtsp_event(rtsp_event_t event, void *user_data) {
     break;
   case RTSP_EVENT_DISCONNECTED:
     apply_state(STATE_STANDBY);
+    break;
+  case RTSP_EVENT_METADATA:
     break;
   }
 }

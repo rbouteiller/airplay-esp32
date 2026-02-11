@@ -184,7 +184,7 @@ static void event_port_task(void *pvParameters) {
       }
       event_client_socket = client;
       ESP_LOGI(TAG, "Event client connected");
-      rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED);
+      rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
 
       // Monitor connection for disconnection
       while (event_client_socket >= 0 && !event_task_should_stop) {
@@ -988,7 +988,7 @@ static void handle_record(int socket, rtsp_conn_t *conn,
                               conn->buffered_port);
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
-  rtsp_events_emit(RTSP_EVENT_PLAYING);
+  rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
 
   char headers[128];
   uint32_t output_latency_us = audio_receiver_get_output_latency_us();
@@ -1021,7 +1021,7 @@ static void format_time_mmss(uint32_t seconds, char *out, size_t out_size) {
 }
 
 /**
- * Parse DMAP-tagged data and extract metadata
+ * Parse DMAP-tagged data and extract metadata into struct
  * DMAP format: 4-byte tag, 4-byte BE length, data
  * Common tags:
  *   minm = item name (track title)
@@ -1030,7 +1030,8 @@ static void format_time_mmss(uint32_t seconds, char *out, size_t out_size) {
  *   asgn = genre
  *   asai = album id (64-bit)
  */
-static void log_dmap_metadata(const uint8_t *data, size_t len) {
+static void parse_dmap_metadata(const uint8_t *data, size_t len,
+                                rtsp_metadata_t *meta) {
   size_t pos = 0;
 
   while (pos + 8 <= len) {
@@ -1049,43 +1050,39 @@ static void log_dmap_metadata(const uint8_t *data, size_t len) {
       break; // Malformed
     }
 
-    // Log known metadata tags
+    // Extract known metadata tags
     if (strcmp(tag, "minm") == 0 && item_len > 0) {
-      // Track title
-      char title[128];
-      size_t copy_len =
-          item_len < sizeof(title) - 1 ? item_len : sizeof(title) - 1;
-      memcpy(title, data + pos, copy_len);
-      title[copy_len] = '\0';
-      ESP_LOGI(TAG, " Title = %s", title);
+      size_t copy_len = item_len < METADATA_STRING_MAX - 1
+                            ? item_len
+                            : METADATA_STRING_MAX - 1;
+      memcpy(meta->title, data + pos, copy_len);
+      meta->title[copy_len] = '\0';
+      ESP_LOGI(TAG, "  Title  = %s", meta->title);
     } else if (strcmp(tag, "asar") == 0 && item_len > 0) {
-      // Artist
-      char artist[128];
-      size_t copy_len =
-          item_len < sizeof(artist) - 1 ? item_len : sizeof(artist) - 1;
-      memcpy(artist, data + pos, copy_len);
-      artist[copy_len] = '\0';
-      ESP_LOGI(TAG, " Artist = %s", artist);
+      size_t copy_len = item_len < METADATA_STRING_MAX - 1
+                            ? item_len
+                            : METADATA_STRING_MAX - 1;
+      memcpy(meta->artist, data + pos, copy_len);
+      meta->artist[copy_len] = '\0';
+      ESP_LOGI(TAG, "  Artist = %s", meta->artist);
     } else if (strcmp(tag, "asal") == 0 && item_len > 0) {
-      // Album
-      char album[128];
-      size_t copy_len =
-          item_len < sizeof(album) - 1 ? item_len : sizeof(album) - 1;
-      memcpy(album, data + pos, copy_len);
-      album[copy_len] = '\0';
-      ESP_LOGI(TAG, " Album = %s", album);
+      size_t copy_len = item_len < METADATA_STRING_MAX - 1
+                            ? item_len
+                            : METADATA_STRING_MAX - 1;
+      memcpy(meta->album, data + pos, copy_len);
+      meta->album[copy_len] = '\0';
+      ESP_LOGI(TAG, "  Album  = %s", meta->album);
     } else if (strcmp(tag, "asgn") == 0 && item_len > 0) {
-      // Genre
-      char genre[64];
-      size_t copy_len =
-          item_len < sizeof(genre) - 1 ? item_len : sizeof(genre) - 1;
-      memcpy(genre, data + pos, copy_len);
-      genre[copy_len] = '\0';
-      ESP_LOGI(TAG, " Genre = %s", genre);
+      size_t copy_len = item_len < METADATA_STRING_MAX - 1
+                            ? item_len
+                            : METADATA_STRING_MAX - 1;
+      memcpy(meta->genre, data + pos, copy_len);
+      meta->genre[copy_len] = '\0';
+      ESP_LOGI(TAG, "  Genre  = %s", meta->genre);
     } else if (strcmp(tag, "mlit") == 0 || strcmp(tag, "cmst") == 0 ||
                strcmp(tag, "mdst") == 0) {
       // Container tags - recurse into them
-      log_dmap_metadata(data + pos, item_len);
+      parse_dmap_metadata(data + pos, item_len, meta);
     }
 
     pos += item_len;
@@ -1093,11 +1090,12 @@ static void log_dmap_metadata(const uint8_t *data, size_t len) {
 }
 
 /**
- * Parse progress string and log position
+ * Parse progress string and populate metadata fields
  * Progress format: "start/current/end" in RTP timestamp units
  * Sample rate is typically 44100
  */
-static void log_progress(const char *progress_str, uint32_t sample_rate) {
+static void parse_progress(const char *progress_str, uint32_t sample_rate,
+                           rtsp_metadata_t *meta) {
   uint64_t start = 0, current = 0, end = 0;
 
   if (sscanf(progress_str, "%" PRIu64 "/%" PRIu64 "/%" PRIu64, &start, &current,
@@ -1106,12 +1104,12 @@ static void log_progress(const char *progress_str, uint32_t sample_rate) {
       sample_rate = 44100; // Default sample rate
     }
 
-    uint32_t position_secs = (uint32_t)((current - start) / sample_rate);
-    uint32_t duration_secs = (uint32_t)((end - start) / sample_rate);
+    meta->position_secs = (uint32_t)((current - start) / sample_rate);
+    meta->duration_secs = (uint32_t)((end - start) / sample_rate);
 
     char pos_str[16], dur_str[16];
-    format_time_mmss(position_secs, pos_str, sizeof(pos_str));
-    format_time_mmss(duration_secs, dur_str, sizeof(dur_str));
+    format_time_mmss(meta->position_secs, pos_str, sizeof(pos_str));
+    format_time_mmss(meta->duration_secs, dur_str, sizeof(dur_str));
 
     ESP_LOGI(TAG,
              "Progress: %s / %s (raw: %" PRIu64 "/%" PRIu64 "/%" PRIu64 ")",
@@ -1124,6 +1122,9 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
                                  size_t raw_len) {
   const uint8_t *body = req->body;
   size_t body_len = req->body_len;
+  rtsp_event_data_t event_data;
+  memset(&event_data, 0, sizeof(event_data));
+  bool has_metadata = false;
 
   // Check for progress header in raw request
   const char *progress_hdr = strstr((const char *)raw, "progress:");
@@ -1143,7 +1144,8 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
       if (val_len < sizeof(progress_val)) {
         memcpy(progress_val, progress_hdr + val_start, val_len);
         progress_val[val_len] = '\0';
-        log_progress(progress_val, 44100);
+        parse_progress(progress_val, 44100, &event_data.metadata);
+        has_metadata = true;
       }
     }
   }
@@ -1164,20 +1166,24 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         while (*prog == ' ') {
           prog++;
         }
-        log_progress(prog, 44100);
+        parse_progress(prog, 44100, &event_data.metadata);
+        has_metadata = true;
       }
     }
   } else if (strstr(req->content_type, "application/x-dmap-tagged")) {
     // DMAP-tagged metadata (AirPlay 1)
     if (body && body_len > 0) {
       ESP_LOGI(TAG, "Received DMAP metadata (%zu bytes)", body_len);
-      log_dmap_metadata(body, body_len);
+      parse_dmap_metadata(body, body_len, &event_data.metadata);
+      has_metadata = true;
     }
   } else if (strstr(req->content_type, "image/jpeg") ||
              strstr(req->content_type, "image/png")) {
-    // Artwork - just log that we received it
+    // Artwork - log and flag in metadata
     ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
              body_len);
+    event_data.metadata.has_artwork = true;
+    has_metadata = true;
   } else if (strstr(req->content_type, "application/x-apple-binary-plist")) {
     if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
       int64_t value;
@@ -1189,25 +1195,34 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         ESP_LOGI(TAG, "SET_PARAMETER: rate=%.2f", rate);
       }
       // Try to extract metadata from bplist (AirPlay 2)
-      char str_val[128];
+      char str_val[METADATA_STRING_MAX];
       if (bplist_find_string(body, body_len, "itemName", str_val,
                              sizeof(str_val))) {
         ESP_LOGI(TAG, "Metadata: Title = %s", str_val);
+        strncpy(event_data.metadata.title, str_val, METADATA_STRING_MAX - 1);
+        has_metadata = true;
       }
       if (bplist_find_string(body, body_len, "artistName", str_val,
                              sizeof(str_val))) {
         ESP_LOGI(TAG, "Metadata: Artist = %s", str_val);
+        strncpy(event_data.metadata.artist, str_val, METADATA_STRING_MAX - 1);
+        has_metadata = true;
       }
       if (bplist_find_string(body, body_len, "albumName", str_val,
                              sizeof(str_val))) {
         ESP_LOGI(TAG, "Metadata: Album = %s", str_val);
+        strncpy(event_data.metadata.album, str_val, METADATA_STRING_MAX - 1);
+        has_metadata = true;
       }
       // Progress info from bplist
       double elapsed = 0, duration = 0;
       if (bplist_find_real(body, body_len, "elapsed", &elapsed)) {
+        event_data.metadata.position_secs = (uint32_t)elapsed;
+        has_metadata = true;
         char elapsed_str[16];
         format_time_mmss((uint32_t)elapsed, elapsed_str, sizeof(elapsed_str));
         if (bplist_find_real(body, body_len, "duration", &duration)) {
+          event_data.metadata.duration_secs = (uint32_t)duration;
           char duration_str[16];
           format_time_mmss((uint32_t)duration, duration_str,
                            sizeof(duration_str));
@@ -1217,6 +1232,10 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         }
       }
     }
+  }
+
+  if (has_metadata) {
+    rtsp_events_emit(RTSP_EVENT_METADATA, &event_data);
   }
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1296,7 +1315,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    rtsp_events_emit(RTSP_EVENT_PAUSED);
+    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
     // Full teardown - stop NTP timing
     ntp_clock_stop();
     conn->timing_port = 0;
@@ -1362,13 +1381,13 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
     audio_receiver_flush();
     audio_receiver_set_playing(false);
     audio_output_flush();
-    rtsp_events_emit(RTSP_EVENT_PAUSED);
+    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
              rate, conn->stream_paused);
     conn->stream_paused = false;
     audio_receiver_set_playing(true);
-    rtsp_events_emit(RTSP_EVENT_PLAYING);
+    rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
   }
 
   rtsp_send_ok(socket, conn, req->cseq);
