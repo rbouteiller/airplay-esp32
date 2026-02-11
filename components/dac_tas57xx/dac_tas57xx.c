@@ -37,6 +37,9 @@ static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x3E, 0x6C}, // Set chan A volume -70db
     // {0x28, 0x03}, // I2S length 32 bits
     {0x28, 0x00}, // I2S length 16 bits
+    {0x00, 0x01}, // select page 1
+    {0x00, 0x11}, // Analogue Gain for chan A/B -6db
+    {0x00, 0x00}, // select page 0
     {0x02, 0x00}, // restart
     {0xff, 0xff}  // end of table
 };
