@@ -37,6 +37,9 @@ static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x3E, 0x6C}, // Set chan A volume -70db
     // {0x28, 0x03}, // I2S length 32 bits
     {0x28, 0x00}, // I2S length 16 bits
+    {0x00, 0x01}, // select page 1
+    {0x00, 0x11}, // Analogue Gain for chan A/B -6db
+    {0x00, 0x00}, // select page 0
     {0x02, 0x00}, // restart
     {0xff, 0xff}  // end of table
 };
@@ -176,22 +179,21 @@ static void tas57xx_set_volume(float volume_airplay_db) {
     volume_airplay_db = -30.0f;
   }
 
-  // Volume mapping:
-  // AirPlay 0 dB -> DAC CONFIG_DAC_MAX_VOLUME
-  // AirPlay -25 to 0 dB  -> DAC (MAX-25) to MAX (linear, 1:1 offset)
-  // AirPlay -30 to -25 dB -> DAC mute(-127) to (MAX-25) (steep roll-off)
+  // Volume mapping (2:1 scaling):
+  // AirPlay 0 dB    -> DAC CONFIG_DAC_MAX_VOLUME
+  // AirPlay -25 dB  -> DAC (MAX - 50)
+  // AirPlay -30..-25 dB -> DAC mute(-127)..(MAX-50) (steep roll-off)
   float max_db = (float)CONFIG_DAC_MAX_VOLUME;
   float db_level;
-
   if (volume_airplay_db >= -25.0f) {
-    // Linear mapping with offset: AirPlay + MAX
-    // AirPlay 0 -> MAX, AirPlay -25 -> MAX-25
-    db_level = volume_airplay_db + max_db;
+    // 2:1 linear scaling: 25 dB AirPlay range -> 50 dB DAC range
+    // AirPlay 0 -> MAX, AirPlay -25 -> MAX - 50
+    db_level = max_db + (volume_airplay_db * 2.0f);
   } else {
-    // Roll-off: map -30..-25 to -127..(MAX-25)
+    // Roll-off: map -30..-25 to -127..(MAX-50)
     // normalized: 0 at -30, 1 at -25
     float normalized = (volume_airplay_db + 30.0f) / 5.0f;
-    float rolloff_top = max_db - 25.0f;
+    float rolloff_top = max_db - 50.0f;
     db_level = -127.0f + normalized * (127.0f + rolloff_top);
   }
 
@@ -205,6 +207,10 @@ static void tas57xx_set_volume(float volume_airplay_db) {
 
   // Convert dB to DAC register: reg = -dB * 2 (0x00=0dB, 0xFE=-127dB)
   uint8_t reg_val = (uint8_t)(-db_level * 2.0f);
+
+  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
+           volume_airplay_db, db_level, reg_val);
+
   write_cmd(TAS57XX_SET_VOLUME_A_L, reg_val);
   write_cmd(TAS57XX_SET_VOLUME_B_R, reg_val);
 }

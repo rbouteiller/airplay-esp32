@@ -27,7 +27,111 @@ menu "Board Configuration"
         bool
         default y if BOARD_SQUEEZEAMP || BOARD_SQUEEZEAMP_4M
 
-    orsource "./squeezeamp/kconfig.in"
-    orsource "./esp32s3-generic/kconfig.in"
-    rsource "Kconfig.common"
+    menu "Pin Configuration"
+        menu "LED GPIOs"
+            config LED_STATUS_GPIO
+                int "Status LED GPIO"
+                default -1
+                help
+                    GPIO for status LED (single color). Set to -1 to disable.
+
+            config LED_ERROR_GPIO
+                int "Error LED GPIO"
+                default -1
+                help
+                    GPIO for error LED. Set to -1 to disable.
+
+            config LED_RGB_GPIO
+                int "RGB LED GPIO (WS2812)"
+                default -1
+                help
+                    GPIO for addressable RGB LED (WS2812). Set to -1 to disable.
+        endmenu
+
+        menu "I2S and S/PDIF Pin Configuration"
+            config I2S_BCK_IO
+                int "I2S Bit Clock GPIO"
+                default -1
+                help
+                    I2S Bit Clock GPIO pin to use.
+
+            config I2S_WS_IO
+                int "I2S Word Select GPIO"
+                default -1
+                help
+                    I2S Word Select GPIO pin to use.
+
+            config I2S_DO_IO
+                int "I2S Data Output GPIO"
+                default -1
+                help
+                    I2S Data Output GPIO pin to use.
+
+            config SPDIF_DO_IO
+                int "SPDIF Data Output GPIO"
+                default -1
+                help
+                    GPIO for SPDIF data output. Set to -1 to disable S/PDIF.
+
+            config I2S_GND_IO
+                int "I2S GND GPIO"
+                default -1
+                help
+                    GPIO to provide GND to I2S DAC if powered from GPIO.
+                    20mA maximum! Set to -1 to disable.
+
+            config I2S_VCC_IO
+                int "I2S VCC GPIO"
+                default -1
+                help
+                    GPIO to provide VCC to I2S DAC if powered from GPIO. 
+                    20mA maximum! Set to -1 to disable.
+        endmenu
+
+        menu "Control GPIOs"
+            config BAT_CHANNEL
+                int "Battery Monitor GPIO"
+                default -1
+                help
+                    GPIO for battery voltage monitoring ADC channel. Set to -1 to disable.
+                    
+            config DAC_I2C_SDA
+                int "I2C SDA GPIO for DAC"
+                default -1
+                help
+                    I2C data GPIO pin for DAC control. Set to -1 if not used.
+
+            config DAC_I2C_SCL
+                int "I2C SCL GPIO for DAC"
+                default -1
+                help
+                    I2C clock GPIO pin for DAC control. Set to -1 if not used.
+
+            config JACK_GPIO
+                int "Headphone Jack Detection GPIO"
+                default -1
+                help
+                    GPIO for headphone jack detection. Set to -1 to disable.
+
+            config SPKFAULT_GPIO
+                int "DAC/AMP Fault Detection GPIO"
+                default -1
+                help
+                    GPIO for speaker/amplifier fault detection. Set to -1 to disable.
+
+            config MUTE_GPIO
+                int "Mute GPIO"
+                default -1
+                help
+                    GPIO used to mute DAC/amplifier. Set to -1 to disable.
+
+            config MUTE_GPIO_LEVEL
+                int "Mute GPIO Active Level"
+                default 0
+                help
+                    Active level for mute GPIO (0=active low, 1=active high).
+        endmenu
+
+    endmenu
+
 endmenu
