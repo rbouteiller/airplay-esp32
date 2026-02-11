@@ -43,7 +43,7 @@ menu "Board Configuration"
 
             config LED_RGB_GPIO
                 int "RGB LED GPIO (WS2812)"
-                default 48
+                default -1
                 help
                     GPIO for addressable RGB LED (WS2812). Set to -1 to disable.
         endmenu
@@ -51,19 +51,19 @@ menu "Board Configuration"
         menu "I2S and S/PDIF Pin Configuration"
             config I2S_BCK_IO
                 int "I2S Bit Clock GPIO"
-                default 11
+                default -1
                 help
                     I2S Bit Clock GPIO pin to use.
 
             config I2S_WS_IO
                 int "I2S Word Select GPIO"
-                default 13
+                default -1
                 help
                     I2S Word Select GPIO pin to use.
 
             config I2S_DO_IO
                 int "I2S Data Output GPIO"
-                default 12
+                default -1
                 help
                     I2S Data Output GPIO pin to use.
 
@@ -75,7 +75,7 @@ menu "Board Configuration"
 
             config I2S_GND_IO
                 int "I2S GND GPIO"
-                default 14
+                default -1
                 help
                     GPIO to provide GND to I2S DAC if powered from GPIO.
                     20mA maximum! Set to -1 to disable.
