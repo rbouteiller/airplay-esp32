@@ -38,30 +38,95 @@ static struct {
   int64_t sync_time_us; // esp_timer_get_time() when position was last synced
 } s_display;
 
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
-// Scroll state for compact 128x32 layout
+// Scroll configuration
 #define SCROLL_PX_PER_TICK 2
-#define SCROLL_PAUSE_TICKS 20 // pause before scrolling restarts
+#define SCROLL_PAUSE_TICKS 3 // pause before scrolling restarts
 #define SCROLL_GAP_PX      30 // pixel gap before text wraps
 #define SCROLL_INTERVAL_MS 50 // render interval during active scroll
+#define PAUSE_INDICATOR_W  14 // reserved width for "||" + gap
+
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+#define NUM_SCROLL_LINES 1
+#else
+#define NUM_SCROLL_LINES 3
+#endif
 
 static struct {
-  int offset;
-  int text_width;
-  int pause_ticks;
-  bool active;
+  int offset[NUM_SCROLL_LINES];
+  int pause_ticks[NUM_SCROLL_LINES];
+  bool active; // true if any line is scrolling
 } s_scroll;
-#endif
+
+static void scroll_reset(void) {
+  memset(&s_scroll, 0, sizeof(s_scroll));
+}
+
+static void scroll_restart(void) {
+  for (int i = 0; i < NUM_SCROLL_LINES; i++) {
+    s_scroll.offset[i] = 0;
+    s_scroll.pause_ticks[i] = SCROLL_PAUSE_TICKS;
+  }
+}
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
 /**
- * Draw a UTF-8 string clipped to the display width.
+ * Draw a separator bar in the gap between wrapped copies of the text.
  */
-static void draw_text_line(u8g2_t *u8g2, int y, const char *str) {
-  u8g2_DrawUTF8(u8g2, 0, y, str);
+static void draw_scroll_separator(u8g2_t *u8g2, int x, int y) {
+  int ascent = u8g2_GetAscent(u8g2);
+  int h = ascent;
+  u8g2_DrawVLine(u8g2, x, y - h + 1, h);
+}
+
+/**
+ * Draw a text line with continuous horizontal scrolling when content exceeds
+ * max_w.  The text wraps seamlessly: a vertical bar separator and the text's
+ * beginning scroll in from the right before the end scrolls off the left,
+ * creating a smooth loop with no snap-back.
+ */
+static void draw_scrolling_line(u8g2_t *u8g2, int idx, int y, const char *str,
+                                int max_w) {
+  if (!str || !str[0])
+    return;
+
+  int text_w = u8g2_GetUTF8Width(u8g2, str);
+
+  if (text_w <= max_w) {
+    u8g2_DrawUTF8(u8g2, 0, y, str);
+    s_scroll.offset[idx] = 0;
+    return;
+  }
+
+  // Total loop length: text + gap (the gap holds the separator bar)
+  int loop_w = text_w + SCROLL_GAP_PX;
+
+  s_scroll.active = true;
+  int ascent = u8g2_GetAscent(u8g2);
+  int descent = u8g2_GetDescent(u8g2);
+  u8g2_SetClipWindow(u8g2, 0, y - ascent, max_w, y - descent + 1);
+
+  int off = s_scroll.offset[idx];
+
+  // Draw the primary copy
+  u8g2_DrawUTF8(u8g2, -off, y, str);
+  // Draw separator bar in the gap
+  draw_scroll_separator(u8g2, text_w + SCROLL_GAP_PX / 2 - off, y);
+  // Draw the wrapped copy (appears from the right)
+  u8g2_DrawUTF8(u8g2, loop_w - off, y, str);
+
+  u8g2_SetMaxClipWindow(u8g2);
+
+  if (s_scroll.pause_ticks[idx] > 0) {
+    s_scroll.pause_ticks[idx]--;
+  } else {
+    s_scroll.offset[idx] += SCROLL_PX_PER_TICK;
+    if (s_scroll.offset[idx] >= loop_w) {
+      s_scroll.offset[idx] = 0;
+    }
+  }
 }
 
 /**
@@ -144,6 +209,11 @@ static void display_render(void) {
 
   case DISPLAY_STATE_PLAYING:
   case DISPLAY_STATE_PAUSED: {
+    s_scroll.active = false;
+    bool paused = (s_display.state == DISPLAY_STATE_PAUSED);
+    int disp_w = u8g2_GetDisplayWidth(&s_u8g2);
+    int top_max_w = paused ? disp_w - PAUSE_INDICATOR_W : disp_w;
+
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
     // Compact 2-line layout: "Title - Artist" (scrolling) + progress bar
     char line[METADATA_STRING_MAX * 2 + 4];
@@ -156,38 +226,7 @@ static void display_render(void) {
     }
 
     u8g2_SetFont(&s_u8g2, u8g2_font_6x13_tf);
-    int text_w = u8g2_GetUTF8Width(&s_u8g2, line);
-    int disp_w = u8g2_GetDisplayWidth(&s_u8g2);
-
-    if (text_w <= disp_w) {
-      // Fits on screen — no scrolling needed
-      u8g2_DrawUTF8(&s_u8g2, 0, 13, line);
-      s_scroll.active = false;
-      s_scroll.offset = 0;
-    } else {
-      // Horizontal scroll
-      s_scroll.active = true;
-      s_scroll.text_width = text_w;
-      u8g2_DrawUTF8(&s_u8g2, -s_scroll.offset, 13, line);
-
-      if (s_scroll.pause_ticks > 0) {
-        s_scroll.pause_ticks--;
-      } else {
-        s_scroll.offset += SCROLL_PX_PER_TICK;
-        if (s_scroll.offset > text_w - disp_w + SCROLL_GAP_PX) {
-          s_scroll.offset = 0;
-          s_scroll.pause_ticks = SCROLL_PAUSE_TICKS;
-        }
-      }
-    }
-
-    // Paused indicator
-    if (s_display.state == DISPLAY_STATE_PAUSED) {
-      u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
-      const char *paused_str = "||";
-      int w = u8g2_GetUTF8Width(&s_u8g2, paused_str);
-      u8g2_DrawUTF8(&s_u8g2, disp_w - w, 8, paused_str);
-    }
+    draw_scrolling_line(&s_u8g2, 0, 13, line, top_max_w);
 
     // Line 2: Progress bar
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
@@ -195,30 +234,34 @@ static void display_render(void) {
                   s_display.duration_secs);
 #else
     // Full 4-line layout for 128x64 displays
-    // Line 1: Title (larger font)
+    // Line 1: Title (larger font, clipped for pause indicator)
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14B_tf);
-    draw_text_line(&s_u8g2, 13, s_display.title[0] ? s_display.title : "---");
+    draw_scrolling_line(&s_u8g2, 0, 13,
+                        s_display.title[0] ? s_display.title : "---",
+                        top_max_w);
 
     // Line 2: Artist
     u8g2_SetFont(&s_u8g2, u8g2_font_6x13_tf);
-    draw_text_line(&s_u8g2, 28, s_display.artist[0] ? s_display.artist : "");
+    draw_scrolling_line(&s_u8g2, 1, 28,
+                        s_display.artist[0] ? s_display.artist : "", disp_w);
 
     // Line 3: Album
-    draw_text_line(&s_u8g2, 42, s_display.album[0] ? s_display.album : "");
+    draw_scrolling_line(&s_u8g2, 2, 42,
+                        s_display.album[0] ? s_display.album : "", disp_w);
 
     // Line 4: Progress bar with times
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
     draw_progress(&s_u8g2, 62, get_estimated_position(),
                   s_display.duration_secs);
+#endif
 
-    // Paused indicator
-    if (s_display.state == DISPLAY_STATE_PAUSED) {
+    // Paused indicator (top-right)
+    if (paused) {
       u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
       const char *paused_str = "||";
       int w = u8g2_GetUTF8Width(&s_u8g2, paused_str);
-      u8g2_DrawUTF8(&s_u8g2, 128 - w, 8, paused_str);
+      u8g2_DrawUTF8(&s_u8g2, disp_w - w, 8, paused_str);
     }
-#endif
     break;
   }
   }
@@ -244,10 +287,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.position_secs = 0;
     s_display.sync_time_us = 0;
     s_display.dirty = true;
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
-    s_scroll.offset = 0;
-    s_scroll.active = false;
-#endif
+    scroll_reset();
     break;
 
   case RTSP_EVENT_PLAYING:
@@ -273,10 +313,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.position_secs = 0;
     s_display.sync_time_us = 0;
     s_display.dirty = true;
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
-    s_scroll.offset = 0;
-    s_scroll.active = false;
-#endif
+    scroll_reset();
     break;
 
   case RTSP_EVENT_METADATA:
@@ -298,10 +335,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       s_display.position_secs = data->metadata.position_secs;
       s_display.sync_time_us = esp_timer_get_time();
       s_display.dirty = true;
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
-      s_scroll.offset = 0;
-      s_scroll.pause_ticks = SCROLL_PAUSE_TICKS;
-#endif
+      scroll_restart();
     }
     break;
   }
@@ -315,30 +349,25 @@ static void display_task(void *pvParameters) {
   (void)pvParameters;
   const TickType_t interval = pdMS_TO_TICKS(CONFIG_DISPLAY_UPDATE_MS);
   const TickType_t one_sec = pdMS_TO_TICKS(1000);
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
   const TickType_t scroll_interval = pdMS_TO_TICKS(SCROLL_INTERVAL_MS);
-#endif
 
   // Initial render
   display_render();
 
   while (1) {
     bool is_playing = (s_display.state == DISPLAY_STATE_PLAYING);
-#if defined(CONFIG_DISPLAY_HEIGHT_32)
-    if (s_scroll.active || is_playing) {
-      vTaskDelay(s_scroll.active ? scroll_interval : one_sec);
+    if (s_scroll.active) {
+      vTaskDelay(scroll_interval);
       s_display.dirty = false;
       display_render();
       continue;
     }
-#else
     if (is_playing) {
       vTaskDelay(one_sec);
       s_display.dirty = false;
       display_render();
       continue;
     }
-#endif
     vTaskDelay(interval);
     if (s_display.dirty) {
       s_display.dirty = false;
@@ -352,7 +381,44 @@ static void display_task(void *pvParameters) {
 // ============================================================================
 
 void display_init(void) {
-  ESP_LOGI(TAG, "Initializing OLED display (SDA=%d SCL=%d addr=0x%02x)",
+#if defined(CONFIG_DISPLAY_BUS_SPI)
+  ESP_LOGI(
+      TAG, "Initializing OLED display (SPI: CLK=%d MOSI=%d CS=%d DC=%d RST=%d)",
+      CONFIG_DISPLAY_SPI_CLK, CONFIG_DISPLAY_SPI_MOSI, CONFIG_DISPLAY_SPI_CS,
+      CONFIG_DISPLAY_SPI_DC, CONFIG_DISPLAY_SPI_RST);
+
+  u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
+  hal.bus.spi.clk = CONFIG_DISPLAY_SPI_CLK;
+  hal.bus.spi.mosi = CONFIG_DISPLAY_SPI_MOSI;
+  hal.bus.spi.cs = CONFIG_DISPLAY_SPI_CS;
+  hal.dc = CONFIG_DISPLAY_SPI_DC;
+  hal.reset = CONFIG_DISPLAY_SPI_RST;
+  u8g2_esp32_hal_init(hal);
+
+  // Setup u8g2 for the selected display driver and height (SPI)
+#if defined(CONFIG_DISPLAY_DRIVER_SH1106)
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+  u8g2_Setup_sh1106_128x32_visionox_f(&s_u8g2, U8G2_R0, u8g2_esp32_spi_byte_cb,
+                                      u8g2_esp32_gpio_and_delay_cb);
+#else
+  u8g2_Setup_sh1106_128x64_noname_f(&s_u8g2, U8G2_R0, u8g2_esp32_spi_byte_cb,
+                                    u8g2_esp32_gpio_and_delay_cb);
+#endif
+#elif defined(CONFIG_DISPLAY_DRIVER_SSD1309)
+  u8g2_Setup_ssd1309_128x64_noname0_f(&s_u8g2, U8G2_R0, u8g2_esp32_spi_byte_cb,
+                                      u8g2_esp32_gpio_and_delay_cb);
+#else // SSD1306 (default)
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+  u8g2_Setup_ssd1306_128x32_univision_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_spi_byte_cb, u8g2_esp32_gpio_and_delay_cb);
+#else
+  u8g2_Setup_ssd1306_128x64_vcomh0_f(&s_u8g2, U8G2_R0, u8g2_esp32_spi_byte_cb,
+                                     u8g2_esp32_gpio_and_delay_cb);
+#endif
+#endif
+
+#else // I2C (default)
+  ESP_LOGI(TAG, "Initializing OLED display (I2C: SDA=%d SCL=%d addr=0x%02x)",
            CONFIG_DISPLAY_I2C_SDA, CONFIG_DISPLAY_I2C_SCL,
            CONFIG_DISPLAY_I2C_ADDR);
 
@@ -362,7 +428,7 @@ void display_init(void) {
   hal.bus.i2c.scl = CONFIG_DISPLAY_I2C_SCL;
   u8g2_esp32_hal_init(hal);
 
-  // Setup u8g2 for the selected display driver and height
+  // Setup u8g2 for the selected display driver and height (I2C)
 #if defined(CONFIG_DISPLAY_DRIVER_SH1106)
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
   u8g2_Setup_sh1106_i2c_128x32_visionox_f(
@@ -389,6 +455,7 @@ void display_init(void) {
 
   // Set I2C address (u8x8 expects left-shifted 7-bit address)
   u8x8_SetI2CAddress(&s_u8g2.u8x8, CONFIG_DISPLAY_I2C_ADDR << 1);
+#endif // DISPLAY_BUS
 
   u8g2_InitDisplay(&s_u8g2);
   u8g2_SetPowerSave(&s_u8g2, 0);
