@@ -434,22 +434,19 @@ void display_init(void) {
   u8g2_Setup_sh1106_i2c_128x32_visionox_f(
       &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
 #else
-  u8g2_Setup_sh1106_i2c_128x64_noname_f(&s_u8g2, U8G2_R0,
-                                         u8g2_esp32_i2c_byte_cb,
-                                         u8g2_esp32_gpio_and_delay_cb);
+  u8g2_Setup_sh1106_i2c_128x64_noname_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
 #endif
 #elif defined(CONFIG_DISPLAY_DRIVER_SSD1309)
-  u8g2_Setup_ssd1309_i2c_128x64_noname0_f(&s_u8g2, U8G2_R0,
-                                           u8g2_esp32_i2c_byte_cb,
-                                           u8g2_esp32_gpio_and_delay_cb);
+  u8g2_Setup_ssd1309_i2c_128x64_noname0_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
 #else // SSD1306 (default)
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
   u8g2_Setup_ssd1306_i2c_128x32_univision_f(
       &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
 #else
-  u8g2_Setup_ssd1306_i2c_128x64_noname_f(&s_u8g2, U8G2_R0,
-                                          u8g2_esp32_i2c_byte_cb,
-                                          u8g2_esp32_gpio_and_delay_cb);
+  u8g2_Setup_ssd1306_i2c_128x64_noname_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
 #endif
 #endif
 
