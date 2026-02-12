@@ -40,8 +40,8 @@ static struct {
 
 // Scroll configuration
 #define SCROLL_PX_PER_TICK 2
-#define SCROLL_PAUSE_TICKS 3 // pause before scrolling restarts
 #define SCROLL_GAP_PX      30 // pixel gap before text wraps
+#define SCROLL_PAUSE_TICKS 3  // pause before scrolling restarts
 #define SCROLL_INTERVAL_MS 50 // render interval during active scroll
 #define PAUSE_INDICATOR_W  14 // reserved width for "||" + gap
 
