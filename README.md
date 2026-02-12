@@ -73,7 +73,7 @@ GPIO14           →  GND             Software ground (pulled low by code)
 Or GND           →  GND             Ground (GPIO14 software ground is sufficient)
 ```
 
-> **Tip:** On the ESP32S3 board, bridge the VIN/VOUT solder pads if they are not already connected. This lets the board use 5V power directly.
+### *⚠️ **Important:** On the ESP32S3 board, bridge the VIN/VOUT solder pads if they are not already connected. This lets the board use 5V power directly.*
 
 ### Step 3 — Check the result
 
