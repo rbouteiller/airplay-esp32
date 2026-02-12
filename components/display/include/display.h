@@ -20,6 +20,7 @@ void display_init(void);
 
 #else
 
-static inline void display_init(void) {}
+static inline void display_init(void) {
+}
 
 #endif
