@@ -150,6 +150,20 @@ menu "Airplay ESP Configuration"
                     bool "SSD1309 (128x64)"
             endchoice
 
+            choice DISPLAY_HEIGHT
+                prompt "Display height"
+                default DISPLAY_HEIGHT_64
+                help
+                    Select the display pixel height. 128x32 displays use
+                    a compact two-line layout with scrolling text.
+
+                config DISPLAY_HEIGHT_64
+                    bool "64 pixels (128x64)"
+                config DISPLAY_HEIGHT_32
+                    bool "32 pixels (128x32)"
+                    depends on !DISPLAY_DRIVER_SSD1309
+            endchoice
+
             config DISPLAY_I2C_SDA
                 int "Display I2C SDA GPIO"
                 default 21

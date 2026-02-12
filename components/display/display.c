@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "display";
@@ -34,6 +35,21 @@ static struct {
   display_state_t state;
   bool dirty; // set by event callback, cleared by render
 } s_display;
+
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+// Scroll state for compact 128x32 layout
+#define SCROLL_PX_PER_TICK 2
+#define SCROLL_PAUSE_TICKS 20 // pause before scrolling restarts
+#define SCROLL_GAP_PX      30 // pixel gap before text wraps
+#define SCROLL_INTERVAL_MS 50 // render interval during active scroll
+
+static struct {
+  int offset;
+  int text_width;
+  int pause_ticks;
+  bool active;
+} s_scroll;
+#endif
 
 // ============================================================================
 // Helpers
@@ -92,16 +108,75 @@ static void display_render(void) {
   switch (s_display.state) {
   case DISPLAY_STATE_STANDBY:
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14_tf);
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    u8g2_DrawUTF8(&s_u8g2, 0, 20, "AirPlay Ready");
+#else
     u8g2_DrawUTF8(&s_u8g2, 0, 32, "AirPlay Ready");
+#endif
     break;
 
   case DISPLAY_STATE_CONNECTED:
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14_tf);
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    u8g2_DrawUTF8(&s_u8g2, 0, 20, "Connected");
+#else
     u8g2_DrawUTF8(&s_u8g2, 0, 32, "Connected");
+#endif
     break;
 
   case DISPLAY_STATE_PLAYING:
   case DISPLAY_STATE_PAUSED: {
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    // Compact 2-line layout: "Title - Artist" (scrolling) + progress bar
+    char line[METADATA_STRING_MAX * 2 + 4];
+    const char *title = s_display.title[0] ? s_display.title : "---";
+    const char *artist = s_display.artist[0] ? s_display.artist : "";
+    if (artist[0]) {
+      snprintf(line, sizeof(line), "%s - %s", title, artist);
+    } else {
+      snprintf(line, sizeof(line), "%s", title);
+    }
+
+    u8g2_SetFont(&s_u8g2, u8g2_font_6x13_tf);
+    int text_w = u8g2_GetUTF8Width(&s_u8g2, line);
+    int disp_w = u8g2_GetDisplayWidth(&s_u8g2);
+
+    if (text_w <= disp_w) {
+      // Fits on screen — no scrolling needed
+      u8g2_DrawUTF8(&s_u8g2, 0, 13, line);
+      s_scroll.active = false;
+      s_scroll.offset = 0;
+    } else {
+      // Horizontal scroll
+      s_scroll.active = true;
+      s_scroll.text_width = text_w;
+      u8g2_DrawUTF8(&s_u8g2, -s_scroll.offset, 13, line);
+
+      if (s_scroll.pause_ticks > 0) {
+        s_scroll.pause_ticks--;
+      } else {
+        s_scroll.offset += SCROLL_PX_PER_TICK;
+        if (s_scroll.offset > text_w - disp_w + SCROLL_GAP_PX) {
+          s_scroll.offset = 0;
+          s_scroll.pause_ticks = SCROLL_PAUSE_TICKS;
+        }
+      }
+    }
+
+    // Paused indicator
+    if (s_display.state == DISPLAY_STATE_PAUSED) {
+      u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
+      const char *paused_str = "||";
+      int w = u8g2_GetUTF8Width(&s_u8g2, paused_str);
+      u8g2_DrawUTF8(&s_u8g2, disp_w - w, 8, paused_str);
+    }
+
+    // Line 2: Progress bar
+    u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
+    draw_progress(&s_u8g2, 30, s_display.position_secs,
+                  s_display.duration_secs);
+#else
+    // Full 4-line layout for 128x64 displays
     // Line 1: Title (larger font)
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14B_tf);
     draw_text_line(&s_u8g2, 13, s_display.title[0] ? s_display.title : "---");
@@ -125,6 +200,7 @@ static void display_render(void) {
       int w = u8g2_GetUTF8Width(&s_u8g2, paused_str);
       u8g2_DrawUTF8(&s_u8g2, 128 - w, 8, paused_str);
     }
+#endif
     break;
   }
   }
@@ -149,6 +225,10 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
     s_display.dirty = true;
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    s_scroll.offset = 0;
+    s_scroll.active = false;
+#endif
     break;
 
   case RTSP_EVENT_PLAYING:
@@ -169,6 +249,10 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
     s_display.dirty = true;
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    s_scroll.offset = 0;
+    s_scroll.active = false;
+#endif
     break;
 
   case RTSP_EVENT_METADATA:
@@ -179,6 +263,10 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       s_display.duration_secs = data->metadata.duration_secs;
       s_display.position_secs = data->metadata.position_secs;
       s_display.dirty = true;
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+      s_scroll.offset = 0;
+      s_scroll.pause_ticks = SCROLL_PAUSE_TICKS;
+#endif
     }
     break;
   }
@@ -191,11 +279,24 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 static void display_task(void *pvParameters) {
   (void)pvParameters;
   const TickType_t interval = pdMS_TO_TICKS(CONFIG_DISPLAY_UPDATE_MS);
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+  const TickType_t scroll_interval = pdMS_TO_TICKS(SCROLL_INTERVAL_MS);
+#endif
 
   // Initial render
   display_render();
 
   while (1) {
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+    if (s_scroll.active) {
+      vTaskDelay(scroll_interval);
+      display_render();
+      if (s_display.dirty) {
+        s_display.dirty = false;
+      }
+      continue;
+    }
+#endif
     vTaskDelay(interval);
     if (s_display.dirty) {
       s_display.dirty = false;
@@ -219,19 +320,29 @@ void display_init(void) {
   hal.bus.i2c.scl = CONFIG_DISPLAY_I2C_SCL;
   u8g2_esp32_hal_init(hal);
 
-  // Setup u8g2 for the selected display driver (128x64, I2C, full buffer)
+  // Setup u8g2 for the selected display driver and height
 #if defined(CONFIG_DISPLAY_DRIVER_SH1106)
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+  u8g2_Setup_sh1106_i2c_128x32_visionox_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
+#else
   u8g2_Setup_sh1106_i2c_128x64_noname_f(&s_u8g2, U8G2_R0,
                                          u8g2_esp32_i2c_byte_cb,
                                          u8g2_esp32_gpio_and_delay_cb);
+#endif
 #elif defined(CONFIG_DISPLAY_DRIVER_SSD1309)
   u8g2_Setup_ssd1309_i2c_128x64_noname0_f(&s_u8g2, U8G2_R0,
                                            u8g2_esp32_i2c_byte_cb,
                                            u8g2_esp32_gpio_and_delay_cb);
 #else // SSD1306 (default)
+#if defined(CONFIG_DISPLAY_HEIGHT_32)
+  u8g2_Setup_ssd1306_i2c_128x32_univision_f(
+      &s_u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
+#else
   u8g2_Setup_ssd1306_i2c_128x64_noname_f(&s_u8g2, U8G2_R0,
                                           u8g2_esp32_i2c_byte_cb,
                                           u8g2_esp32_gpio_and_delay_cb);
+#endif
 #endif
 
   // Set I2C address (u8x8 expects left-shifted 7-bit address)
