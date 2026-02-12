@@ -3,4 +3,4 @@
 	url = https://github.com/olikraus/u8g2.git
 [submodule "components/u8g2-hal-esp-idf"]
 	path = components/u8g2-hal-esp-idf
-	url = https://github.com/mkfrey/u8g2-hal-esp-idf.git
+	url = https://github.com/emlynmac/u8g2-hal-esp-idf.git
