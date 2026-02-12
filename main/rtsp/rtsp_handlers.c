@@ -1315,7 +1315,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
     // Full teardown - stop NTP timing
     ntp_clock_stop();
     conn->timing_port = 0;

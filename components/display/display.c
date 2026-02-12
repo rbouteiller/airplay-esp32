@@ -5,6 +5,7 @@
 #include "u8g2_esp32_hal.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -33,7 +34,8 @@ static struct {
   uint32_t duration_secs;
   uint32_t position_secs;
   display_state_t state;
-  bool dirty; // set by event callback, cleared by render
+  bool dirty;           // set by event callback, cleared by render
+  int64_t sync_time_us; // esp_timer_get_time() when position was last synced
 } s_display;
 
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
@@ -65,6 +67,22 @@ static void draw_text_line(u8g2_t *u8g2, int y, const char *str) {
 /**
  * Draw the progress bar: [====>          ] with time on each side.
  */
+/**
+ * Get the estimated playback position based on wall-clock interpolation.
+ */
+static uint32_t get_estimated_position(void) {
+  uint32_t pos = s_display.position_secs;
+  if (s_display.state == DISPLAY_STATE_PLAYING && s_display.sync_time_us > 0) {
+    int64_t elapsed_us = esp_timer_get_time() - s_display.sync_time_us;
+    uint32_t elapsed_secs = (uint32_t)(elapsed_us / 1000000);
+    pos += elapsed_secs;
+    if (s_display.duration_secs > 0 && pos > s_display.duration_secs) {
+      pos = s_display.duration_secs;
+    }
+  }
+  return pos;
+}
+
 static void draw_progress(u8g2_t *u8g2, int y, uint32_t pos, uint32_t dur) {
   char pos_str[8], dur_str[8];
   rtsp_format_time_mmss(pos, pos_str, sizeof(pos_str));
@@ -173,7 +191,7 @@ static void display_render(void) {
 
     // Line 2: Progress bar
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
-    draw_progress(&s_u8g2, 30, s_display.position_secs,
+    draw_progress(&s_u8g2, 30, get_estimated_position(),
                   s_display.duration_secs);
 #else
     // Full 4-line layout for 128x64 displays
@@ -190,7 +208,7 @@ static void display_render(void) {
 
     // Line 4: Progress bar with times
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
-    draw_progress(&s_u8g2, 62, s_display.position_secs,
+    draw_progress(&s_u8g2, 62, get_estimated_position(),
                   s_display.duration_secs);
 
     // Paused indicator
@@ -224,6 +242,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     memset(s_display.album, 0, sizeof(s_display.album));
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
+    s_display.sync_time_us = 0;
     s_display.dirty = true;
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
     s_scroll.offset = 0;
@@ -233,10 +252,14 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
   case RTSP_EVENT_PLAYING:
     s_display.state = DISPLAY_STATE_PLAYING;
+    s_display.sync_time_us = esp_timer_get_time();
     s_display.dirty = true;
     break;
 
   case RTSP_EVENT_PAUSED:
+    // Freeze position at current estimate before pausing
+    s_display.position_secs = get_estimated_position();
+    s_display.sync_time_us = 0;
     s_display.state = DISPLAY_STATE_PAUSED;
     s_display.dirty = true;
     break;
@@ -248,6 +271,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     memset(s_display.album, 0, sizeof(s_display.album));
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
+    s_display.sync_time_us = 0;
     s_display.dirty = true;
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
     s_scroll.offset = 0;
@@ -257,11 +281,22 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
   case RTSP_EVENT_METADATA:
     if (data) {
-      memcpy(s_display.title, data->metadata.title, METADATA_STRING_MAX);
-      memcpy(s_display.artist, data->metadata.artist, METADATA_STRING_MAX);
-      memcpy(s_display.album, data->metadata.album, METADATA_STRING_MAX);
-      s_display.duration_secs = data->metadata.duration_secs;
+      // Only overwrite text fields when the event actually carries them;
+      // progress-only updates arrive with zeroed strings.
+      if (data->metadata.title[0]) {
+        memcpy(s_display.title, data->metadata.title, METADATA_STRING_MAX);
+      }
+      if (data->metadata.artist[0]) {
+        memcpy(s_display.artist, data->metadata.artist, METADATA_STRING_MAX);
+      }
+      if (data->metadata.album[0]) {
+        memcpy(s_display.album, data->metadata.album, METADATA_STRING_MAX);
+      }
+      if (data->metadata.duration_secs) {
+        s_display.duration_secs = data->metadata.duration_secs;
+      }
       s_display.position_secs = data->metadata.position_secs;
+      s_display.sync_time_us = esp_timer_get_time();
       s_display.dirty = true;
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
       s_scroll.offset = 0;
@@ -279,6 +314,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 static void display_task(void *pvParameters) {
   (void)pvParameters;
   const TickType_t interval = pdMS_TO_TICKS(CONFIG_DISPLAY_UPDATE_MS);
+  const TickType_t one_sec = pdMS_TO_TICKS(1000);
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
   const TickType_t scroll_interval = pdMS_TO_TICKS(SCROLL_INTERVAL_MS);
 #endif
@@ -287,13 +323,19 @@ static void display_task(void *pvParameters) {
   display_render();
 
   while (1) {
+    bool is_playing = (s_display.state == DISPLAY_STATE_PLAYING);
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
-    if (s_scroll.active) {
-      vTaskDelay(scroll_interval);
+    if (s_scroll.active || is_playing) {
+      vTaskDelay(s_scroll.active ? scroll_interval : one_sec);
+      s_display.dirty = false;
       display_render();
-      if (s_display.dirty) {
-        s_display.dirty = false;
-      }
+      continue;
+    }
+#else
+    if (is_playing) {
+      vTaskDelay(one_sec);
+      s_display.dirty = false;
+      display_render();
       continue;
     }
 #endif

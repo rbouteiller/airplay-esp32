@@ -13,7 +13,7 @@ idf_component_register(
 if(CONFIG_DISPLAY_ENABLED)
     target_sources(${COMPONENT_LIB} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/display.c")
-    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::u8g2 idf::u8g2-hal-esp-idf)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::u8g2 idf::u8g2-hal-esp-idf idf::esp_timer)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${PROJECT_DIR}/main/rtsp"
         "${PROJECT_DIR}/main"

@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
+#include "audio_output.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -18,6 +19,7 @@
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
 
+#include "ntp_clock.h"
 #include "rtsp_events.h"
 
 static const char *TAG = "rtsp_server";
@@ -232,6 +234,11 @@ cleanup:
   ESP_LOGI(TAG, "Client slot %d disconnected", slot_idx);
   free(buffer);
   close(slot->socket);
+
+  // Full teardown: stop audio, NTP, and notify listeners
+  audio_receiver_stop();
+  audio_output_flush();
+  ntp_clock_stop();
   rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
 
   // Always stop event task before closing its socket
@@ -239,11 +246,6 @@ cleanup:
   if (conn->event_socket >= 0) {
     close(conn->event_socket);
     conn->event_socket = -1;
-  }
-
-  // Full audio cleanup if old client being killed or server stopping
-  if (slot->is_old || !server_running) {
-    audio_receiver_stop();
   }
 
   rtsp_conn_cleanup(conn);
