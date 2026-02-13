@@ -126,4 +126,122 @@ menu "Airplay ESP Configuration"
             standard I2S output driver. Configure the SPDIF data output GPIO
             in the board pin configuration.
     endmenu
+
+    menu "Display Configuration"
+        config DISPLAY_ENABLED
+            bool "Enable OLED display"
+            default n
+            help
+                Enable an I2C or SPI OLED display for showing track metadata,
+                playback position, and a progress bar.
+
+        if DISPLAY_ENABLED
+            choice DISPLAY_DRIVER
+                prompt "Display driver"
+                default DISPLAY_DRIVER_SSD1306
+                help
+                    Select the OLED display controller IC.
+
+                config DISPLAY_DRIVER_SSD1306
+                    bool "SSD1306 (128x64)"
+                config DISPLAY_DRIVER_SH1106
+                    bool "SH1106 (128x64)"
+                config DISPLAY_DRIVER_SSD1309
+                    bool "SSD1309 (128x64)"
+            endchoice
+
+            choice DISPLAY_HEIGHT
+                prompt "Display height"
+                default DISPLAY_HEIGHT_64
+                help
+                    Select the display pixel height. 128x32 displays use
+                    a compact two-line layout with scrolling text.
+
+                config DISPLAY_HEIGHT_64
+                    bool "64 pixels (128x64)"
+                config DISPLAY_HEIGHT_32
+                    bool "32 pixels (128x32)"
+                    depends on !DISPLAY_DRIVER_SSD1309
+            endchoice
+
+            choice DISPLAY_BUS
+                prompt "Display bus"
+                default DISPLAY_BUS_I2C
+                help
+                    Select the communication bus for the display.
+
+                config DISPLAY_BUS_I2C
+                    bool "I2C"
+                config DISPLAY_BUS_SPI
+                    bool "SPI"
+            endchoice
+
+            if DISPLAY_BUS_I2C
+                config DISPLAY_I2C_SDA
+                    int "Display I2C SDA GPIO"
+                    default 21
+                    help
+                        GPIO pin for the display I2C data line.
+
+                config DISPLAY_I2C_SCL
+                    int "Display I2C SCL GPIO"
+                    default 22
+                    help
+                        GPIO pin for the display I2C clock line.
+
+                config DISPLAY_I2C_ADDR
+                    hex "Display I2C address (7-bit)"
+                    default 0x3C
+                    help
+                        7-bit I2C address of the OLED display.
+                        Common values: 0x3C or 0x3D.
+            endif
+
+            if DISPLAY_BUS_SPI
+                config DISPLAY_SPI_CLK
+                    int "Display SPI CLK GPIO"
+                    default 18
+                    help
+                        GPIO pin for the display SPI clock line.
+
+                config DISPLAY_SPI_MOSI
+                    int "Display SPI MOSI GPIO"
+                    default 23
+                    help
+                        GPIO pin for the display SPI data (MOSI) line.
+
+                config DISPLAY_SPI_CS
+                    int "Display SPI CS GPIO"
+                    default 5
+                    help
+                        GPIO pin for the display SPI chip select.
+
+                config DISPLAY_SPI_DC
+                    int "Display SPI DC GPIO"
+                    default 16
+                    help
+                        GPIO pin for the display SPI data/command select.
+
+                config DISPLAY_SPI_RST
+                    int "Display SPI RST GPIO"
+                    default -1
+                    help
+                        GPIO pin for the display reset line.
+                        Set to -1 if not connected.
+            endif
+
+            config DISPLAY_FLIP
+                bool "Flip display 180 degrees"
+                default n
+                help
+                    Rotate the display output 180 degrees.
+
+            config DISPLAY_UPDATE_MS
+                int "Display refresh interval (ms)"
+                default 500
+                range 100 5000
+                help
+                    How often the display redraws in milliseconds.
+        endif
+    endmenu
 endmenu

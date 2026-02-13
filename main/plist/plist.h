@@ -227,6 +227,18 @@ bool bplist_find_int(const uint8_t *plist, size_t plist_len, const char *key,
 bool bplist_find_real(const uint8_t *plist, size_t plist_len, const char *key,
                       double *out_value);
 
+/**
+ * Find a string value by key in a binary plist
+ * @param plist Binary plist data
+ * @param plist_len Length of plist
+ * @param key Key to search for
+ * @param out_str Output buffer for string value
+ * @param out_capacity Capacity of output buffer
+ * @return true if found, false otherwise
+ */
+bool bplist_find_string(const uint8_t *plist, size_t plist_len, const char *key,
+                        char *out_str, size_t out_capacity);
+
 // ========================================
 // Binary plist builders (for AirPlay SETUP responses)
 // ========================================

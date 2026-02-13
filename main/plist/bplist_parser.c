@@ -651,6 +651,77 @@ bool bplist_find_real(const uint8_t *plist, size_t plist_len, const char *key,
   return false;
 }
 
+bool bplist_find_string(const uint8_t *plist, size_t plist_len, const char *key,
+                        char *out_str, size_t out_capacity) {
+  if (plist_len < 40 || memcmp(plist, "bplist00", 8) != 0) {
+    return false;
+  }
+
+  uint8_t offset_size = 0;
+  uint8_t ref_size = 0;
+  uint64_t num_objects = 0;
+  uint64_t top_object = 0;
+  uint64_t offset_table_offset = 0;
+  if (!bplist_parse_trailer(plist, plist_len, &offset_size, &ref_size,
+                            &num_objects, &top_object, &offset_table_offset)) {
+    return false;
+  }
+
+  uint64_t top_offset =
+      bplist_get_offset(plist, offset_table_offset, offset_size, top_object);
+  if (top_offset >= plist_len) {
+    return false;
+  }
+
+  uint8_t marker = plist[top_offset];
+  if ((marker & 0xF0) != BPLIST_DICT) {
+    return false;
+  }
+
+  size_t dict_size = marker & 0x0F;
+  size_t pos = top_offset + 1;
+
+  if (dict_size == 0x0F) {
+    if (pos >= plist_len) {
+      return false;
+    }
+    uint8_t len_marker = plist[pos++];
+    size_t len_bytes = 1 << (len_marker & 0x0F);
+    if (pos + len_bytes > plist_len) {
+      return false;
+    }
+    dict_size = (size_t)read_be_int(plist + pos, len_bytes);
+    pos += len_bytes;
+  }
+
+  if (pos + dict_size * 2 * ref_size > plist_len) {
+    return false;
+  }
+
+  const uint8_t *key_refs = plist + pos;
+  const uint8_t *val_refs = plist + pos + dict_size * ref_size;
+
+  for (size_t i = 0; i < dict_size; i++) {
+    uint64_t key_idx = read_be_int(key_refs + i * ref_size, ref_size);
+    uint64_t key_offset =
+        bplist_get_offset(plist, offset_table_offset, offset_size, key_idx);
+
+    char found_key[64];
+    if (bplist_read_string(plist, plist_len, key_offset, found_key,
+                           sizeof(found_key))) {
+      if (strcmp(found_key, key) == 0) {
+        uint64_t val_idx = read_be_int(val_refs + i * ref_size, ref_size);
+        uint64_t val_offset =
+            bplist_get_offset(plist, offset_table_offset, offset_size, val_idx);
+        return bplist_read_string(plist, plist_len, val_offset, out_str,
+                                  out_capacity);
+      }
+    }
+  }
+
+  return false;
+}
+
 bool bplist_get_streams_count(const uint8_t *plist, size_t plist_len,
                               size_t *count) {
   if (!count) {

@@ -1,7 +1,7 @@
 menu "Board Configuration"
     choice BOARD_TARGET
         prompt "Select Target Board"
-        default BOARD_SQUEEZEAMP if IDF_TARGET_ESP32
+        default BOARD_ESP32_GENERIC if IDF_TARGET_ESP32
         default BOARD_ESP32S3_GENERIC if IDF_TARGET_ESP32S3
 
         config BOARD_SQUEEZEAMP
@@ -15,6 +15,11 @@ menu "Board Configuration"
         config BOARD_ESP32S3_GENERIC
             bool "ESP32-S3 Generic"
             depends on IDF_TARGET_ESP32S3
+
+        config BOARD_ESP32_GENERIC
+            bool "ESP32 Board with >4M PSRAM"
+            depends on IDF_TARGET_ESP32
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -22,6 +27,7 @@ menu "Board Configuration"
         default "squeezeamp" if BOARD_SQUEEZEAMP
         default "squeezeamp" if BOARD_SQUEEZEAMP_4M
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
+        default "esp32-generic" if BOARD_ESP32_GENERIC
 
     config BOARD_SQUEEZEAMP_COMMON
         bool

@@ -45,6 +45,15 @@ else()
     list(APPEND SRC_FILES "audio/audio_output.c")
 endif()
 
+set( INC_DIRS
+    "." 
+    "audio" 
+    "rtsp" 
+    "plist" 
+    "hap" 
+    "network"
+)
+
 set( DEPS
     driver
     nvs_flash
@@ -61,11 +70,12 @@ set( DEPS
     esp_driver_ledc
     boards
     dac
+    display
 )
 
 idf_component_register(
     SRCS ${SRC_FILES}
-    INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
+    INCLUDE_DIRS ${INC_DIRS}
     PRIV_REQUIRES ${DEPS}
 )
 
