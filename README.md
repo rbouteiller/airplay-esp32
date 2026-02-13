@@ -107,8 +107,8 @@ You have two options: **PlatformIO** (easier) or **ESP-IDF** (official Espressif
 # 1. Install PlatformIO CLI
 pip install platformio
 
-# 2. Clone this project
-git clone https://github.com/rbouteiller/airplay-esp32
+# 2. Clone this project (with submodules)
+git clone --recursive https://github.com/rbouteiller/airplay-esp32
 cd airplay-esp32
 
 # 3. Plug in your ESP32 via USB-C and flash
@@ -124,10 +124,9 @@ pio run -e esp32s3 -t monitor
 # 1. Install ESP-IDF v5.x following:
 #    https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/
 
-# 2. Clone and enter the project
-git clone https://github.com/rbouteiller/airplay-esp32
+# 2. Clone and enter the project (with submodules)
+git clone --recursive https://github.com/rbouteiller/airplay-esp32
 cd airplay-esp32
-git submodule update --init --recursive
 
 # 3. Activate ESP-IDF environment
 source /path/to/esp-idf/export.sh
@@ -191,6 +190,72 @@ A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
 
 ---
 
+## OLED Display (Optional)
+
+You can connect a small OLED screen to show the currently playing track info — title, artist, album, a progress bar, and playback time. The display auto-scrolls long text and shows a pause indicator when playback is paused.
+
+### Supported Displays
+
+| Controller | Resolution | Bus     |
+| ---------- | ---------- | ------- |
+| SSD1306    | 128×64     | I2C/SPI |
+| SH1106     | 128×64     | I2C/SPI |
+| SSD1309    | 128×64     | I2C/SPI |
+
+128×32 displays (SSD1306 / SH1106) are also supported — they use a compact two-line layout.
+
+> These small OLED boards are widely available on AliExpress / Amazon for ~1–2$. Search for "0.96 inch OLED I2C SSD1306".
+
+### Wiring (I2C — default)
+
+| OLED Pin | ESP32 GPIO | Function   |
+| -------- | ---------- | ---------- |
+| SDA      | GPIO 21    | I2C data   |
+| SCL      | GPIO 22    | I2C clock  |
+| VCC      | 3.3V       | Power      |
+| GND      | GND        | Ground     |
+
+The default I2C address is `0x3C`. If your display uses `0x3D`, change it in `idf.py menuconfig` under **AirPlay Receiver → Display Configuration**.
+
+### Enabling the Display
+
+The display is **disabled by default**. To enable it:
+
+#### ESP-IDF
+
+```bash
+idf.py menuconfig
+# Navigate to: AirPlay Receiver → Display Configuration
+# Enable "Enable OLED display"
+# Select your driver (SSD1306, SH1106, or SSD1309)
+# Select bus type (I2C or SPI) and set GPIO pins if needed
+```
+
+#### PlatformIO
+
+Add `CONFIG_DISPLAY_ENABLED=y` and the relevant display options to your sdkconfig defaults, or run menuconfig:
+
+```bash
+pio run -e esp32s3 -t menuconfig
+```
+
+### Display Options
+
+| Option              | Default    | Description                                  |
+| ------------------- | ---------- | -------------------------------------------- |
+| Display driver      | SSD1306    | SSD1306 / SH1106 / SSD1309                   |
+| Display height      | 64 pixels  | 64 or 32 pixels                              |
+| Bus type            | I2C        | I2C or SPI                                   |
+| I2C SDA GPIO        | 21         | Data line (I2C mode)                         |
+| I2C SCL GPIO        | 22         | Clock line (I2C mode)                        |
+| I2C address         | 0x3C       | 7-bit address (0x3C or 0x3D)                 |
+| Flip display        | No         | Rotate output 180°                           |
+| Refresh interval    | 500 ms     | How often the display redraws (100–5000 ms)  |
+
+SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
+
+---
+
 ## Features
 
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
@@ -199,6 +264,7 @@ A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
 - **Web configuration** — set up WiFi and device name from your browser
 - **OTA updates** — update firmware over WiFi, no USB needed after first flash
 - **LED indicator** — visual feedback for playback status
+- **OLED display** — optional screen showing track metadata, progress bar, and playback time
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
 
 ### Limitations
@@ -300,6 +366,7 @@ MCLK is not used; the PCM5102A generates it internally.
 | **Web Server**     | `main/network/`        | Configuration interface              |
 | **DAC Abstraction**| `components/dac/`      | Abstract DAC API (Kconfig-selected)  |
 | **Board Support**  | `components/boards/`   | Per-board HAL (GPIOs, init, events)  |
+| **Display**        | `components/display/`  | OLED display driver (u8g2-based)     |
 
 ### Project Structure
 
@@ -315,6 +382,9 @@ main/
 components/
 ├── dac/            # Abstract DAC API (dispatch layer)
 ├── dac_tas57xx/    # TI TAS57xx DAC driver
+├── display/        # OLED display driver (u8g2-based, optional)
+├── u8g2/           # u8g2 graphics library (git submodule)
+├── u8g2-hal-esp-idf/ # ESP-IDF HAL for u8g2 (git submodule)
 └── boards/         # Board support (SqueezeAMP, ESP32-S3 generic)
 ```
 
