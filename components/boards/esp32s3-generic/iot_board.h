@@ -7,6 +7,7 @@
 #define BOARD_DESCRIPTION "Generic ESP32-S3 dev board with external I2S DAC"
 
 // I2S configuration
+#define BOARD_I2S_SCK_GPIO CONFIG_I2S_SCK_IO
 #define BOARD_I2S_BCK_GPIO CONFIG_I2S_BCK_IO
 #define BOARD_I2S_WS_GPIO  CONFIG_I2S_WS_IO
 #define BOARD_I2S_DO_GPIO  CONFIG_I2S_DO_IO

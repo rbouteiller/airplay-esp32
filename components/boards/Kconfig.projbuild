@@ -49,6 +49,12 @@ menu "Board Configuration"
         endmenu
 
         menu "I2S and S/PDIF Pin Configuration"
+            config I2S_SCK_IO
+                int "I2S Master Clock GPIO"
+                default -1
+                help
+                    I2S Master (system) Clock GPIO pin to use; needed with some I2S conversion boards.
+                                        
             config I2S_BCK_IO
                 int "I2S Bit Clock GPIO"
                 default -1

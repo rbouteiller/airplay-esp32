@@ -19,6 +19,7 @@
 #endif
 
 #define TAG           "audio_output"
+#define I2S_SCK_PIN  CONFIG_I2S_SCK_IO
 #define I2S_BCK_PIN   CONFIG_I2S_BCK_IO
 #define I2S_LRCK_PIN  CONFIG_I2S_WS_IO
 #define I2S_DOUT_PIN  CONFIG_I2S_DO_IO
@@ -91,7 +92,7 @@ esp_err_t audio_output_init(void) {
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
-              .mclk = I2S_GPIO_UNUSED,
+              .mclk = I2S_SCK_PIN,
               .bclk = I2S_BCK_PIN,
               .ws = I2S_LRCK_PIN,
               .dout = I2S_DOUT_PIN,
