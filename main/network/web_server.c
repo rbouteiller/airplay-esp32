@@ -14,6 +14,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#ifdef CONFIG_DAC_TAS58XX
+#include "eq_events.h"
+#include "dac_tas58xx_eq.h"
+#endif
+
 static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
 
@@ -125,7 +130,14 @@ static const char *HTML_CONTROL_PANEL =
     "</div>\n"
     "<div class='actions'><button class='btn btn-danger' "
     "onclick='restart()'>Restart Device</button></div>\n"
-    "</div></div>\n"
+    "</div>\n"
+#ifdef CONFIG_DAC_TAS58XX
+    "<div class='card'><h2>Equalizer</h2>\n"
+    "<p style='color:#888;font-size:13px;margin-bottom:12px'>15-band "
+    "parametric EQ for DAC tuning</p>\n"
+    "<a href='/eq' class='btn btn-primary'>Open Equalizer</a></div>\n"
+#endif
+    "</div>\n"
     "<script>\n"
     "function msg(id,txt,type){var "
     "e=document.getElementById(id);if(e){e.innerHTML='<div class=\"msg "
@@ -449,6 +461,272 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+/* ================================================================== */
+/*  EQ Page + API  (only when TAS58xx DAC is configured)               */
+/* ================================================================== */
+
+#ifdef CONFIG_DAC_TAS58XX
+
+static const char *HTML_EQ_PAGE =
+    "<!DOCTYPE html><html><head>\n"
+    "<meta charset='UTF-8'>\n"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
+    "<title>EQ - AirPlay Receiver</title>\n"
+    "<style>\n"
+    "*{box-sizing:border-box;margin:0;padding:0}\n"
+    "body{font-family:-apple-system,system-ui,sans-serif;background:linear-"
+    "gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;"
+    "color:#fff}\n"
+    ".wrap{max-width:720px;margin:0 auto}\n"
+    ".header{text-align:center;padding:20px 0}\n"
+    ".header h1{font-size:24px;font-weight:600;margin-bottom:4px}\n"
+    ".header p{color:#888;font-size:13px}\n"
+    ".nav{text-align:center;margin-bottom:16px}\n"
+    ".nav a{color:#e94560;text-decoration:none;font-size:13px}\n"
+    ".card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);"
+    "border-radius:16px;padding:20px;margin-bottom:16px;"
+    "border:1px solid rgba(255,255,255,0.1)}\n"
+    ".card "
+    "h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}\n"
+    ".eq-container{display:flex;gap:4px;justify-content:center;"
+    "align-items:flex-end;height:280px;padding:10px 0}\n"
+    ".eq-band{display:flex;flex-direction:column;align-items:center;"
+    "flex:1;min-width:0}\n"
+    ".eq-band .val{font-size:11px;color:#e94560;font-weight:600;"
+    "margin-bottom:4px;min-height:16px;text-align:center}\n"
+    ".eq-band input[type=range]{-webkit-appearance:none;appearance:none;"
+    "writing-mode:vertical-lr;direction:rtl;"
+    "width:28px;height:200px;background:transparent;cursor:pointer}\n"
+    ".eq-band input[type=range]::-webkit-slider-runnable-track{"
+    "width:4px;background:rgba(255,255,255,0.15);border-radius:2px}\n"
+    ".eq-band input[type=range]::-webkit-slider-thumb{"
+    "-webkit-appearance:none;width:16px;height:16px;border-radius:50%;"
+    "background:#e94560;margin-left:-6px;cursor:pointer}\n"
+    ".eq-band input[type=range]::-moz-range-track{"
+    "width:4px;background:rgba(255,255,255,0.15);border-radius:2px}\n"
+    ".eq-band input[type=range]::-moz-range-thumb{"
+    "width:14px;height:14px;border-radius:50%;background:#e94560;"
+    "border:none;cursor:pointer}\n"
+    ".eq-band .freq{font-size:10px;color:#888;margin-top:6px;"
+    "text-align:center;white-space:nowrap}\n"
+    ".eq-scale{display:flex;flex-direction:column;justify-content:space-"
+    "between;margin:48px 6px 25px 0;padding:0}\n"
+    ".eq-scale "
+    "span{font-size:10px;color:#555;text-align:right;min-width:28px}\n"
+    ".eq-actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}\n"
+    ".btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;"
+    "font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}\n"
+    ".btn-primary{background:#e94560;color:#fff}\n"
+    ".btn-primary:hover{background:#d63850}\n"
+    ".btn-secondary{background:rgba(255,255,255,0.1);color:#fff}\n"
+    ".btn-secondary:hover{background:rgba(255,255,255,0.2)}\n"
+    ".btn:disabled{opacity:0.5;cursor:not-allowed}\n"
+    ".presets{margin-top:12px}\n"
+    ".presets select{background:rgba(0,0,0,0.3);border:1px solid "
+    "rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:8px 12px;"
+    "font-size:13px;cursor:pointer;min-width:160px}\n"
+    ".presets select option{background:#16213e}\n"
+    ".msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}\n"
+    ".msg.ok{background:rgba(27,67,50,0.5)}\n"
+    ".msg.err{background:rgba(92,26,26,0.5)}\n"
+    ".msg.info{background:rgba(15,52,96,0.5)}\n"
+    "</style></head><body>\n"
+    "<div class='wrap'>\n"
+    "<div class='header'><h1>Equalizer</h1>"
+    "<p>15-Band Parametric EQ</p></div>\n"
+    "<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>\n"
+    "<div class='card'><h2>EQ Bands</h2>\n"
+    "<div style='display:flex'>\n"
+    "<div class='eq-scale'>"
+    "<span>+15</span><span>+7</span><span>0</span>"
+    "<span>-7</span><span>-15</span></div>\n"
+    "<div class='eq-container' id='eq-sliders'></div>\n"
+    "</div>\n"
+    "<div class='eq-actions'>\n"
+    "<button class='btn btn-primary' id='apply-btn' "
+    "onclick='applyEQ()'>Apply</button>\n"
+    "<button class='btn btn-secondary' onclick='flatEQ()'>Flat "
+    "(Reset)</button>\n"
+    "<div class='presets'>\n"
+    "<select id='preset-sel' onchange='loadPreset(this.value)'>\n"
+    "<option value=''>-- Presets --</option>\n"
+    "<option value='bass_boost'>Bass Boost</option>\n"
+    "<option value='treble_boost'>Treble Boost</option>\n"
+    "<option value='v_shape'>V-Shape</option>\n"
+    "<option value='vocal'>Vocal Presence</option>\n"
+    "<option value='loudness'>Loudness</option>\n"
+    "</select></div>\n"
+    "</div>\n"
+    "<div id='eq-msg'></div>\n"
+    "</div></div>\n"
+    "<script>\n"
+    "var BANDS=15;\n"
+    "var FREQS=[20,31.5,50,80,125,200,315,500,800,'1.25k','2k','3.15k',"
+    "'5k','8k','16k'];\n"
+    "var gains=new Array(BANDS).fill(0);\n"
+    "var dirty=false;\n"
+    "function fmtFreq(f){return typeof f==='number'?f+'':f;}\n"
+    "function fmtGain(v){return (v>0?'+':'')+v;}\n"
+    "function buildSliders(){\n"
+    "  var c=document.getElementById('eq-sliders');c.innerHTML='';\n"
+    "  for(var i=0;i<BANDS;i++){\n"
+    "    var d=document.createElement('div');d.className='eq-band';\n"
+    "    var v=document.createElement('div');v.className='val';"
+    "v.id='val-'+i;v.textContent=fmtGain(gains[i]);\n"
+    "    var s=document.createElement('input');s.type='range';"
+    "s.min=-15;s.max=15;s.step=1;s.value=gains[i];s.dataset.band=i;\n"
+    "    s.addEventListener('input',function(e){\n"
+    "      var "
+    "b=parseInt(e.target.dataset.band);gains[b]=parseFloat(e.target.value);\n"
+    "      document.getElementById('val-'+b).textContent=fmtGain(gains[b]);\n"
+    "      dirty=true;document.getElementById('apply-btn').disabled=false;\n"
+    "    });\n"
+    "    var f=document.createElement('div');f.className='freq';"
+    "f.textContent=fmtFreq(FREQS[i]);\n"
+    "    d.appendChild(v);d.appendChild(s);d.appendChild(f);c.appendChild(d);\n"
+    "  }\n"
+    "}\n"
+    "function updateSliders(){\n"
+    "  for(var i=0;i<BANDS;i++){\n"
+    "    var s=document.querySelector('[data-band=\"'+i+'\"]');\n"
+    "    if(s){s.value=gains[i];}\n"
+    "    var v=document.getElementById('val-'+i);\n"
+    "    if(v){v.textContent=fmtGain(gains[i]);}\n"
+    "  }\n"
+    "  dirty=false;document.getElementById('apply-btn').disabled=true;\n"
+    "}\n"
+    "function msg(txt,type){\n"
+    "  var e=document.getElementById('eq-msg');\n"
+    "  e.innerHTML='<div class=\"msg '+type+'\">'+txt+'</div>';\n"
+    "  setTimeout(function(){e.innerHTML='';},3000);\n"
+    "}\n"
+    "async function loadEQ(){\n"
+    "  try{var r=await fetch('/api/eq');var d=await r.json();\n"
+    "    if(d.success&&d.gains){gains=d.gains;updateSliders();}}\n"
+    "  catch(e){msg('Failed to load EQ','err');}\n"
+    "}\n"
+    "async function applyEQ(){\n"
+    "  document.getElementById('apply-btn').disabled=true;\n"
+    "  try{var r=await fetch('/api/eq',{method:'POST',"
+    "headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({gains:gains})});\n"
+    "    var d=await r.json();\n"
+    "    if(d.success){msg('EQ applied','ok');dirty=false;}\n"
+    "    "
+    "else{msg(d.error||'Failed','err');document.getElementById('apply-btn')."
+    "disabled=false;}}\n"
+    "  catch(e){msg('Error applying "
+    "EQ','err');document.getElementById('apply-btn').disabled=false;}\n"
+    "}\n"
+    "function flatEQ(){\n"
+    "  gains=new Array(BANDS).fill(0);updateSliders();\n"
+    "  dirty=true;document.getElementById('apply-btn').disabled=false;\n"
+    "  document.getElementById('preset-sel').value='';\n"
+    "}\n"
+    "var PRESETS={\n"
+    "  bass_boost:[8,6,5,4,2,0,0,0,0,0,0,0,0,0,0],\n"
+    "  treble_boost:[0,0,0,0,0,0,0,0,0,1,3,4,6,7,7],\n"
+    "  v_shape:[5,4,2,1,0,-1,-2,-3,-2,0,1,3,4,5,5],\n"
+    "  vocal:[0,0,0,0,0,1,3,4,4,3,1,0,0,0,0],\n"
+    "  loudness:[7,5,3,0,-1,-2,-3,-2,0,1,3,4,6,7,5]\n"
+    "};\n"
+    "function loadPreset(name){\n"
+    "  if(!name||!PRESETS[name])return;\n"
+    "  gains=PRESETS[name].slice();updateSliders();\n"
+    "  dirty=true;document.getElementById('apply-btn').disabled=false;\n"
+    "}\n"
+    "window.onload=function(){buildSliders();loadEQ();};\n"
+    "</script></body></html>";
+
+static esp_err_t eq_page_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, HTML_EQ_PAGE, strlen(HTML_EQ_PAGE));
+  return ESP_OK;
+}
+
+static esp_err_t eq_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON *arr = cJSON_CreateArray();
+
+  float gains[SETTINGS_EQ_BANDS];
+  if (settings_get_eq_gains(gains) == ESP_OK) {
+    for (int i = 0; i < SETTINGS_EQ_BANDS; i++) {
+      cJSON_AddItemToArray(arr, cJSON_CreateNumber((double)gains[i]));
+    }
+  } else {
+    /* No saved EQ — return all zeros (flat) */
+    for (int i = 0; i < SETTINGS_EQ_BANDS; i++) {
+      cJSON_AddItemToArray(arr, cJSON_CreateNumber(0.0));
+    }
+  }
+
+  cJSON_AddItemToObject(json, "gains", arr);
+  cJSON_AddNumberToObject(json, "bands", SETTINGS_EQ_BANDS);
+  cJSON_AddBoolToObject(json, "success", true);
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t eq_post_handler(httpd_req_t *req) {
+  char content[512];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *gains_arr = cJSON_GetObjectItem(json, "gains");
+
+  if (gains_arr && cJSON_IsArray(gains_arr) &&
+      cJSON_GetArraySize(gains_arr) == SETTINGS_EQ_BANDS) {
+
+    float gains[SETTINGS_EQ_BANDS];
+    for (int i = 0; i < SETTINGS_EQ_BANDS; i++) {
+      cJSON *item = cJSON_GetArrayItem(gains_arr, i);
+      gains[i] = cJSON_IsNumber(item) ? (float)item->valuedouble : 0.0f;
+      /* Clamp */
+      if (gains[i] > 15.0f)
+        gains[i] = 15.0f;
+      if (gains[i] < -15.0f)
+        gains[i] = -15.0f;
+    }
+
+    /* Emit event — listeners (settings + DAC) will handle it */
+    eq_event_data_t ev_data;
+    memcpy(ev_data.all_bands.gains_db, gains, sizeof(gains));
+    eq_events_emit(EQ_EVENT_ALL_BANDS_SET, &ev_data);
+
+    cJSON_AddBoolToObject(response, "success", true);
+  } else {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error",
+                            "Expected 'gains' array with 15 values");
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
+#endif /* CONFIG_DAC_TAS58XX */
+
 esp_err_t web_server_start(uint16_t port) {
   if (s_server) {
     ESP_LOGW(TAG, "Web server already running");
@@ -457,7 +735,7 @@ esp_err_t web_server_start(uint16_t port) {
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
-  config.max_uri_handlers = 16; // Increased for captive portal handlers
+  config.max_uri_handlers = 20; // Room for captive portal + EQ handlers
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -525,6 +803,20 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_GET,
                                  .handler = captive_windows_handler};
   httpd_register_uri_handler(s_server, &windows_captive);
+
+#ifdef CONFIG_DAC_TAS58XX
+  httpd_uri_t eq_page_uri = {
+      .uri = "/eq", .method = HTTP_GET, .handler = eq_page_handler};
+  httpd_register_uri_handler(s_server, &eq_page_uri);
+
+  httpd_uri_t eq_get_uri = {
+      .uri = "/api/eq", .method = HTTP_GET, .handler = eq_get_handler};
+  httpd_register_uri_handler(s_server, &eq_get_uri);
+
+  httpd_uri_t eq_post_uri = {
+      .uri = "/api/eq", .method = HTTP_POST, .handler = eq_post_handler};
+  httpd_register_uri_handler(s_server, &eq_post_uri);
+#endif
 
   ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
            port);

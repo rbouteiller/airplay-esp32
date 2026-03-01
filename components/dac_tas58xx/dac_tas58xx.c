@@ -14,6 +14,7 @@
 #include "driver/i2c_types.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 /* ---------- TAS5825M I2C addresses (7-bit) ---------- */
@@ -127,7 +128,10 @@ static const struct tas58xx_cmd_s tas58xx_init_seq[] = {
     // problem.  We stay in HiZ here anyway, so faults are expected.
     {REG_CLOCK_DET_CTRL, 0x00},
 
-    // DSP: ROM mode 1 (default passthrough)
+    // DSP: Process Flow 1 (Base/Pro, 96kHz, 2.0)
+    // PF1 has 15 BQs + DRC + DPEQ + Spatializer — no SmartAmp blocks
+    // that need speaker calibration data.  EQ addresses in Book 0xAA are
+    // identical across all 96kHz process flows (PF1–PF4).
     {REG_DSP_PGM_MODE, 0x01},
     {REG_DSP_CTRL, 0x01}, // Use default coefficients
 
@@ -156,6 +160,24 @@ static const struct tas58xx_cmd_s tas58xx_init_seq[] = {
 static uint8_t tas58xx_addr;
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 static i2c_master_dev_handle_t tas58xx_device_handle;
+static bool s_dsp_defaults_written = false;
+
+/**
+ * Mutex protecting all TAS5825M register access.
+ *
+ * The TAS5825M uses a page/book register model: writing to any register
+ * beyond Page 0 requires first selecting the target book and page via
+ * REG_PAGE_SEL (0x00) and REG_BOOK_SEL (0x7F).  This makes register
+ * access non-atomic: a context switch between selecting a page and
+ * writing the target register will corrupt the operation.
+ *
+ * All functions that touch the I2C bus MUST hold this mutex. Public API
+ * functions acquire it; internal helpers assume it's already held.
+ */
+static SemaphoreHandle_t s_reg_mutex = NULL;
+
+#define REG_LOCK()   xSemaphoreTake(s_reg_mutex, portMAX_DELAY)
+#define REG_UNLOCK() xSemaphoreGive(s_reg_mutex)
 
 /* ---------- Forward declarations ---------- */
 static esp_err_t i2c_init(int i2c_port, int sda_io, int scl_io);
@@ -204,7 +226,7 @@ static uint8_t tas58xx_detect(i2c_master_bus_handle_t bus) {
 static void tas58xx_dump_status(const char *context) {
   uint8_t val = 0;
 
-  ESP_LOGI(TAG, "--- %s: TAS5825M status dump ---", context);
+  ESP_LOGD(TAG, "--- %s: TAS5825M status dump ---", context);
 
   if (tas58xx_read_reg(REG_DEVICE_CTRL2, &val) == ESP_OK) {
     const char *state_str;
@@ -225,7 +247,7 @@ static void tas58xx_dump_status(const char *context) {
       state_str = "UNKNOWN";
       break;
     }
-    ESP_LOGI(TAG, "  DEVICE_CTRL2=0x%02X  state=%s  mute=%s  dsp=%s", val,
+    ESP_LOGD(TAG, "  DEVICE_CTRL2=0x%02X  state=%s  mute=%s  dsp=%s", val,
              state_str, (val & CTRL2_MUTE) ? "YES" : "no",
              (val & CTRL2_DIS_DSP) ? "DISABLED" : "enabled");
   }
@@ -249,7 +271,7 @@ static void tas58xx_dump_status(const char *context) {
       ps_str = "UNKNOWN";
       break;
     }
-    ESP_LOGI(TAG, "  POWER_STATE=0x%02X (%s)", val, ps_str);
+    ESP_LOGD(TAG, "  POWER_STATE=0x%02X (%s)", val, ps_str);
   }
 
   if (tas58xx_read_reg(REG_SAP_CTRL1, &val) == ESP_OK) {
@@ -272,23 +294,23 @@ static void tas58xx_dump_status(const char *context) {
       break;
     }
     int wlen = 16 + ((val >> 0) & 0x03) * 8; // 00=16, 01=20, 10=24, 11=32
-    ESP_LOGI(TAG, "  SAP_CTRL1=0x%02X  format=%s  word_len=%d-bit", val,
+    ESP_LOGD(TAG, "  SAP_CTRL1=0x%02X  format=%s  word_len=%d-bit", val,
              fmt_str, wlen);
   }
 
   if (tas58xx_read_reg(REG_DIG_VOL, &val) == ESP_OK) {
     float db = (0x30 - (int)val) * 0.5f;
-    ESP_LOGI(TAG, "  DIG_VOL=0x%02X (%.1f dB%s)", val, db,
+    ESP_LOGD(TAG, "  DIG_VOL=0x%02X (%.1f dB%s)", val, db,
              val == DIG_VOL_MUTE ? " MUTED" : "");
   }
 
   if (tas58xx_read_reg(REG_AGAIN, &val) == ESP_OK) {
     float again_db = -(val & 0x1F) * 0.5f;
-    ESP_LOGI(TAG, "  AGAIN=0x%02X (%.1f dB)", val, again_db);
+    ESP_LOGD(TAG, "  AGAIN=0x%02X (%.1f dB)", val, again_db);
   }
 
   if (tas58xx_read_reg(REG_AUTO_MUTE_CTRL, &val) == ESP_OK) {
-    ESP_LOGI(TAG, "  AUTO_MUTE_CTRL=0x%02X", val);
+    ESP_LOGD(TAG, "  AUTO_MUTE_CTRL=0x%02X", val);
   }
 
   uint8_t chan_fault = 0, global1 = 0, global2 = 0, warning = 0;
@@ -301,17 +323,17 @@ static void tas58xx_dump_status(const char *context) {
              "  FAULTS: chan=0x%02X global1=0x%02X global2=0x%02X warn=0x%02X",
              chan_fault, global1, global2, warning);
   } else {
-    ESP_LOGI(TAG, "  FAULTS: none");
+    ESP_LOGD(TAG, "  FAULTS: none");
   }
 
   if (tas58xx_read_reg(REG_DSP_PGM_MODE, &val) == ESP_OK) {
-    ESP_LOGI(TAG, "  DSP_PGM_MODE=0x%02X", val);
+    ESP_LOGD(TAG, "  DSP_PGM_MODE=0x%02X", val);
   }
   if (tas58xx_read_reg(REG_DSP_CTRL, &val) == ESP_OK) {
-    ESP_LOGI(TAG, "  DSP_CTRL=0x%02X", val);
+    ESP_LOGD(TAG, "  DSP_CTRL=0x%02X", val);
   }
 
-  ESP_LOGI(TAG, "--- end status dump ---");
+  ESP_LOGD(TAG, "--- end status dump ---");
 }
 
 static esp_err_t tas58xx_init(void) {
@@ -319,6 +341,15 @@ static esp_err_t tas58xx_init(void) {
 
   ESP_LOGI(TAG, "Initializing TAS5825M (I2C SDA=%d SCL=%d)", CONFIG_DAC_I2C_SDA,
            CONFIG_DAC_I2C_SCL);
+
+  /* Create the register-access mutex (once) */
+  if (s_reg_mutex == NULL) {
+    s_reg_mutex = xSemaphoreCreateMutex();
+    if (s_reg_mutex == NULL) {
+      ESP_LOGE(TAG, "Failed to create register mutex");
+      return ESP_ERR_NO_MEM;
+    }
+  }
 
   // Set up I2C bus
   err = i2c_init(0, CONFIG_DAC_I2C_SDA, CONFIG_DAC_I2C_SCL);
@@ -384,6 +415,8 @@ static esp_err_t tas58xx_init(void) {
   // Dump full status after init
   tas58xx_dump_status("post-init");
 
+  // tas58xx_eq_verify_addresses();
+
   ESP_LOGI(TAG, "TAS5825M initialized at I2C addr 0x%02X", tas58xx_addr);
   return ESP_OK;
 }
@@ -407,6 +440,8 @@ static esp_err_t tas58xx_deinit(void) {
 }
 
 static void tas58xx_set_power_mode(dac_power_mode_t mode) {
+  REG_LOCK();
+
   const char *mode_str;
   switch (mode) {
   case DAC_POWER_ON:
@@ -420,6 +455,7 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     break;
   default:
     ESP_LOGW(TAG, "Unhandled power mode %d", mode);
+    REG_UNLOCK();
     return;
   }
 
@@ -439,6 +475,30 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
       ESP_LOGI(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    /*
+     * Per TAS5825M datasheet §7.6.2.2, exiting DEEP_SLEEP is similar
+     * to a power-on-reset — all registers may revert to defaults.
+     * Re-program the critical DSP registers so the correct process
+     * flow, I2S format, and coefficient mode are active.
+     */
+    if (cur_state == CTRL2_DEEP_SLEEP) {
+      ESP_LOGI(TAG, "Woke from DEEP_SLEEP — re-programming DSP registers");
+      tas58xx_write_reg(REG_SAP_CTRL1, 0x00); /* I2S, 16-bit */
+      tas58xx_write_reg(REG_CLOCK_DET_CTRL, 0x00);
+      tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01); /* PF1 (Base/Pro, 96kHz) */
+      tas58xx_write_reg(REG_DSP_CTRL, 0x01);     /* USE_DEFAULT_COEFFS */
+      vTaskDelay(pdMS_TO_TICKS(5));
+      tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
+      tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
+      tas58xx_write_reg(REG_AUTO_MUTE_TIME, 0x00);
+      tas58xx_write_reg(REG_DIG_VOL, DIG_VOL_0DB);
+      tas58xx_write_reg(REG_AGAIN, 0x00);
+
+      /* Coefficient RAM may be invalid after DEEP_SLEEP — force
+       * full re-write of signal-path defaults on next EQ update. */
+      s_dsp_defaults_written = false;
     }
 
     // Clear any faults accumulated while clocks were absent
@@ -476,16 +536,24 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
   } else {
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_DEEP_SLEEP);
+    /* DEEP_SLEEP may reset registers and coefficient RAM — ensure
+     * full re-initialization happens on the next wake-up. */
+    s_dsp_defaults_written = false;
   }
+
+  REG_UNLOCK();
 }
 
 static void tas58xx_enable_speaker(bool enable) {
+  REG_LOCK();
+
   // Use mute bit in DEVICE_CTRL2 to enable/disable output.
   // Read current register, modify mute bit, write back.
   uint8_t val;
   esp_err_t err = tas58xx_read_reg(REG_DEVICE_CTRL2, &val);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to read DEVICE_CTRL2");
+    REG_UNLOCK();
     return;
   }
 
@@ -499,6 +567,8 @@ static void tas58xx_enable_speaker(bool enable) {
   }
 
   tas58xx_write_reg(REG_DEVICE_CTRL2, val);
+
+  REG_UNLOCK();
 }
 
 static void tas58xx_enable_line_out(bool enable) {
@@ -507,6 +577,8 @@ static void tas58xx_enable_line_out(bool enable) {
 }
 
 static void tas58xx_set_volume(float volume_airplay_db) {
+  REG_LOCK();
+
   // Clamp AirPlay input range (-30 to 0)
   if (volume_airplay_db > 0.0f) {
     volume_airplay_db = 0.0f;
@@ -565,6 +637,8 @@ static void tas58xx_set_volume(float volume_airplay_db) {
            volume_airplay_db, db_level, reg_val);
 
   tas58xx_write_reg(REG_DIG_VOL, reg_val);
+
+  REG_UNLOCK();
 }
 
 /* ---------- Public ops struct ---------- */
@@ -593,43 +667,44 @@ static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value) {
 /* ==================  15-Band Parametric EQ  ================== */
 
 /*
- * Biquad coefficient addresses for TAS5825M ROM Mode 1 (Book 0x8C).
+ * EQ biquad coefficient addresses for TAS5825M (common to all 96kHz flows).
  *
- * Each biquad occupies 20 bytes (5 × 32-bit coefficients: b0 b1 b2 a1 a2).
- * Six biquads fit per page (registers 0x08–0x7B), then wrap to the next page.
+ * Address table, band parameters, and pre-computed coefficient data from
+ * dac_tas58xx_eq_data.h, matching the mrtoy-me/esphome-tas58xx reference.
  *
- * ** IMPORTANT ** — Verify these against TAS5825M datasheet (SLASEH6),
- * Table "ROM Coefficient Tuning Addresses" for Mode 1.  Use
- * tas58xx_eq_verify_addresses() at startup to confirm on real hardware.
+ * Each biquad occupies 20 bytes (5 × 32-bit coefficients: B0 B1 B2 A1 A2).
+ * Coefficient format: 5.27 fixed-point (1 sign + 4 integer + 27 fractional).
+ *   Unity (1.0) = 0x08000000.  Range: −16.0 to +15.9999...
  *
- * If channel pages are wrong, update CH1_BQ_START_PAGE / CH2_BQ_START_PAGE
- * to match your device's ROM coefficient map.
+ * TI DSP biquad structure (Direct Form 1):
+ *   H(z) = (B0 + 2·B1·z⁻¹ + B2·z⁻²) / (1 − 2·A1·z⁻¹ − A2·z⁻²)
+ *
+ * Use tas58xx_eq_verify_addresses() at startup to confirm on real hardware.
  */
 
-#define BQ_COEFF_BOOK  0x8C
-#define BQ_COEFF_SIZE  20   /* bytes per biquad (5 × 4) */
-#define BQ_FIRST_REG   0x08 /* first usable register on coeff pages */
-#define BYTES_PER_PAGE 120  /* 0x08..0x7F = 120 usable bytes per coeff page */
-#define BQ_BASE_PAGE   0x2C /* first page of coefficient area (Book 0x8C) */
+#include "dac_tas58xx_eq_data.h"
 
-/*
- * Linear byte offsets into the coefficient RAM for each channel's biquad
- * block.  The TAS5805M reference (sonocotta) shows left and right biquads
- * are laid out contiguously with no gap.  CH2 starts immediately after
- * CH1's 15 biquads.
- */
-#define CH1_BQ_BYTE_OFFSET 0
-#define CH2_BQ_BYTE_OFFSET (TAS58XX_EQ_BANDS * BQ_COEFF_SIZE) /* = 300 */
+#define BQ_COEFF_BOOK 0xAA /* TAS5825M coefficient book */
+#define BQ_COEFF_SIZE 20   /* bytes per biquad (5 × 4) */
 
-/* 15 ISO 1/3-octave center frequencies at ~2/3-octave spacing */
+/* Book / Page / Register for EQ mode control */
+#define EQ_MODE_BOOK 0x8C
+#define EQ_MODE_PAGE 0x0B
+#define EQ_MODE_REG  0x28
+#define EQ_MODE_SIZE 8 /* 4 bytes gang_eq + 4 bytes bypass_eq */
+
+/* 15 center frequencies matching mrtoy-me/esphome-tas58xx reference */
 static const float eq_center_freq[TAS58XX_EQ_BANDS] = {
-    25.0f,   40.0f,   63.0f,   100.0f,  160.0f,  250.0f,   400.0f,   630.0f,
-    1000.0f, 1600.0f, 2500.0f, 4000.0f, 6300.0f, 10000.0f, 16000.0f,
+    20.0f,  31.5f,   50.0f,   80.0f,   125.0f,  200.0f,  315.0f,   500.0f,
+    800.0f, 1250.0f, 2000.0f, 3150.0f, 5000.0f, 8000.0f, 16000.0f,
 };
 
-/* Q for ~2/3-octave bandwidth: Q = √(2^BW) / (2^BW − 1), BW = 2/3 */
-#define EQ_DEFAULT_Q   2.145f
-#define EQ_SAMPLE_RATE 44100.0f
+/* Per-band Q values (decrease with frequency) — embedded in pre-computed
+ * tables; kept here for documentation. */
+/* static const float eq_band_q[TAS58XX_EQ_BANDS] = {
+    2.0f, 2.0f, 1.5f, 1.5f, 1.0f, 1.0f, 0.9f, 0.9f,
+    0.8f, 0.8f, 0.7f, 0.7f, 0.6f, 0.6f, 0.5f,
+}; */
 
 /* 1.0 in 5.27 fixed-point (1 sign + 4 int + 27 frac = 32-bit) */
 #define FP_ONE 0x08000000
@@ -661,76 +736,20 @@ static inline esp_err_t select_default_page(void) {
 }
 
 /**
- * Compute page and start-register for biquad @p bq (0-14) on a channel.
- * @p ch_byte_offset is the linear byte offset of the channel's first biquad
- * within the coefficient area (0 for CH1, 300 for CH2 in contiguous layout).
- */
-static inline void bq_address(int ch_byte_offset, int bq, uint8_t *page,
-                              uint8_t *reg) {
-  int byte_off = ch_byte_offset + bq * BQ_COEFF_SIZE;
-  *page = BQ_BASE_PAGE + (uint8_t)(byte_off / BYTES_PER_PAGE);
-  *reg = BQ_FIRST_REG + (uint8_t)(byte_off % BYTES_PER_PAGE);
-}
-
-/**
- * Compute peaking-EQ biquad coefficients (Audio EQ Cookbook).
- *
- * TI convention:  H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 − a1·z⁻¹ − a2·z⁻²)
- * so stored a1/a2 are the *negated* textbook values.
- *
- * Coefficients are returned as 32-bit signed 5.27 fixed-point.
- */
-static void calc_peaking_biquad(float fc, float gain_db, float q, float fs,
-                                int32_t coeff[5]) {
-  /* Flat / bypass shortcut */
-  if (fabsf(gain_db) < 0.05f) {
-    coeff[0] = FP_ONE; /* b0 = 1.0 */
-    coeff[1] = 0;
-    coeff[2] = 0;
-    coeff[3] = 0;
-    coeff[4] = 0;
-    return;
-  }
-
-  float w0 = 2.0f * (float)M_PI * fc / fs;
-  float A = powf(10.0f, gain_db / 40.0f);
-  float sinw = sinf(w0);
-  float cosw = cosf(w0);
-  float alpha = sinw / (2.0f * q);
-
-  float b0 = 1.0f + alpha * A;
-  float b1 = -2.0f * cosw;
-  float b2 = 1.0f - alpha * A;
-  float a0 = 1.0f + alpha / A;
-  float a1_txt = -2.0f * cosw;     /* textbook a1 */
-  float a2_txt = 1.0f - alpha / A; /* textbook a2 */
-
-  /* Normalise by a0 */
-  float inv_a0 = 1.0f / a0;
-  b0 *= inv_a0;
-  b1 *= inv_a0;
-  b2 *= inv_a0;
-
-  /* TI format: negate a1/a2 */
-  float a1_ti = -a1_txt * inv_a0;
-  float a2_ti = -a2_txt * inv_a0;
-
-  /* Convert to 5.27 fixed-point */
-  const float scale = (float)(1 << 27);
-  coeff[0] = (int32_t)roundf(b0 * scale);
-  coeff[1] = (int32_t)roundf(b1 * scale);
-  coeff[2] = (int32_t)roundf(b2 * scale);
-  coeff[3] = (int32_t)roundf(a1_ti * scale);
-  coeff[4] = (int32_t)roundf(a2_ti * scale);
-}
-
-/**
  * Write a single biquad's 5 coefficients (20 bytes, big-endian) to the
- * TAS5825M coefficient RAM.  Caller must already have selected Book 0x8C.
+ * TAS5825M coefficient RAM.
+ *
+ * Per datasheet: "The five coefficients of every Biquad Filter must be
+ * written entirely and sequentially from the lowest address to the highest."
+ * We write all 20 bytes in a single I2C burst to satisfy this requirement.
+ *
+ * Caller must already have selected the coefficient Book.
  */
 static esp_err_t write_biquad_coeff(uint8_t page, uint8_t reg_start,
                                     const int32_t coeff[5]) {
   esp_err_t err;
+
+  /* Select coefficient page */
   err = tas58xx_write_reg(REG_PAGE_SEL, page);
   if (err != ESP_OK)
     return err;
@@ -745,6 +764,22 @@ static esp_err_t write_biquad_coeff(uint8_t page, uint8_t reg_start,
 
   return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg_start, buf,
                        BQ_COEFF_SIZE);
+}
+
+/**
+ * Write a single biquad's pre-computed 20-byte coefficient block to the
+ * TAS5825M coefficient RAM.  The caller must already have selected the
+ * correct book (0xAA); this function selects the page and writes the data.
+ */
+static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
+                                  const uint8_t data[EQ_COEFF_BYTES]) {
+  esp_err_t err;
+  err = tas58xx_write_reg(REG_PAGE_SEL, page);
+  if (err != ESP_OK)
+    return err;
+
+  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, sub_addr, data,
+                       EQ_COEFF_BYTES);
 }
 
 /**
@@ -772,12 +807,325 @@ static esp_err_t read_biquad_coeff(uint8_t page, uint8_t reg_start,
 }
 
 /**
- * Program one biquad on both channels.
- * Enters Book 0x8C, writes CH1 then CH2, and returns to Book 0 / Page 0.
+ * Write a single 32-bit value to a DSP coefficient register.
+ * Caller must already have selected the correct Book via select_book_page().
  */
-static esp_err_t program_biquad(int bq, const int32_t coeff[5]) {
-  uint8_t page, reg;
+static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
+  esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+  if (err != ESP_OK)
+    return err;
+  uint8_t buf[4] = {(uint8_t)(val >> 24), (uint8_t)(val >> 16),
+                    (uint8_t)(val >> 8), (uint8_t)(val)};
+  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg, buf, 4);
+}
+
+/**
+ * Write default coefficient values for all DSP signal-path blocks in
+ * Book 0x8C that are NOT the EQ biquads.
+ *
+ * When USE_DEFAULT_COEFFS (REG_DSP_CTRL bit 0) is set, the DSP uses
+ * ROM defaults for everything.  When we clear that bit to load custom
+ * EQ coefficients, ALL coefficient RAM is used as-is — including the
+ * input mixer, volume, crossbar, etc.  If we haven't written those,
+ * they may be zero → no audio.
+ *
+ * Values from SLAA786A Table 9 (Process Flow 1, Book 0x8C).
+ * 9.23 unity = 0x00800000.
+ */
+static esp_err_t write_dsp_signal_path_defaults(void) {
   esp_err_t err;
+
+  ESP_LOGD(TAG, "DSP: writing signal-path defaults (Books 0x8C + 0xAA)");
+
+  /*
+   * ── Book 0x8C: control coefficients ──
+   * All values from SLAA786A Table 9 (Process Flow 1).
+   */
+  err = select_book_page(0x8C, 0x00);
+  if (err != ESP_OK)
+    return err;
+
+  /* Volume softening filter alpha (Page 0x01 Reg 0x2C) */
+  write_dsp_coeff32(0x01, 0x2C, 0x00E2C46B);
+
+  /*
+   * DRC — 3-band Dynamic Range Compression (Pages 0x06–0x07)
+   *
+   * The 3-band DRC splits the signal through crossover BQs into
+   * low/mid/high bands.  Each band has its own compressor, then the
+   * three outputs are summed with mixer gains.
+   *
+   * We set ALL THREE mixer gains to unity so the full reconstructed
+   * signal passes through regardless of what the crossover BQ filters
+   * contain (ROM-default crossover filters or our unity passthrough).
+   * With all slopes = 0, each band applies 0 dB gain (passthrough),
+   * and the 3-band sum = original signal.
+   */
+  write_dsp_coeff32(0x06, 0x58, 0x00800000); /* DRC1 mixer gain (unity) */
+  write_dsp_coeff32(0x06, 0x5C, 0x00800000); /* DRC2 mixer gain (unity) */
+  write_dsp_coeff32(0x06, 0x60, 0x00800000); /* DRC3 mixer gain (unity) */
+  /* DRC1 time constants */
+  write_dsp_coeff32(0x06, 0x64, 0x7FFFFFFF); /* DRC1 Energy  */
+  write_dsp_coeff32(0x06, 0x68, 0x7FFFFFFF); /* DRC1 Attack  */
+  write_dsp_coeff32(0x06, 0x6C, 0x7FFFFFFF); /* DRC1 Decay   */
+  /* DRC1 slopes and thresholds */
+  write_dsp_coeff32(0x06, 0x70, 0x00000000); /* K0_1 (no compression) */
+  write_dsp_coeff32(0x06, 0x74, 0x00000000); /* K1_1 */
+  write_dsp_coeff32(0x06, 0x78, 0x00000000); /* K2_1 */
+  write_dsp_coeff32(0x06, 0x7C, 0xE7000000); /* T1_1 threshold */
+  write_dsp_coeff32(0x07, 0x08, 0xFE800000); /* T2_1 threshold */
+  write_dsp_coeff32(0x07, 0x0C, 0x00000000); /* off1_1 */
+  write_dsp_coeff32(0x07, 0x10, 0x00000000); /* off2_1 */
+  /* DRC2 time constants */
+  write_dsp_coeff32(0x07, 0x14, 0x7FFFFFFF); /* DRC2 Energy  */
+  write_dsp_coeff32(0x07, 0x18, 0x7FFFFFFF); /* DRC2 Attack  */
+  write_dsp_coeff32(0x07, 0x1C, 0x7FFFFFFF); /* DRC2 Decay   */
+  /* DRC2 slopes and thresholds */
+  write_dsp_coeff32(0x07, 0x20, 0x00000000); /* k0_2 */
+  write_dsp_coeff32(0x07, 0x24, 0x00000000); /* k1_2 */
+  write_dsp_coeff32(0x07, 0x28, 0x00000000); /* k2_2 */
+  write_dsp_coeff32(0x07, 0x2C, 0xE7000000); /* t1_2 */
+  write_dsp_coeff32(0x07, 0x30, 0xFE800000); /* t2_2 */
+  write_dsp_coeff32(0x07, 0x34, 0x00000000); /* off1_2 */
+  write_dsp_coeff32(0x07, 0x38, 0x00000000); /* off2_2 */
+  /* DRC3 time constants */
+  write_dsp_coeff32(0x07, 0x3C, 0x7FFFFFFF); /* DRC3 Energy  */
+  write_dsp_coeff32(0x07, 0x40, 0x7FFFFFFF); /* DRC3 Attack  */
+  write_dsp_coeff32(0x07, 0x44, 0x7FFFFFFF); /* DRC3 Decay   */
+  /* DRC3 slopes and thresholds */
+  write_dsp_coeff32(0x07, 0x48, 0x00000000); /* k0_3 */
+  write_dsp_coeff32(0x07, 0x4C, 0x00000000); /* k1_3 */
+  write_dsp_coeff32(0x07, 0x50, 0x00000000); /* k2_3 */
+  write_dsp_coeff32(0x07, 0x54, 0xE7000000); /* t1_3 */
+  write_dsp_coeff32(0x07, 0x58, 0xFE800000); /* t2_3 */
+  write_dsp_coeff32(0x07, 0x5C, 0x00000000); /* off1_3 */
+  write_dsp_coeff32(0x07, 0x60, 0x00000000); /* off2_3 */
+
+  /* FS Clipper (Page 0x07) */
+  write_dsp_coeff32(0x07, 0x64, 0x00800000); /* THD Boost (unity) */
+  write_dsp_coeff32(0x07, 0x6C, 0x3FFFFFFF); /* CH-L Fine Volume  */
+  write_dsp_coeff32(0x07, 0x70, 0x3FFFFFFF); /* CH-R Fine Volume  */
+
+  /* DPEQ Control (Page 0x09) */
+  write_dsp_coeff32(0x09, 0x28, 0x02DEAD00); /* DPEQ sense energy alpha */
+  write_dsp_coeff32(0x09, 0x2C, 0x74013901); /* DPEQ threshold gain */
+  write_dsp_coeff32(0x09, 0x30, 0x0020C49B); /* DPEQ threshold offset */
+
+  /* Spatializer (Page 0x0A) */
+  write_dsp_coeff32(0x0A, 0x38, 0x00000000); /* Spatializer level (off) */
+
+  /* Output Crossbar (Page 0x0A) — default: straight stereo */
+  write_dsp_coeff32(0x0A, 0x64, 0x00800000); /* Dig L ← L  (unity) */
+  write_dsp_coeff32(0x0A, 0x68, 0x00000000); /* Dig L ← R  (zero)  */
+  write_dsp_coeff32(0x0A, 0x6C, 0x00000000); /* Dig R ← L  (zero)  */
+  write_dsp_coeff32(0x0A, 0x70, 0x00800000); /* Dig R ← R  (unity) */
+  write_dsp_coeff32(0x0A, 0x74, 0x00800000); /* Ana L ← L  (unity) */
+  write_dsp_coeff32(0x0A, 0x78, 0x00000000); /* Ana L ← R  (zero)  */
+  write_dsp_coeff32(0x0A, 0x7C, 0x00000000); /* Ana R ← L  (zero)  */
+  write_dsp_coeff32(0x0B, 0x08, 0x00800000); /* Ana R ← R  (unity) */
+
+  /* Volume Control (Page 0x0B) */
+  write_dsp_coeff32(0x0B, 0x0C, 0x00800000); /* CH-L Volume (unity) */
+  write_dsp_coeff32(0x0B, 0x10, 0x00800000); /* CH-R Volume (unity) */
+
+  /* Input Mixer (Page 0x0B) */
+  write_dsp_coeff32(0x0B, 0x14, 0x00800000); /* L → L (unity) */
+  write_dsp_coeff32(0x0B, 0x18, 0x00000000); /* R → L (zero)  */
+  write_dsp_coeff32(0x0B, 0x1C, 0x00000000); /* L → R (zero)  */
+  write_dsp_coeff32(0x0B, 0x20, 0x00800000); /* R → R (unity) */
+
+  /* Bypass DC Block (Page 0x0B) */
+  write_dsp_coeff32(0x0B, 0x24, 0x00000000);
+
+  /* EQ Control (Page 0x0B) */
+  write_dsp_coeff32(0x0B, 0x28, 0x00000000); /* GangEQ = 0 */
+  write_dsp_coeff32(0x0B, 0x2C, 0x00000000); /* BypassEQ = 0 */
+
+  /* Level Meter (Page 0x0B) */
+  write_dsp_coeff32(0x0B, 0x30, 0x00A7264A); /* Softening filter alpha */
+  write_dsp_coeff32(0x0B, 0x34, 0x00000000); /* Level meter input mux */
+
+  /* Bank Switch (Page 0x0C) */
+  write_dsp_coeff32(0x0C, 0x20, 0x00000000);
+
+  /*
+   * ── Book 0xAA: ALL biquad coefficient RAM ──
+   *
+   * The coefficient RAM is NOT pre-loaded with ROM defaults.  When we
+   * clear USE_DEFAULT_COEFFS, the DSP reads from RAM — any BQ slot we
+   * don't write will contain power-on garbage → wild filter response →
+   * pops, clicks, distortion.
+   *
+   * We must initialize EVERY BQ slot in Book 0xAA:
+   *   - 30 EQ BQs (15 L + 15 R) — from eq_left_addr / eq_right_addr
+   *   - 8 DRC crossover BQs — linear layout from Page 0x07:0x78
+   *   - 3 DPEQ BQs — Pages 0x09-0x0A
+   *   - 2 Spatializer BQs — Page 0x0A
+   *
+   * Memory model: addresses are LINEAR across pages (120 bytes per page,
+   * regs 0x08-0x7F).  BQs at the end of a page CROSS to the next page.
+   * This is confirmed by the EQ BQ table: BQ4 at reg 0x6C fills to
+   * 0x7F, BQ5 starts at reg 0x08 on the next page.
+   *
+   * Page-crossing BQs (DRC low BQ1, DRC mid BQ3) are written with
+   * individual write_dsp_coeff32() calls.  All others use the more
+   * efficient 20-byte burst write_biquad_coeff().
+   */
+  err = select_book_page(0xAA, 0x00);
+  if (err != ESP_OK) {
+    select_default_page();
+    return err;
+  }
+
+  /* Unity BQ: B0=1.0 (5.27), B1=B2=A1=A2=0 */
+  static const int32_t unity_bq[5] = {FP_ONE, 0, 0, 0, 0};
+
+  /*
+   * ── DRC crossover BQs (8 total, Pages 0x07-0x09) ──
+   * Linear from Page 0x07 Reg 0x78.
+   */
+
+  /* DRC low BQ1: 0x07:0x78 → crosses to 0x08 (use individual writes) */
+  write_dsp_coeff32(0x07, 0x78, FP_ONE);
+  write_dsp_coeff32(0x07, 0x7C, 0x00000000);
+  write_dsp_coeff32(0x08, 0x08, 0x00000000);
+  write_dsp_coeff32(0x08, 0x0C, 0x00000000);
+  write_dsp_coeff32(0x08, 0x10, 0x00000000);
+
+  /* DRC low BQ2: 0x08:0x14 (fits on page) */
+  write_biquad_coeff(0x08, 0x14, unity_bq);
+
+  /* DRC high BQ1: 0x08:0x28 (fits on page) */
+  write_biquad_coeff(0x08, 0x28, unity_bq);
+
+  /* DRC high BQ2: 0x08:0x3C (fits on page) */
+  write_biquad_coeff(0x08, 0x3C, unity_bq);
+
+  /* DRC mid BQ1: 0x08:0x50 (fits on page) */
+  write_biquad_coeff(0x08, 0x50, unity_bq);
+
+  /* DRC mid BQ2: 0x08:0x64 (fits: 0x64+19=0x77) */
+  write_biquad_coeff(0x08, 0x64, unity_bq);
+
+  /* DRC mid BQ3: 0x08:0x78 → crosses to 0x09 (use individual writes) */
+  write_dsp_coeff32(0x08, 0x78, FP_ONE);
+  write_dsp_coeff32(0x08, 0x7C, 0x00000000);
+  write_dsp_coeff32(0x09, 0x08, 0x00000000);
+  write_dsp_coeff32(0x09, 0x0C, 0x00000000);
+  write_dsp_coeff32(0x09, 0x10, 0x00000000);
+
+  /* DRC mid BQ4: 0x09:0x14 (fits on page) */
+  write_biquad_coeff(0x09, 0x14, unity_bq);
+
+  /*
+   * ── DPEQ BQs (3 total, Pages 0x09-0x0A) ──
+   */
+  write_biquad_coeff(0x09, 0x34, unity_bq); /* DPEQ sense BQ */
+  write_biquad_coeff(0x09, 0x5C, unity_bq); /* DPEQ low-level path BQ */
+  write_biquad_coeff(0x0A, 0x0C, unity_bq); /* DPEQ high-level path BQ */
+
+  /*
+   * ── Spatializer BQs (2 total, Page 0x0A) ──
+   */
+  write_biquad_coeff(0x0A, 0x3C, unity_bq); /* Spatializer BQ1 */
+  write_biquad_coeff(0x0A, 0x50, unity_bq); /* Spatializer BQ2 */
+
+  /*
+   * ── EQ BQs (30 total, Pages 0x01-0x06) ──
+   */
+  for (int bq = 0; bq < TAS58XX_EQ_BANDS; bq++) {
+    write_biquad_coeff(eq_left_addr[bq].page, eq_left_addr[bq].sub_addr,
+                       unity_bq);
+    write_biquad_coeff(eq_right_addr[bq].page, eq_right_addr[bq].sub_addr,
+                       unity_bq);
+  }
+
+  err = select_default_page();
+
+  s_dsp_defaults_written = true;
+  ESP_LOGD(TAG, "DSP: signal-path defaults written (Book 0x8C + 0xAA)");
+  return err;
+}
+
+/**
+ * Ensure the DSP is using host-downloaded coefficients (not ROM defaults).
+ * On the first call, mutes the output, writes default values for all
+ * non-EQ DSP blocks, clears USE_DEFAULT_COEFFS, then unmutes.
+ */
+static esp_err_t ensure_custom_coeffs_mode(void) {
+  uint8_t dsp_ctrl;
+  esp_err_t err = tas58xx_read_reg(REG_DSP_CTRL, &dsp_ctrl);
+  if (err != ESP_OK)
+    return err;
+
+  if (dsp_ctrl & 0x01) {
+    /* Mute while we reconfigure the entire coefficient RAM */
+    uint8_t saved_ctrl2 = 0;
+    tas58xx_read_reg(REG_DEVICE_CTRL2, &saved_ctrl2);
+    bool was_unmuted = !(saved_ctrl2 & CTRL2_MUTE);
+    if (was_unmuted) {
+      tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2 | CTRL2_MUTE);
+      vTaskDelay(pdMS_TO_TICKS(5)); /* let mute take effect */
+    }
+
+    /* Write all signal-path coefficients first */
+    if (!s_dsp_defaults_written) {
+      err = write_dsp_signal_path_defaults();
+      if (err != ESP_OK) {
+        if (was_unmuted)
+          tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+        return err;
+      }
+    }
+
+    /* Now safe to clear USE_DEFAULT_COEFFS */
+    ESP_LOGD(TAG, "DSP: clearing USE_DEFAULT_COEFFS");
+    err = tas58xx_write_reg(REG_DSP_CTRL, dsp_ctrl & ~0x01);
+
+    /* Verify the bit was actually cleared */
+    {
+      uint8_t verify = 0xFF;
+      tas58xx_read_reg(REG_DSP_CTRL, &verify);
+      uint8_t pgm = 0xFF;
+      tas58xx_read_reg(REG_DSP_PGM_MODE, &pgm);
+      ESP_LOGD(TAG,
+               "DSP: post-clear DSP_CTRL=0x%02X (expect 0x00) "
+               "DSP_PGM_MODE=0x%02X (expect 0x01)",
+               verify, pgm);
+      if (verify & 0x01) {
+        ESP_LOGE(TAG, "DSP: USE_DEFAULT_COEFFS still set!");
+      }
+      if (pgm != 0x01) {
+        ESP_LOGW(TAG,
+                 "DSP: unexpected DSP_PGM_MODE — process flow may be wrong! "
+                 "EQ addresses assume PF1 (0x01)");
+      }
+    }
+
+    /* Unmute */
+    if (was_unmuted) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+      tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+    }
+  }
+  return err;
+}
+
+/**
+ * Program one biquad on both channels using pre-computed 20-byte coefficient
+ * blocks from dac_tas58xx_eq_data.h.
+ *
+ * Enters Book 0xAA, writes CH-L then CH-R, returns to Book 0 / Page 0.
+ * Assumes the caller holds REG_LOCK.
+ */
+static esp_err_t program_biquad_raw(int bq,
+                                    const uint8_t data[EQ_COEFF_BYTES]) {
+  esp_err_t err;
+
+  /* Ensure DSP has all signal-path defaults before using custom coefficients */
+  err = ensure_custom_coeffs_mode();
+  if (err != ESP_OK)
+    return err;
 
   /* Enter coefficient book */
   err = select_book_page(BQ_COEFF_BOOK, 0x00);
@@ -785,27 +1133,79 @@ static esp_err_t program_biquad(int bq, const int32_t coeff[5]) {
     goto out;
 
   /* Channel 1 (Left) */
-  bq_address(CH1_BQ_BYTE_OFFSET, bq, &page, &reg);
-  err = write_biquad_coeff(page, reg, coeff);
+  err =
+      write_biquad_raw(eq_left_addr[bq].page, eq_left_addr[bq].sub_addr, data);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "EQ: CH1 BQ%d write failed: %s", bq, esp_err_to_name(err));
+    ESP_LOGE(TAG, "EQ: CH1 BQ%d raw write failed: %s", bq,
+             esp_err_to_name(err));
     goto out;
   }
 
   /* Channel 2 (Right) */
-  bq_address(CH2_BQ_BYTE_OFFSET, bq, &page, &reg);
-  err = write_biquad_coeff(page, reg, coeff);
+  err = write_biquad_raw(eq_right_addr[bq].page, eq_right_addr[bq].sub_addr,
+                         data);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "EQ: CH2 BQ%d write failed: %s", bq, esp_err_to_name(err));
+    ESP_LOGE(TAG, "EQ: CH2 BQ%d raw write failed: %s", bq,
+             esp_err_to_name(err));
     goto out;
   }
+
+  ESP_LOGD(TAG,
+           "EQ: BQ%d raw write OK (L page=0x%02X:0x%02X, R page=0x%02X:0x%02X)",
+           bq, eq_left_addr[bq].page, eq_left_addr[bq].sub_addr,
+           eq_right_addr[bq].page, eq_right_addr[bq].sub_addr);
 
 out:
   select_default_page();
   return err;
 }
 
+/**
+ * Write EQ mode control bytes to Book 0x8C Page 0x0B Reg 0x28.
+ * The 8 bytes control gang_eq (4 bytes) + bypass_eq (4 bytes).
+ * To enable EQ:  gang_eq = 0x00800000, bypass_eq = 0x00000000
+ * To disable EQ: gang_eq = 0x00800000, bypass_eq = 0x00000001
+ */
+static esp_err_t write_eq_mode(bool enable) {
+  esp_err_t err;
+
+  err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
+  if (err != ESP_OK)
+    return err;
+
+  uint8_t mode_data[EQ_MODE_SIZE] = {
+      0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
+      0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
+  };
+
+  err = i2c_bus_write(tas58xx_device_handle, tas58xx_addr, EQ_MODE_REG,
+                      mode_data, EQ_MODE_SIZE);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "EQ: mode write failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGD(TAG, "EQ: %s", enable ? "ENABLED" : "BYPASSED");
+  }
+
+  select_default_page();
+  return err;
+}
+
 /* ---------- Public API ---------- */
+
+esp_err_t tas58xx_eq_enable(bool enable) {
+  REG_LOCK();
+
+  /* Ensure DSP defaults are written before touching EQ mode */
+  esp_err_t err = ensure_custom_coeffs_mode();
+  if (err != ESP_OK) {
+    REG_UNLOCK();
+    return err;
+  }
+
+  err = write_eq_mode(enable);
+  REG_UNLOCK();
+  return err;
+}
 
 esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
   if (band < 0 || band >= TAS58XX_EQ_BANDS) {
@@ -813,47 +1213,90 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  /* Clamp gain */
-  if (gain_db > TAS58XX_EQ_MAX_GAIN_DB)
-    gain_db = TAS58XX_EQ_MAX_GAIN_DB;
-  if (gain_db < TAS58XX_EQ_MIN_GAIN_DB)
-    gain_db = TAS58XX_EQ_MIN_GAIN_DB;
+  /* Clamp gain to integer dB range of pre-computed table */
+  int gain_int = (int)roundf(gain_db);
+  if (gain_int > TAS58XX_EQ_MAX_GAIN_DB)
+    gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
+  if (gain_int < TAS58XX_EQ_MIN_GAIN_DB)
+    gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
 
-  ESP_LOGI(TAG, "EQ: band %d (%.0f Hz) -> %+.1f dB", band, eq_center_freq[band],
-           gain_db);
+  int idx = gain_int + EQ_GAIN_OFFSET;
+  ESP_LOGD(TAG, "EQ: band %d (%.0f Hz) -> %+d dB (table idx %d)", band,
+           eq_center_freq[band], gain_int, idx);
 
-  int32_t coeff[5];
-  calc_peaking_biquad(eq_center_freq[band], gain_db, EQ_DEFAULT_Q,
-                      EQ_SAMPLE_RATE, coeff);
-
-  return program_biquad(band, coeff);
+  REG_LOCK();
+  esp_err_t err = program_biquad_raw(band, eq_coeff_table[idx][band].bytes);
+  REG_UNLOCK();
+  return err;
 }
 
 esp_err_t tas58xx_eq_set_all(const float gains_db[TAS58XX_EQ_BANDS]) {
   if (!gains_db)
     return ESP_ERR_INVALID_ARG;
 
+  REG_LOCK();
+
+  /* Mute to prevent DSP glitches while bulk-updating coefficients */
+  uint8_t saved_ctrl2 = 0;
+  tas58xx_read_reg(REG_DEVICE_CTRL2, &saved_ctrl2);
+  if (!(saved_ctrl2 & CTRL2_MUTE)) {
+    tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2 | CTRL2_MUTE);
+  }
+
   esp_err_t first_err = ESP_OK;
   for (int i = 0; i < TAS58XX_EQ_BANDS; i++) {
-    esp_err_t err = tas58xx_eq_set_band(i, gains_db[i]);
+    int gain_int = (int)roundf(gains_db[i]);
+    if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB)
+      gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
+    if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB)
+      gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
+
+    int idx = gain_int + EQ_GAIN_OFFSET;
+    esp_err_t err = program_biquad_raw(i, eq_coeff_table[idx][i].bytes);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
     }
   }
+
+  /* Restore original mute state */
+  tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+
+  REG_UNLOCK();
   return first_err;
 }
 
 esp_err_t tas58xx_eq_flat(void) {
-  ESP_LOGI(TAG, "EQ: resetting all bands to flat");
-  int32_t flat[5] = {FP_ONE, 0, 0, 0, 0};
+  ESP_LOGD(TAG, "EQ: resetting all bands to flat");
+
+  /* Index for 0 dB gain = unity passthrough */
+  const int flat_idx = EQ_GAIN_OFFSET;
+
+  REG_LOCK();
+
+  /* Mute during bulk update */
+  uint8_t saved_ctrl2 = 0;
+  tas58xx_read_reg(REG_DEVICE_CTRL2, &saved_ctrl2);
+  if (!(saved_ctrl2 & CTRL2_MUTE)) {
+    tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2 | CTRL2_MUTE);
+  }
 
   esp_err_t first_err = ESP_OK;
   for (int i = 0; i < TAS58XX_EQ_BANDS; i++) {
-    esp_err_t err = program_biquad(i, flat);
+    esp_err_t err = program_biquad_raw(i, eq_coeff_table[flat_idx][i].bytes);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
     }
   }
+
+  /* Enable EQ after programming flat coefficients */
+  if (first_err == ESP_OK) {
+    first_err = write_eq_mode(true);
+  }
+
+  /* Restore original mute state */
+  tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+
+  REG_UNLOCK();
   return first_err;
 }
 
@@ -864,33 +1307,35 @@ float tas58xx_eq_get_center_freq(int band) {
 }
 
 esp_err_t tas58xx_eq_verify_addresses(void) {
-  ESP_LOGI(TAG, "EQ: verifying biquad addresses (Book 0x%02X, 5.27 format)...",
+  ESP_LOGD(TAG, "EQ: verifying biquad addresses (Book 0x%02X, 5.27)...",
            BQ_COEFF_BOOK);
 
+  REG_LOCK();
+
   esp_err_t err;
+
+  /* Read DSP_PGM_MODE and DSP_CTRL for diagnostics */
+  {
+    uint8_t pgm_mode = 0, dsp_ctrl = 0;
+    tas58xx_read_reg(REG_DSP_PGM_MODE, &pgm_mode);
+    tas58xx_read_reg(REG_DSP_CTRL, &dsp_ctrl);
+    ESP_LOGD(TAG,
+             "EQ: DSP_PGM_MODE=0x%02X DSP_CTRL=0x%02X "
+             "(USE_DEFAULT_COEFFS=%s)",
+             pgm_mode, dsp_ctrl, (dsp_ctrl & 0x01) ? "YES" : "no");
+  }
+
   err = select_book_page(BQ_COEFF_BOOK, 0x00);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "EQ: cannot select coefficient book 0x%02X", BQ_COEFF_BOOK);
     select_default_page();
+    REG_UNLOCK();
     return err;
   }
 
   /*
-   * Verify strategy: write-and-readback test.
-   *
-   * Rather than relying on ROM Mode 1 initializing all biquads to flat
-   * (it doesn't — some biquads are used for internal DSP processing),
-   * we test each address by:
-   *   1. Reading the original value
-   *   2. Writing a known test pattern
-   *   3. Reading it back
-   *   4. Restoring the original value
-   *
-   * If the readback matches the test pattern, that address is writable
-   * coefficient RAM and our address mapping is correct.
-   *
-   * Coefficient format: 5.27 fixed-point.
-   * Flat (unity passthrough): {0x08000000, 0, 0, 0, 0}.
+   * Verify strategy: write-and-readback test at each EQ biquad address.
+   * Uses eq_left_addr[] / eq_right_addr[] from dac_tas58xx_eq_data.h.
    */
   const int32_t test_pattern[5] = {0x07654321, 0x01234567, 0x0ABCDEF0,
                                    0x05A5A5A5, 0x0F0F0F0F};
@@ -899,15 +1344,15 @@ esp_err_t tas58xx_eq_verify_addresses(void) {
   int ch1_flat = 0, ch2_flat = 0;
 
   for (int ch = 0; ch < 2; ch++) {
-    int ch_offset = (ch == 0) ? CH1_BQ_BYTE_OFFSET : CH2_BQ_BYTE_OFFSET;
     const char *ch_str = (ch == 0) ? "CH1" : "CH2";
+    const eq_bq_addr_t *addr = (ch == 0) ? eq_left_addr : eq_right_addr;
     int *ok = (ch == 0) ? &ch1_ok : &ch2_ok;
     int *fail = (ch == 0) ? &ch1_fail : &ch2_fail;
     int *flat = (ch == 0) ? &ch1_flat : &ch2_flat;
 
     for (int bq = 0; bq < TAS58XX_EQ_BANDS; bq++) {
-      uint8_t page, reg;
-      bq_address(ch_offset, bq, &page, &reg);
+      uint8_t page = addr[bq].page;
+      uint8_t reg = addr[bq].sub_addr;
 
       /* 1. Read original coefficients */
       int32_t orig[5];
@@ -922,8 +1367,15 @@ esp_err_t tas58xx_eq_verify_addresses(void) {
       /* Check if this biquad has flat (unity) coefficients */
       bool is_flat_bq = (orig[0] == FP_ONE && orig[1] == 0 && orig[2] == 0 &&
                          orig[3] == 0 && orig[4] == 0);
-      if (is_flat_bq)
+      if (is_flat_bq) {
         (*flat)++;
+      } else {
+        ESP_LOGD(TAG,
+                 "  %s BQ%02d NON-FLAT page=0x%02X:0x%02X "
+                 "B0=0x%08lX B1=0x%08lX B2=0x%08lX A1=0x%08lX A2=0x%08lX",
+                 ch_str, bq, page, reg, (long)orig[0], (long)orig[1],
+                 (long)orig[2], (long)orig[3], (long)orig[4]);
+      }
 
       /* 2. Write test pattern */
       err = write_biquad_coeff(page, reg, test_pattern);
@@ -965,21 +1417,21 @@ esp_err_t tas58xx_eq_verify_addresses(void) {
 
   select_default_page();
 
-  ESP_LOGI(TAG,
+  ESP_LOGD(TAG,
            "EQ verify: CH1 %d/%d writable (%d flat), "
            "CH2 %d/%d writable (%d flat)",
            ch1_ok, TAS58XX_EQ_BANDS, ch1_flat, ch2_ok, TAS58XX_EQ_BANDS,
            ch2_flat);
 
-  /* Log computed addresses for reference */
-  for (int ch = 0; ch < 2; ch++) {
-    int ch_offset = (ch == 0) ? CH1_BQ_BYTE_OFFSET : CH2_BQ_BYTE_OFFSET;
-    uint8_t p0, r0, pn, rn;
-    bq_address(ch_offset, 0, &p0, &r0);
-    bq_address(ch_offset, TAS58XX_EQ_BANDS - 1, &pn, &rn);
-    ESP_LOGI(TAG, "  %s: BQ00=page 0x%02X:0x%02X .. BQ14=page 0x%02X:0x%02X",
-             (ch == 0) ? "CH1" : "CH2", p0, r0, pn, rn);
-  }
+  /* Log EQ address ranges for reference */
+  ESP_LOGD(TAG, "  CH1: BQ01=page 0x%02X:0x%02X .. BQ15=page 0x%02X:0x%02X",
+           eq_left_addr[0].page, eq_left_addr[0].sub_addr,
+           eq_left_addr[TAS58XX_EQ_BANDS - 1].page,
+           eq_left_addr[TAS58XX_EQ_BANDS - 1].sub_addr);
+  ESP_LOGD(TAG, "  CH2: BQ01=page 0x%02X:0x%02X .. BQ15=page 0x%02X:0x%02X",
+           eq_right_addr[0].page, eq_right_addr[0].sub_addr,
+           eq_right_addr[TAS58XX_EQ_BANDS - 1].page,
+           eq_right_addr[TAS58XX_EQ_BANDS - 1].sub_addr);
 
   int total_ok = ch1_ok + ch2_ok;
   int total_expected = TAS58XX_EQ_BANDS * 2;
@@ -988,11 +1440,12 @@ esp_err_t tas58xx_eq_verify_addresses(void) {
              total_expected - total_ok, total_expected);
   }
 
-  return (total_ok == total_expected) ? ESP_OK : ESP_ERR_NOT_FOUND;
+  esp_err_t result = (total_ok == total_expected) ? ESP_OK : ESP_ERR_NOT_FOUND;
+  REG_UNLOCK();
+  return result;
 }
 
 /* =====================  I2C Bus  ===================== */
-
 static esp_err_t i2c_init(int i2c_port, int sda_io, int scl_io) {
   esp_err_t err;
 

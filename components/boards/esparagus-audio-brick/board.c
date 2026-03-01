@@ -11,7 +11,9 @@
 
 #include "dac.h"
 #include "dac_tas58xx.h"
+#include "dac_tas58xx_eq.h"
 #include "driver/gpio.h"
+#include "eq_events.h"
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -36,7 +38,10 @@ static volatile bool speaker_fault_active = false;
 
 static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data);
+static void on_eq_event(eq_event_t event, const eq_event_data_t *data,
+                        void *user_data);
 static esp_err_t init_spkfault_gpio(void);
+static void restore_eq_from_nvs(void);
 
 const char *iot_board_get_info(void) {
   return BOARD_NAME;
@@ -115,6 +120,9 @@ esp_err_t iot_board_init(void) {
   // Register for RTSP events to control DAC power
   rtsp_events_register(on_rtsp_event, NULL);
 
+  // Register for EQ events to persist + apply to DAC
+  eq_events_register(on_eq_event, NULL);
+
   // Configure speaker fault detection
   err = init_spkfault_gpio();
   if (err != ESP_OK) {
@@ -148,6 +156,7 @@ esp_err_t iot_board_deinit(void) {
     gpio_task_handle = NULL;
   }
   rtsp_events_unregister(on_rtsp_event);
+  eq_events_unregister(on_eq_event);
 
   dac_enable_speaker(false);
   dac_set_power_mode(DAC_POWER_OFF);
@@ -168,6 +177,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     break;
   case RTSP_EVENT_PLAYING:
     dac_set_power_mode(DAC_POWER_ON);
+    restore_eq_from_nvs();
     break;
   case RTSP_EVENT_DISCONNECTED:
     dac_set_power_mode(DAC_POWER_OFF);
@@ -224,4 +234,66 @@ static esp_err_t init_spkfault_gpio(void) {
 #else
   return ESP_ERR_NOT_FOUND;
 #endif
+}
+
+/* ------------------------------------------------------------------ */
+/*  EQ event handling                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * EQ event listener — persists gains to NVS and applies to hardware.
+ */
+static void on_eq_event(eq_event_t event, const eq_event_data_t *data,
+                        void *user_data) {
+  (void)user_data;
+
+  switch (event) {
+  case EQ_EVENT_ALL_BANDS_SET:
+    if (data) {
+      /* Persist to NVS */
+      settings_set_eq_gains(data->all_bands.gains_db);
+      /* Apply to DAC hardware */
+      tas58xx_eq_set_all(data->all_bands.gains_db);
+      ESP_LOGI(TAG, "EQ: all bands updated and saved");
+    }
+    break;
+
+  case EQ_EVENT_BAND_CHANGED:
+    if (data) {
+      /* Apply single band to hardware */
+      tas58xx_eq_set_band(data->band_changed.band, data->band_changed.gain_db);
+      /* Read-modify-write NVS cache */
+      float gains[SETTINGS_EQ_BANDS];
+      if (settings_get_eq_gains(gains) != ESP_OK) {
+        memset(gains, 0, sizeof(gains));
+      }
+      gains[data->band_changed.band] = data->band_changed.gain_db;
+      settings_set_eq_gains(gains);
+    }
+    break;
+
+  case EQ_EVENT_FLAT:
+    tas58xx_eq_flat();
+    settings_clear_eq();
+    ESP_LOGI(TAG, "EQ: reset to flat");
+    break;
+  }
+}
+
+/**
+ * Restore saved EQ gains from NVS and apply to the DAC.
+ * Called after DAC enters PLAY (PLL locked, biquads accessible).
+ */
+static void restore_eq_from_nvs(void) {
+  float gains[SETTINGS_EQ_BANDS];
+  if (settings_get_eq_gains(gains) == ESP_OK) {
+    esp_err_t err = tas58xx_eq_set_all(gains);
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "EQ: restored %d bands from NVS", SETTINGS_EQ_BANDS);
+    } else {
+      ESP_LOGW(TAG, "EQ: failed to restore from NVS: %s", esp_err_to_name(err));
+    }
+  } else {
+    ESP_LOGD(TAG, "EQ: no saved gains, using default (flat)");
+  }
 }

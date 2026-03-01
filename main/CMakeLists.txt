@@ -36,6 +36,7 @@ set( SRC_FILES
     "network/ota.c"
     "network/dns_server.c"
     "led.c"
+    "audio/eq_events.c"
 )
 
 # Select audio output implementation at compile time

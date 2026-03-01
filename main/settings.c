@@ -12,6 +12,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_WIFI_SSID     "wifi_ssid"
 #define NVS_KEY_WIFI_PASSWORD "wifi_pass"
 #define NVS_KEY_DEVICE_NAME   "device_name"
+#define NVS_KEY_EQ_GAINS      "eq_gains"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -20,6 +21,9 @@ static const char *TAG = "settings";
 // Cached values
 static float g_volume_db = 0.0f;
 static bool g_volume_loaded = false;
+
+static float g_eq_gains[SETTINGS_EQ_BANDS];
+static bool g_eq_loaded = false;
 
 esp_err_t settings_init(void) {
   // Load volume on init
@@ -33,6 +37,15 @@ esp_err_t settings_init(void) {
       g_volume_loaded = true;
       ESP_LOGI(TAG, "Loaded volume: %.2f dB", g_volume_db);
     }
+
+    /* Load EQ gains blob */
+    size_t eq_size = sizeof(g_eq_gains);
+    err = nvs_get_blob(nvs, NVS_KEY_EQ_GAINS, g_eq_gains, &eq_size);
+    if (err == ESP_OK && eq_size == sizeof(g_eq_gains)) {
+      g_eq_loaded = true;
+      ESP_LOGI(TAG, "Loaded EQ gains (%d bands)", SETTINGS_EQ_BANDS);
+    }
+
     nvs_close(nvs);
   }
 
@@ -220,4 +233,80 @@ esp_err_t settings_set_device_name(const char *name) {
   }
 
   return err;
+}
+
+/* ================================================================== */
+/*  EQ Gains                                                           */
+/* ================================================================== */
+
+esp_err_t settings_get_eq_gains(float gains_db[SETTINGS_EQ_BANDS]) {
+  if (!gains_db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (!g_eq_loaded) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  memcpy(gains_db, g_eq_gains, sizeof(g_eq_gains));
+  return ESP_OK;
+}
+
+esp_err_t settings_set_eq_gains(const float gains_db[SETTINGS_EQ_BANDS]) {
+  if (!gains_db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  /* Skip write if unchanged */
+  if (g_eq_loaded && memcmp(gains_db, g_eq_gains, sizeof(g_eq_gains)) == 0) {
+    return ESP_OK;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_EQ_GAINS, gains_db,
+                     sizeof(float) * SETTINGS_EQ_BANDS);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    memcpy(g_eq_gains, gains_db, sizeof(g_eq_gains));
+    g_eq_loaded = true;
+    ESP_LOGI(TAG, "Saved EQ gains (%d bands)", SETTINGS_EQ_BANDS);
+  } else {
+    ESP_LOGE(TAG, "Failed to save EQ gains: %s", esp_err_to_name(err));
+  }
+
+  return err;
+}
+
+esp_err_t settings_clear_eq(void) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = nvs_erase_key(nvs, NVS_KEY_EQ_GAINS);
+  if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
+    nvs_commit(nvs);
+    memset(g_eq_gains, 0, sizeof(g_eq_gains));
+    g_eq_loaded = false;
+    err = ESP_OK;
+  }
+
+  nvs_close(nvs);
+  return err;
+}
+
+bool settings_has_eq(void) {
+  return g_eq_loaded;
 }
