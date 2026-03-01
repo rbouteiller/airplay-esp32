@@ -70,3 +70,31 @@ esp_err_t settings_get_device_name(char *name, size_t len);
  * @param name Device name
  */
 esp_err_t settings_set_device_name(const char *name);
+
+// ---- EQ settings ----
+
+/** Number of EQ bands stored in NVS */
+#define SETTINGS_EQ_BANDS 15
+
+/**
+ * Get saved EQ gains.
+ * @param gains_db Output array of SETTINGS_EQ_BANDS floats
+ * @return ESP_OK if found, ESP_ERR_NOT_FOUND if no saved EQ
+ */
+esp_err_t settings_get_eq_gains(float gains_db[SETTINGS_EQ_BANDS]);
+
+/**
+ * Save EQ gains to persistent storage.
+ * @param gains_db Array of SETTINGS_EQ_BANDS floats (dB)
+ */
+esp_err_t settings_set_eq_gains(const float gains_db[SETTINGS_EQ_BANDS]);
+
+/**
+ * Clear saved EQ (revert to flat on next boot).
+ */
+esp_err_t settings_clear_eq(void);
+
+/**
+ * Check if EQ gains are saved.
+ */
+bool settings_has_eq(void);
