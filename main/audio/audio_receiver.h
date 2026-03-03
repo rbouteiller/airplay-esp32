@@ -109,19 +109,32 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples);
 bool audio_receiver_has_data(void);
 
 /**
- * Flush audio buffer (full stop path — does not remap anchor timing).
+ * Flush audio buffer (full stop path — used by TEARDOWN and stop).
  */
 void audio_receiver_flush(void);
 
 /**
- * Flush audio buffer for a mid-stream seek (FLUSH / FLUSHBUFFERED).
- * Identical to audio_receiver_flush() but also sets an internal flag so
- * that the next anchor received via audio_receiver_set_anchor_time() has its
- * network_time_ns remapped to now + output_latency.  This prevents the phone's
- * pre-buffer depth (up to ~5 s) from appearing as silence at the start of
- * the new position.
+ * Flush audio buffer for a mid-stream seek (FLUSH / immediate FLUSHBUFFERED).
+ * Identical to audio_receiver_flush() but also sets timing.post_flush so
+ * that audio_timing_read plays frames immediately after the seek instead of
+ * silencing them during the phone's pre-buffer window (which can be several
+ * seconds with AirPlay 2 buffered streams).  Mirrors shairport-sync's
+ * first_packet_timestamp==0 behaviour: post-flush frames play unconditionally
+ * until the anchor reports on-time (early_us < TIMING_THRESHOLD_US).
  */
 void audio_receiver_seek_flush(void);
+
+/**
+ * Arm a deferred flush for AirPlay 2 FLUSHBUFFERED with flushFromSeq.
+ *
+ * Instead of discarding the buffer immediately, audio_timing_read will
+ * continue playing normally until it encounters a frame whose rtp_timestamp
+ * >= flush_until_ts, at which point it bulk-flushes the remainder and sets
+ * post_flush so the next track starts without delay.
+ *
+ * @param flush_until_ts  RTP timestamp boundary from flushUntilTS plist key.
+ */
+void audio_receiver_set_deferred_flush(uint32_t flush_until_ts);
 
 /**
  * Pause playback while preserving the timing anchor.
@@ -210,3 +223,14 @@ void audio_receiver_stop_buffered_only(void);
  * Set the stream type (realtime vs buffered)
  */
 void audio_receiver_set_stream_type(audio_stream_type_t type);
+
+/**
+ * Set a deferred flush: keep playing until RTP timestamp flush_until_ts,
+ * then bulk-flush the buffer and resume fresh (post_flush = true so the
+ * first new-track frame plays immediately without waiting for a pre-buffer).
+ * Called by handle_flushbuffered when flushFromSeq/flushUntilTS are present.
+ * Thread-safe: flush_until_ts is written before the bool flag so the DMA
+ * callback task always reads a consistent value (release on write,
+ * acquire on read — natural on Xtensa aligned 32-bit stores/loads).
+ */
+void audio_receiver_set_deferred_flush(uint32_t flush_until_ts);

@@ -1,17 +1,16 @@
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "audio_receiver.h"
 
 #include "esp_log.h"
-#include "esp_timer.h"
 
 #include "audio_buffer.h"
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
-#include "ntp_clock.h"
 #include "ptp_clock.h"
 
 #define DEFAULT_SAMPLE_RATE     44100
@@ -166,33 +165,6 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                                     uint32_t rtp_time) {
   if (!receiver.stream) {
     return;
-  }
-
-  // Post-flush seek remap: the phone encodes the pre-buffer depth into
-  // network_time_ns when it sends the first anchor after FLUSH/FLUSHBUFFERED
-  // (it sends T = now + pre_buffer_depth, e.g. 5 s ahead).  This causes
-  // compute_early_us to return ~5 s, resulting in ~5 s of silence.  Remap to
-  // now + output_latency so the anchor frame plays immediately after buffer
-  // warm-up, matching the behaviour seen after pause/resume.
-  if (receiver.post_flush) {
-    receiver.post_flush = false;
-    int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
-    int64_t output_ns =
-        (int64_t)audio_timing_get_output_latency(&receiver.timing) * 1000LL;
-    int64_t target_local_ns = now_ns + output_ns;
-    int64_t original_ahead_ms = ((int64_t)network_time_ns - now_ns) / 1000000LL;
-    if (ptp_clock_is_locked()) {
-      network_time_ns =
-          (uint64_t)(target_local_ns + ptp_clock_get_offset_ns());
-    } else if (ntp_clock_is_locked()) {
-      network_time_ns =
-          (uint64_t)(target_local_ns + ntp_clock_get_offset_ns());
-    }
-    // SYNC_MODE_NONE: audio_timing_set_anchor sets anchor_local_time_ns=now_ns
-    // which already gives an on-time reference; no network_time override needed.
-    ESP_LOGI(TAG,
-             "seek_flush anchor remap: phone pre-buffer ~%lld ms -> now+%lld ms",
-             (long long)original_ahead_ms, (long long)(output_ns / 1000000LL));
   }
 
   // Detect a seek where the buffer content is far displaced from the new
@@ -425,6 +397,8 @@ bool audio_receiver_has_data(void) {
 void audio_receiver_flush(void) {
   // Flush is an explicit reset — clear all timing state including pause
   // tracking.  The sender will provide fresh anchor times after flush.
+  // Also disarm any pending deferred flush so it does not fire on the
+  // next track's frames.
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
 
@@ -432,12 +406,26 @@ void audio_receiver_flush(void) {
 }
 
 void audio_receiver_seek_flush(void) {
-  // Mid-stream seek flush: same as audio_receiver_flush() but sets post_flush
-  // so that the next anchor is remapped to now + output_latency (preventing
-  // the phone's pre-buffer depth from becoming ~5 s of startup silence).
+  // Mid-stream seek flush (FLUSH / immediate FLUSHBUFFERED).  Like
+  // audio_receiver_flush() but sets timing.post_flush so audio_timing_read
+  // plays frames immediately after the seek instead of silencing them while
+  // the anchor's pre-buffer window (several seconds) elapses.
+  // Also disarms any pending deferred flush (audio_timing_reset clears it).
   audio_receiver_flush();
-  receiver.post_flush = true;
+  receiver.timing.post_flush = true;
 }
+
+void audio_receiver_set_deferred_flush(uint32_t flush_until_ts) {
+  if (!receiver.stream) {
+    return;
+  }
+  // Write flush_until_ts before arming the flag so audio_timing_read never
+  // sees deferred_flush_pending=true with a stale timestamp.
+  receiver.timing.flush_until_ts = flush_until_ts;
+  receiver.timing.deferred_flush_pending = true;
+  ESP_LOGI(TAG, "Deferred flush armed: flush_until_ts=%" PRIu32, flush_until_ts);
+}
+
 
 void audio_receiver_pause(void) {
   // Stop the consumer.  The receiver tasks keep running so the audio buffer

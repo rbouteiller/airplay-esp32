@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -140,6 +141,9 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->ready_time_us = 0;
   timing->consecutive_early_frames = 0;
   timing->consecutive_late_frames = 0;
+  timing->post_flush = false;
+  timing->deferred_flush_pending = false;
+  timing->flush_until_ts = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -312,47 +316,88 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       frame_samples = samples;
     }
 
+    // Deferred flush check (AirPlay 2 FLUSHBUFFERED with flushFromSeq):
+    // keep playing until the frame whose RTP timestamp reaches flush_until_ts,
+    // then bulk-flush the remainder of the buffer and start fresh.
+    // Signed 32-bit subtraction handles RTP wraparound correctly.
+    if (timing->deferred_flush_pending) {
+      if ((int32_t)(hdr->rtp_timestamp - timing->flush_until_ts) >= 0) {
+        ESP_LOGI(TAG,
+                 "Deferred flush triggered at ts=%" PRIu32
+                 " (until_ts=%" PRIu32 ")",
+                 hdr->rtp_timestamp, timing->flush_until_ts);
+        if (from_pending) {
+          timing->pending_valid = false;
+          timing->pending_frame_len = 0;
+        } else {
+          audio_buffer_return(buffer, item);
+        }
+        audio_buffer_flush(buffer);
+        timing->deferred_flush_pending = false;
+        timing->playout_started = false;
+        timing->ready_time_us = 0;
+        timing->consecutive_early_frames = 0;
+        timing->consecutive_late_frames = 0;
+        // post_flush = true so the first frame of the next track plays
+        // immediately rather than waiting out the phone's pre-buffer window.
+        timing->post_flush = true;
+        return 0;
+      }
+    }
+
     // Handle early/late frames based on anchor timing
     if (timing->anchor_valid && format->sample_rate > 0) {
       int64_t early_us = 0;
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
         if (early_us > TIMING_THRESHOLD_US) {
-          timing->consecutive_early_frames++;
-
-          // If we have had an implausibly long run of early frames the anchor
-          // is probably stuck or wrong — give up on it so playback can
-          // continue.  This threshold is high enough (~6 s) that it never
-          // fires during normal pre-buffered-audio scenarios.
-          if (timing->consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
-            ESP_LOGW(TAG,
-                     "Invalidating stuck anchor: consecutive=%d, early=%lld ms",
-                     timing->consecutive_early_frames, early_us / 1000LL);
-            timing->anchor_valid = false;
+          if (timing->post_flush) {
+            // Post-seek: play the frame immediately regardless of how early it
+            // is.  The phone encodes its pre-buffer depth (can be several
+            // seconds) into the anchor's network_time_ns.  Silencing those
+            // frames causes the lag the user hears.  This mirrors
+            // shairport-sync's first_packet_timestamp==0 path: play
+            // unconditionally after a flush and let normal timing re-engage
+            // once the anchor reports on-time (early_us < TIMING_THRESHOLD_US).
             timing->consecutive_early_frames = 0;
-            // Fall through to play the frame normally
+            // Fall through to play the frame.
           } else {
-            // Frame is early — store it as pending and output silence.
-            // The pending frame is re-checked on every subsequent call;
-            // once wall-clock catches up it will be played on time.
-            // This is the normal path for pre-buffered audio after a pause.
-            static int early_count = 0;
-            early_count++;
-            if (early_count % 100 == 1) {
-              ESP_LOGD(TAG,
-                       "Frame too early #%d: %lld ms, buffered=%d, pending=%d",
-                       early_count, early_us / 1000LL, buffered_frames,
-                       timing->pending_valid ? 1 : 0);
+            timing->consecutive_early_frames++;
+
+            // If we have had an implausibly long run of early frames the anchor
+            // is probably stuck or wrong — give up on it so playback can
+            // continue.  This threshold is high enough (~6 s) that it never
+            // fires during normal pre-buffered-audio scenarios.
+            if (timing->consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
+              ESP_LOGW(TAG,
+                       "Invalidating stuck anchor: consecutive=%d, early=%lld ms",
+                       timing->consecutive_early_frames, early_us / 1000LL);
+              timing->anchor_valid = false;
+              timing->consecutive_early_frames = 0;
+              // Fall through to play the frame normally
+            } else {
+              // Frame is early — store it as pending and output silence.
+              // The pending frame is re-checked on every subsequent call;
+              // once wall-clock catches up it will be played on time.
+              // This is the normal path for pre-buffered audio after a pause.
+              static int early_count = 0;
+              early_count++;
+              if (early_count % 100 == 1) {
+                ESP_LOGD(TAG,
+                         "Frame too early #%d: %lld ms, buffered=%d, pending=%d",
+                         early_count, early_us / 1000LL, buffered_frames,
+                         timing->pending_valid ? 1 : 0);
+              }
+              if (!from_pending && timing->pending_frame &&
+                  item_size <= timing->pending_frame_capacity) {
+                memcpy(timing->pending_frame, item, item_size);
+                timing->pending_frame_len = item_size;
+                timing->pending_valid = true;
+                audio_buffer_return(buffer, item);
+              }
+              memset(out, 0, samples * channels * sizeof(int16_t));
+              return samples;
             }
-            if (!from_pending && timing->pending_frame &&
-                item_size <= timing->pending_frame_capacity) {
-              memcpy(timing->pending_frame, item, item_size);
-              timing->pending_frame_len = item_size;
-              timing->pending_valid = true;
-              audio_buffer_return(buffer, item);
-            }
-            memset(out, 0, samples * channels * sizeof(int16_t));
-            return samples;
           }
         } else if (early_us < -TIMING_THRESHOLD_US) {
           // Reset consecutive early counter on late/normal frames
@@ -407,9 +452,14 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       }
     }
 
-    // Frame is on time - reset both direction counters
+    // Frame is on time - reset both direction counters, and exit the
+    // post-seek bypass mode now that the anchor has caught up to real time.
     timing->consecutive_early_frames = 0;
     timing->consecutive_late_frames = 0;
+    if (timing->post_flush) {
+      ESP_LOGI(TAG, "post_flush: anchor on-time, resuming normal timing");
+      timing->post_flush = false;
+    }
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));

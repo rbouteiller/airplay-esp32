@@ -32,6 +32,19 @@ typedef struct {
   // after a track skip where the anchor network_time has already passed) and a
   // bulk flush is triggered instead of draining frame-by-frame.
   int consecutive_late_frames;
+  // Post-seek/skip flag: set by audio_receiver_seek_flush() via
+  // audio_timing_t so that audio_timing_read plays frames immediately rather
+  // than silencing them during the phone's pre-buffer window (which can be
+  // several seconds).  Cleared automatically on the first on-time frame,
+  // matching shairport-sync's first_packet_timestamp==0 behaviour.
+  bool post_flush;
+  // Deferred flush (AirPlay 2 FLUSHBUFFERED with flushFromSeq present):
+  // keep playing until a frame with rtp_timestamp >= flush_until_ts arrives,
+  // then bulk-flush and start fresh.  Written by the RTSP task, read by the
+  // DMA callback task.  Aligned 32-bit + bool — atomic on Xtensa without a
+  // mutex (write flush_until_ts first, arm bool second; read bool first).
+  bool deferred_flush_pending;
+  uint32_t flush_until_ts;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);

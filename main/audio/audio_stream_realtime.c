@@ -279,9 +279,15 @@ static void control_receiver_task(void *pvParameters) {
     switch (packet_type) {
     case 0xD4: // AirPlay 1 sync packet (NTP timing)
     case 0x54: // Same as 0xD4 but without extension bit
-      // Format: [4] current RTP, [8] NTP secs, [12] NTP frac, [16] next RTP
+      // Layout (per shairport-sync / Apple protocol documentation):
+      //   [4-7]  rtp_timestamp_less_latency  — the RTP frame PLAYING at the
+      //          NTP time in [8-15].  This is the correct anchor RTP.
+      //   [8-11] NTP seconds
+      //   [12-15] NTP fraction
+      //   [16-19] sync_rtp_timestamp — the RTP frame currently being SENT
+      //           (ahead by the stream latency).  Do NOT use as anchor.
       if (len >= 20) {
-        uint32_t rtp_timestamp = nctoh32(packet + 16);
+        uint32_t rtp_timestamp = nctoh32(packet + 4); // rtp_timestamp_less_latency
         uint64_t ntp_secs = nctoh32(packet + 8);
         uint64_t ntp_frac = nctoh32(packet + 12);
         uint64_t network_time_ns =

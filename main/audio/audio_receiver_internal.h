@@ -51,11 +51,6 @@ typedef struct {
   struct sockaddr_in client_control_addr; // Client's control address for NACKs
   bool retransmit_enabled;                // True when client address is set
   int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
-  // When true, the next call to audio_receiver_set_anchor_time() will remap
-  // the anchor's network_time_ns so the anchor RTP frame plays at
-  // now + output_latency instead of now + phone_prebuffer_depth.  Set by
-  // audio_receiver_seek_flush() and cleared once the anchor is remapped.
-  bool post_flush;
 } audio_receiver_state_t;
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,

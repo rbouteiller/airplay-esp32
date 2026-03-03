@@ -287,6 +287,9 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
 static void handle_flush(int socket, rtsp_conn_t *conn,
                          const rtsp_request_t *req, const uint8_t *raw,
                          size_t raw_len);
+static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
+                                 const rtsp_request_t *req, const uint8_t *raw,
+                                 size_t raw_len);
 static void handle_teardown(int socket, rtsp_conn_t *conn,
                             const rtsp_request_t *req, const uint8_t *raw,
                             size_t raw_len);
@@ -309,7 +312,7 @@ static const rtsp_method_handler_t method_handlers[] = {
     {"GET_PARAMETER", handle_get_parameter},
     {"PAUSE", handle_pause},
     {"FLUSH", handle_flush},
-    {"FLUSHBUFFERED", handle_flush},
+    {"FLUSHBUFFERED", handle_flushbuffered},
     {"TEARDOWN", handle_teardown},
     {"SETRATEANCHORTIME", handle_setrateanchortime},
     {"SETPEERS", handle_setpeers},
@@ -1295,8 +1298,59 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
+  // Plain AirPlay 1 FLUSH — always immediate.
   audio_receiver_seek_flush();
   audio_output_flush();
+  rtsp_send_ok(socket, conn, req->cseq);
+}
+
+static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
+                                 const rtsp_request_t *req, const uint8_t *raw,
+                                 size_t raw_len) {
+  (void)raw;
+  (void)raw_len;
+
+  const uint8_t *body = req->body;
+  size_t body_len = req->body_len;
+
+  // AirPlay 2 FLUSHBUFFERED carries an optional bplist with:
+  //   flushFromSeq / flushFromTS  — first sequence/timestamp to discard
+  //   flushUntilSeq / flushUntilTS — last sequence/timestamp to discard
+  //
+  // If flushFromSeq is absent → immediate flush (stop and discard everything).
+  // If flushFromSeq is present → deferred flush: keep playing existing buffered
+  //   content until flushUntilTS is reached, then discard and start fresh.
+  //   The phone simultaneously starts streaming the new track, which fills the
+  //   buffer beyond flushUntilTS; audio_timing_read detects the boundary and
+  //   triggers the bulk-flush at the right moment.
+  bool has_deferred = false;
+  if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+    int64_t flush_from_seq = 0, flush_from_ts = 0;
+    int64_t flush_until_seq = 0, flush_until_ts = 0;
+    bool got_from_seq  = bplist_find_int(body, body_len, "flushFromSeq",  &flush_from_seq);
+    bool got_from_ts   = bplist_find_int(body, body_len, "flushFromTS",   &flush_from_ts);
+    bool got_until_seq = bplist_find_int(body, body_len, "flushUntilSeq", &flush_until_seq);
+    bool got_until_ts  = bplist_find_int(body, body_len, "flushUntilTS",  &flush_until_ts);
+
+    if (got_from_seq && got_from_ts && got_until_seq && got_until_ts) {
+      has_deferred = true;
+      ESP_LOGI(TAG, "FLUSHBUFFERED deferred: fromSeq=%" PRId64 " fromTS=%" PRId64
+               " untilSeq=%" PRId64 " untilTS=%" PRId64,
+               flush_from_seq, flush_from_ts, flush_until_seq, flush_until_ts);
+      // Arm the deferred flush.  Do NOT flush the audio output immediately —
+      // let it drain naturally to the boundary so the current track finishes.
+      audio_receiver_set_deferred_flush((uint32_t)flush_until_ts);
+    } else {
+      ESP_LOGI(TAG, "FLUSHBUFFERED immediate (missing from/until fields)");
+    }
+  }
+
+  if (!has_deferred) {
+    // Immediate flush: discard everything and reset now.
+    audio_receiver_seek_flush();
+    audio_output_flush();
+  }
+
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
