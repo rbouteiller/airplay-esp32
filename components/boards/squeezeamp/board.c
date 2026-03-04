@@ -291,6 +291,7 @@ esp_err_t iot_board_deinit(void) {
 
   dac_enable_speaker(false);
   dac_set_power_mode(DAC_POWER_OFF);
+  dac_deinit();
 
   // Tear down I2C bus (after DAC is deinitialized)
   if (s_i2c_bus_handle != NULL) {

@@ -9,11 +9,11 @@
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_BUFFER_LATENCY_US     200000  // 200ms startup jitter buffer
-#define HARDWARE_OUTPUT_LATENCY_US    46000   // ~46ms I2S DMA latency
+#define DEFAULT_BUFFER_LATENCY_US     200000 // 200ms startup jitter buffer
+#define HARDWARE_OUTPUT_LATENCY_US    46000  // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           40000  // 40ms early/late threshold
+#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
 // If a frame is late by more than this, flush the whole buffer at once
 // instead of draining one frame per DMA callback (which would cause seconds
 // of silence while thousands of stale frames are individually dropped).
@@ -36,7 +36,7 @@
 // the wrong seek position (old audio still draining through the TCP pipeline)
 // and must be discarded rather than played.  10 s is well above the deepest
 // observed AirPlay 2 pre-buffer depth and well below any real seek delta.
-#define POST_FLUSH_STALE_THRESHOLD_US 10000000LL  // 10 seconds
+#define POST_FLUSH_STALE_THRESHOLD_US 10000000LL // 10 seconds
 
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
@@ -209,8 +209,7 @@ void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
     return;
   }
 
-  ESP_LOGI(TAG, "set_playing: %s -> %s",
-           timing->playing ? "playing" : "paused",
+  ESP_LOGI(TAG, "set_playing: %s -> %s", timing->playing ? "playing" : "paused",
            playing ? "playing" : "paused");
 
   timing->playing = playing;
@@ -333,8 +332,8 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
     if (timing->deferred_flush_pending) {
       if ((int32_t)(hdr->rtp_timestamp - timing->flush_until_ts) >= 0) {
         ESP_LOGI(TAG,
-                 "Deferred flush triggered at ts=%" PRIu32
-                 " (until_ts=%" PRIu32 ")",
+                 "Deferred flush triggered at ts=%" PRIu32 " (until_ts=%" PRIu32
+                 ")",
                  hdr->rtp_timestamp, timing->flush_until_ts);
         if (from_pending) {
           timing->pending_valid = false;
@@ -384,10 +383,9 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
             // frames are cleared in one shot.  Draining one-by-one takes
             // hundreds of DMA callbacks (8 frames/callback × hundreds of stale
             // frames) causing seconds of silent lag that compounds each seek.
-            ESP_LOGW(TAG,
-                     "post_flush: bulk flush %d stale frames (%lld s early)",
-                     audio_buffer_get_frame_count(buffer),
-                     early_us / 1000000LL);
+            ESP_LOGW(
+                TAG, "post_flush: bulk flush %d stale frames (%lld s early)",
+                audio_buffer_get_frame_count(buffer), early_us / 1000000LL);
             if (from_pending) {
               timing->pending_valid = false;
               timing->pending_frame_len = 0;

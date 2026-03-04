@@ -1327,14 +1327,19 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
     int64_t flush_from_seq = 0, flush_from_ts = 0;
     int64_t flush_until_seq = 0, flush_until_ts = 0;
-    bool got_from_seq  = bplist_find_int(body, body_len, "flushFromSeq",  &flush_from_seq);
-    bool got_from_ts   = bplist_find_int(body, body_len, "flushFromTS",   &flush_from_ts);
-    bool got_until_seq = bplist_find_int(body, body_len, "flushUntilSeq", &flush_until_seq);
-    bool got_until_ts  = bplist_find_int(body, body_len, "flushUntilTS",  &flush_until_ts);
+    bool got_from_seq =
+        bplist_find_int(body, body_len, "flushFromSeq", &flush_from_seq);
+    bool got_from_ts =
+        bplist_find_int(body, body_len, "flushFromTS", &flush_from_ts);
+    bool got_until_seq =
+        bplist_find_int(body, body_len, "flushUntilSeq", &flush_until_seq);
+    bool got_until_ts =
+        bplist_find_int(body, body_len, "flushUntilTS", &flush_until_ts);
 
     if (got_from_seq && got_from_ts && got_until_seq && got_until_ts) {
       has_deferred = true;
-      ESP_LOGI(TAG, "FLUSHBUFFERED deferred: fromSeq=%" PRId64 " fromTS=%" PRId64
+      ESP_LOGI(TAG,
+               "FLUSHBUFFERED deferred: fromSeq=%" PRId64 " fromTS=%" PRId64
                " untilSeq=%" PRId64 " untilTS=%" PRId64,
                flush_from_seq, flush_from_ts, flush_until_seq, flush_until_ts);
       // Arm the deferred flush.  Do NOT flush the audio output immediately —

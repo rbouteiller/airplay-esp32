@@ -287,7 +287,8 @@ static void control_receiver_task(void *pvParameters) {
       //   [16-19] sync_rtp_timestamp — the RTP frame currently being SENT
       //           (ahead by the stream latency).  Do NOT use as anchor.
       if (len >= 20) {
-        uint32_t rtp_timestamp = nctoh32(packet + 4); // rtp_timestamp_less_latency
+        uint32_t rtp_timestamp =
+            nctoh32(packet + 4); // rtp_timestamp_less_latency
         uint64_t ntp_secs = nctoh32(packet + 8);
         uint64_t ntp_frac = nctoh32(packet + 12);
         uint64_t network_time_ns =

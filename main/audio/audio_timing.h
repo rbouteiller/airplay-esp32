@@ -24,8 +24,9 @@ typedef struct {
   size_t pending_frame_len;
   size_t pending_frame_capacity;
   bool pending_valid;
-  // Early-frame guard: counts consecutive early frames to detect a stuck anchor.
-  // Reset whenever a new anchor is set or a late/on-time frame is played.
+  // Early-frame guard: counts consecutive early frames to detect a stuck
+  // anchor. Reset whenever a new anchor is set or a late/on-time frame is
+  // played.
   int consecutive_early_frames;
   // Late-frame guard: counts consecutive individually-late frames.  When this
   // exceeds MAX_CONSECUTIVE_LATE the whole buffer is considered stale (e.g.

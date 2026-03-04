@@ -200,43 +200,6 @@ static const eq_bq_addr_t eq_right_addr[15] = {
 
 """)
 
-    # ─── EQ mode control addresses for TAS5825M ───
-    out.write("""\
-/* ─── TAS5825M EQ mode control (Book 0x8C, Page 0x0B) ───
- * Gang EQ register at sub-address 0x28:
- *   0x00000001 = ganged (L+R share same coefficients)
- *   0x00000000 = independent L/R
- *
- * Bypass EQ register at sub-address 0x2C (4 bytes after gang):
- *   0x00000001 = EQ bypassed (off)
- *   0x00000000 = EQ active (on)
- *
- * We write both as a single 8-byte block starting at 0x28.
- */
-#define EQ_MODE_CTRL_BOOK   0x8C
-#define EQ_MODE_CTRL_PAGE   0x0B
-#define EQ_MODE_GANG_ADDR   0x28
-
-/* EQ mode: off (bypass=1, gang=1) */
-static const uint8_t eq_mode_off[8] = {
-    0x00, 0x00, 0x00, 0x01,  /* gang_eq = 1 (ganged) */
-    0x00, 0x00, 0x00, 0x01,  /* bypass_eq = 1 (bypassed/off) */
-};
-
-/* EQ mode: on, ganged L+R (bypass=0, gang=1) */
-static const uint8_t eq_mode_on_ganged[8] = {
-    0x00, 0x00, 0x00, 0x01,  /* gang_eq = 1 (ganged) */
-    0x00, 0x00, 0x00, 0x00,  /* bypass_eq = 0 (active/on) */
-};
-
-/* EQ mode: on, independent L/R (bypass=0, gang=0) */
-static const uint8_t eq_mode_on_independent[8] = {
-    0x00, 0x00, 0x00, 0x00,  /* gang_eq = 0 (independent) */
-    0x00, 0x00, 0x00, 0x00,  /* bypass_eq = 0 (active/on) */
-};
-
-""")
-
     # ─── Pre-computed coefficient table ───
     out.write("""\
 /* ─── Pre-computed biquad coefficients ───
@@ -268,7 +231,6 @@ typedef struct {
     out.write("};\n")
 
     out.write("\n/* End of generated data */\n")
-
 
 if __name__ == "__main__":
     main()

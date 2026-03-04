@@ -218,7 +218,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
   }
 
   // Forward-seek path: seek_flush empties the buffer before the anchor
-  // arrives, so the oldest_rtp check above never fires.  arm_gate_on_next_anchor
+  // arrives, so the oldest_rtp check above never fires. arm_gate_on_next_anchor
   // was set by seek_flush to ensure we still arm both gates here.
   if (receiver.arm_gate_on_next_anchor) {
     receiver.arm_gate_on_next_anchor = false;
@@ -226,9 +226,9 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
     receiver.discard_before_rtp_valid = true;
     receiver.discard_above_rtp = rtp_time + gate_window;
     receiver.discard_above_rtp_valid = true;
-    ESP_LOGI(TAG, "RTP gates armed on anchor: discard_before=%lu discard_above=%lu",
-             (unsigned long)rtp_time,
-             (unsigned long)(rtp_time + gate_window));
+    ESP_LOGI(TAG,
+             "RTP gates armed on anchor: discard_before=%lu discard_above=%lu",
+             (unsigned long)rtp_time, (unsigned long)(rtp_time + gate_window));
   }
 
   audio_timing_set_anchor(&receiver.timing, &receiver.stream->format, clock_id,
@@ -461,9 +461,9 @@ void audio_receiver_set_deferred_flush(uint32_t flush_until_ts) {
   // sees deferred_flush_pending=true with a stale timestamp.
   receiver.timing.flush_until_ts = flush_until_ts;
   receiver.timing.deferred_flush_pending = true;
-  ESP_LOGI(TAG, "Deferred flush armed: flush_until_ts=%" PRIu32, flush_until_ts);
+  ESP_LOGI(TAG, "Deferred flush armed: flush_until_ts=%" PRIu32,
+           flush_until_ts);
 }
-
 
 void audio_receiver_pause(void) {
   // Stop the consumer.  The receiver tasks keep running so the audio buffer
