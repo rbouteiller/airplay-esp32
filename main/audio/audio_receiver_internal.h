@@ -51,6 +51,31 @@ typedef struct {
   struct sockaddr_in client_control_addr; // Client's control address for NACKs
   bool retransmit_enabled;                // True when client address is set
   int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
+
+  // Post-seek RTP gates: together they form a window [discard_before_rtp,
+  // discard_above_rtp] around the new anchor.  Frames outside the window are
+  // discarded in audio_stream_process_frame before they enter the ring buffer,
+  // preventing the stale-frame / repeated-bulk-flush loop.
+  //
+  //   discard_before_rtp — drop frames with RTP < anchor (forward-seek stale)
+  //   discard_above_rtp  — drop frames with RTP > anchor+10s (backward-seek
+  //                        stale, e.g. seek-to-start where old pre-buffer
+  //                        frames have much higher RTP than the new anchor)
+  //
+  // Both are always armed together; whichever direction the seek went, one
+  // gate fires and the other is harmless.  Each self-disarms on the first
+  // frame that passes it (FIFO TCP order guarantees stale frames drain first).
+  // Written by the RTSP task, read by the TCP buffered task — uint32_t write
+  // is atomic on Xtensa; arm bool last so reader never sees stale threshold.
+  uint32_t discard_before_rtp;
+  bool discard_before_rtp_valid;
+  uint32_t discard_above_rtp;
+  bool discard_above_rtp_valid;
+  // Set by audio_receiver_seek_flush() to ensure the gates are armed on the
+  // next SETRATEANCHORTIME even when the buffer was already empty (forward
+  // seek: flush empties buffer before anchor arrives, so seek detection in
+  // set_anchor_time would otherwise find no oldest_rtp and skip arming).
+  bool arm_gate_on_next_anchor;
 } audio_receiver_state_t;
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,

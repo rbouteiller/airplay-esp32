@@ -33,6 +33,24 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
     return false;
   }
 
+  // Post-seek RTP window gate: discard frames outside [discard_before_rtp,
+  // discard_above_rtp].  The TCP socket buffer can hold many seconds of
+  // pre-seek audio; both gates together handle both seek directions:
+  //   discard_before_rtp — forward seek: stale frames have lower RTP
+  //   discard_above_rtp  — backward seek: stale frames have much higher RTP
+  // Each self-disarms on the first frame that passes it.
+  if (state->discard_before_rtp_valid) {
+    if ((int32_t)(timestamp - state->discard_before_rtp) < 0) {
+      return false; // below lower bound — forward-seek stale frame
+    }
+    state->discard_before_rtp_valid = false;
+  }
+  if (state->discard_above_rtp_valid) {
+    if ((int32_t)(timestamp - state->discard_above_rtp) > 0) {
+      return false; // above upper bound — backward-seek stale frame
+    }
+    state->discard_above_rtp_valid = false;
+  }
   size_t capacity_samples = 0;
   int16_t *decode_buffer =
       audio_buffer_get_decode_buffer(&state->buffer, &capacity_samples);
