@@ -1,4 +1,5 @@
 <div align="center">
+<img src="docs/logo_airplay_esp32.png" alt="AirPlay ESP32" width="200">
 
 # ESP32 AirPlay 2 Receiver
 
@@ -97,9 +98,24 @@ A 3D-printable case is provided in [`docs/boite esp32.stl`](docs/boite%20esp32.s
 
 ## Flash the Firmware
 
-You have two options: **PlatformIO** (easier) or **ESP-IDF** (official Espressif toolchain).
+Three options: **Web flasher** (no install needed), **PlatformIO**, or **ESP-IDF**.
 
-### Option A — PlatformIO (Recommended for beginners)
+### Option A — Web Flasher (Recommended for beginners)
+
+Flash a pre-built firmware directly from your browser — no toolchain, no code, no command line.
+
+1. Download the latest firmware from the [Releases page](https://github.com/rbouteiller/airplay-esp32/releases/latest):
+   - **`airplay2-receiver-esp32s3.bin`** — for generic ESP32-S3 + PCM5102A
+   - **`airplay2-receiver-squeezeamp.bin`** — for SqueezeAMP boards
+   - **`airplay2-receiver-squeezeamp-4m.bin`** — for SqueezeAMP with 4MB flash
+2. Open the [ESP Web Flasher](https://espressif.github.io/esptool-js/) (requires Chrome or Edge)
+3. Plug your ESP32 via USB-C, click **Connect** and select the serial port
+4. Set the flash address to **`0x0`**, select the downloaded `.bin` file, and click **Program**
+5. Once done, unplug and re-plug the board — it will boot into setup mode
+
+> **Note:** The web flasher uses WebSerial, which is only supported in Chromium-based browsers (Chrome, Edge, Opera).
+
+### Option B — PlatformIO
 
 [PlatformIO](https://platformio.org/) handles all the toolchain setup for you.
 
@@ -118,7 +134,7 @@ pio run -e esp32s3 -t upload
 pio run -e esp32s3 -t monitor
 ```
 
-### Option B — ESP-IDF
+### Option C — ESP-IDF
 
 ```bash
 # 1. Install ESP-IDF v5.x following:
@@ -208,12 +224,12 @@ You can connect a small OLED screen to show the currently playing track info —
 
 ### Wiring (I2C — default)
 
-| OLED Pin | ESP32 GPIO | Function   |
-| -------- | ---------- | ---------- |
-| SDA      | GPIO 21    | I2C data   |
-| SCL      | GPIO 22    | I2C clock  |
-| VCC      | 3.3V       | Power      |
-| GND      | GND        | Ground     |
+| OLED Pin | ESP32 GPIO | Function  |
+| -------- | ---------- | --------- |
+| SDA      | GPIO 21    | I2C data  |
+| SCL      | GPIO 22    | I2C clock |
+| VCC      | 3.3V       | Power     |
+| GND      | GND        | Ground    |
 
 The default I2C address is `0x3C`. If your display uses `0x3D`, change it in `idf.py menuconfig` under **AirPlay Receiver → Display Configuration**.
 
@@ -241,16 +257,16 @@ pio run -e esp32s3 -t menuconfig
 
 ### Display Options
 
-| Option              | Default    | Description                                  |
-| ------------------- | ---------- | -------------------------------------------- |
-| Display driver      | SSD1306    | SSD1306 / SH1106 / SSD1309                   |
-| Display height      | 64 pixels  | 64 or 32 pixels                              |
-| Bus type            | I2C        | I2C or SPI                                   |
-| I2C SDA GPIO        | 21         | Data line (I2C mode)                         |
-| I2C SCL GPIO        | 22         | Clock line (I2C mode)                        |
-| I2C address         | 0x3C       | 7-bit address (0x3C or 0x3D)                 |
-| Flip display        | No         | Rotate output 180°                           |
-| Refresh interval    | 500 ms     | How often the display redraws (100–5000 ms)  |
+| Option           | Default   | Description                                 |
+| ---------------- | --------- | ------------------------------------------- |
+| Display driver   | SSD1306   | SSD1306 / SH1106 / SSD1309                  |
+| Display height   | 64 pixels | 64 or 32 pixels                             |
+| Bus type         | I2C       | I2C or SPI                                  |
+| I2C SDA GPIO     | 21        | Data line (I2C mode)                        |
+| I2C SCL GPIO     | 22        | Clock line (I2C mode)                       |
+| I2C address      | 0x3C      | 7-bit address (0x3C or 0x3D)                |
+| Flip display     | No        | Rotate output 180°                          |
+| Refresh interval | 500 ms    | How often the display redraws (100–5000 ms) |
 
 SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 
@@ -357,16 +373,16 @@ MCLK is not used for PCM5102A as generates it internally. It is, however, connec
 
 ### Key Components
 
-| Module             | Location               | Purpose                              |
-| ------------------ | ---------------------- | ------------------------------------ |
-| **RTSP Server**    | `main/rtsp/`           | Handles AirPlay control messages     |
-| **HAP Pairing**    | `main/hap/`            | Cryptographic device pairing         |
-| **Audio Pipeline** | `main/audio/`          | Decoding, buffering, timing          |
-| **PTP Clock**      | `main/network/`        | Synchronization with source          |
-| **Web Server**     | `main/network/`        | Configuration interface              |
-| **DAC Abstraction**| `components/dac/`      | Abstract DAC API (Kconfig-selected)  |
-| **Board Support**  | `components/boards/`   | Per-board HAL (GPIOs, init, events)  |
-| **Display**        | `components/display/`  | OLED display driver (u8g2-based)     |
+| Module              | Location              | Purpose                             |
+| ------------------- | --------------------- | ----------------------------------- |
+| **RTSP Server**     | `main/rtsp/`          | Handles AirPlay control messages    |
+| **HAP Pairing**     | `main/hap/`           | Cryptographic device pairing        |
+| **Audio Pipeline**  | `main/audio/`         | Decoding, buffering, timing         |
+| **PTP Clock**       | `main/network/`       | Synchronization with source         |
+| **Web Server**      | `main/network/`       | Configuration interface             |
+| **DAC Abstraction** | `components/dac/`     | Abstract DAC API (Kconfig-selected) |
+| **Board Support**   | `components/boards/`  | Per-board HAL (GPIOs, init, events) |
+| **Display**         | `components/display/` | OLED display driver (u8g2-based)    |
 
 ### Project Structure
 
