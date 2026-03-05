@@ -127,6 +127,27 @@ menu "Airplay ESP Configuration"
             in the board pin configuration.
     endmenu
 
+    menu "Bluetooth Configuration"
+        depends on BT_A2DP_ENABLE
+
+        config BT_PIN_CODE
+            string "Bluetooth pairing PIN code"
+            default "05032026"
+            help
+                Static PIN code used for legacy Bluetooth pairing.
+                Must be 1-16 digits. Connecting devices will be
+                prompted to enter this PIN.
+
+        config BT_SSP_ENABLED
+            bool "Enable Secure Simple Pairing (SSP)"
+            default n
+            help
+                Enable SSP for Bluetooth 2.1+ devices. When enabled,
+                modern devices use numeric comparison (both sides
+                confirm a displayed number) instead of the legacy PIN.
+                A screen is required for this.
+    endmenu
+
     menu "Display Configuration"
         config DISPLAY_ENABLED
             bool "Enable OLED display"

@@ -13,6 +13,12 @@ CONFIG_BT_A2DP_ENABLE=y
 CONFIG_A2DP_SINK_ENABLED=y
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 
+# Security Setup
+# SSP requires a screen on the device to show the code
+CONFIG_BT_SSP_ENABLED=n
+CONFIG_BT_PIN_CODE=05032026
+
+
 # Allow Bluedroid to allocate from SPIRAM first, freeing internal DRAM for
 # timers, DMA buffers and WiFi.  Fixes osi_alarm_new OOM crash when WiFi +
 # Classic BT are both active.

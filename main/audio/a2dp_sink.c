@@ -537,8 +537,13 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event,
     break;
 
   case ESP_BT_GAP_CFM_REQ_EVT:
-    ESP_LOGI(TAG, "SSP confirm request, auto-accepting");
+    ESP_LOGI(TAG, "SSP confirm request (num=%" PRIu32 "), auto-accepting",
+             param->cfm_req.num_val);
     esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+    break;
+
+  case ESP_BT_GAP_PIN_REQ_EVT:
+    ESP_LOGI(TAG, "Legacy PIN request");
     break;
 
   case ESP_BT_GAP_KEY_NOTIF_EVT:
@@ -574,11 +579,24 @@ static void bt_stack_evt_handler(uint16_t event, void *param) {
   // GAP
   esp_bt_gap_register_callback(bt_gap_cb);
 
-  // TODO: Make a better way to secure pair!!
-  // Simple Secure Pairing — "Just Works" (no display/keyboard, no PIN prompt)
+#ifdef CONFIG_BT_SSP_ENABLED
+  // Secure Simple Pairing — numeric comparison for BT 2.1+ devices
   esp_bt_sp_param_t param_type = ESP_BT_SP_IOCAP_MODE;
-  esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+  esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;
   esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
+#endif
+
+  // Legacy Pairing — fixed PIN from Kconfig
+  esp_bt_pin_type_t pin_type = ESP_BT_PIN_TYPE_FIXED;
+  esp_bt_pin_code_t pin_code;
+  const char *pin_str = CONFIG_BT_PIN_CODE;
+  uint8_t pin_len = strlen(pin_str);
+  if (pin_len > ESP_BT_PIN_CODE_LEN) {
+    pin_len = ESP_BT_PIN_CODE_LEN;
+  }
+  memcpy(pin_code, pin_str, pin_len);
+  esp_bt_gap_set_pin(pin_type, pin_len, pin_code);
+  ESP_LOGI(TAG, "BT PIN set (%d digits)", pin_len);
 
   // AVRC Controller (to get metadata from source)
   esp_avrc_ct_register_callback(bt_avrc_ct_cb);
@@ -647,6 +665,9 @@ esp_err_t bt_a2dp_sink_init(const char *device_name,
 
   // Initialize Bluedroid
   esp_bluedroid_config_t bluedroid_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
+#ifndef CONFIG_BT_SSP_ENABLED
+  bluedroid_cfg.ssp_en = false; // Disable SSP to force legacy PIN pairing
+#endif
   err = esp_bluedroid_init_with_cfg(&bluedroid_cfg);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Bluedroid init failed: %s", esp_err_to_name(err));
