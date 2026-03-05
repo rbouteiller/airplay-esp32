@@ -607,7 +607,7 @@ static void tas58xx_set_volume(float volume_airplay_db) {
     reg_val = (uint8_t)raw;
   }
 
-  ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
+  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
            volume_airplay_db, db_level, reg_val);
 
   tas58xx_write_reg(REG_DIG_VOL, reg_val);
