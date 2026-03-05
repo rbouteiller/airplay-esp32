@@ -1,6 +1,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
+#include "audio_resample.h"
 #include "led.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -23,8 +24,12 @@
 #define I2S_BCK_PIN   CONFIG_I2S_BCK_IO
 #define I2S_LRCK_PIN  CONFIG_I2S_WS_IO
 #define I2S_DOUT_PIN  CONFIG_I2S_DO_IO
-#define SAMPLE_RATE   44100
+#define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
 #define FRAME_SAMPLES 352
+
+/* Max output frames after resampling one input frame */
+#define MAX_RESAMPLE_FRAMES \
+  ((size_t)((FRAME_SAMPLES + 2) * ((double)OUTPUT_RATE / 44100) + 16))
 
 #if CONFIG_FREERTOS_UNICORE
 #define PLAYBACK_CORE 0
@@ -34,6 +39,8 @@
 
 static i2s_chan_handle_t tx_handle;
 static volatile bool flush_requested = false;
+static volatile int source_rate = 44100;
+static volatile bool resample_reinit_needed = false;
 
 static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
@@ -47,26 +54,42 @@ static void apply_volume(int16_t *buf, size_t n) {
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
   int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
-  if (!pcm || !silence) {
+  int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+  if (!pcm || !silence || !resample_buf) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
     free(silence);
+    free(resample_buf);
     vTaskDelete(NULL);
     return;
   }
 
   size_t written;
   while (true) {
+    if (resample_reinit_needed) {
+      resample_reinit_needed = false;
+      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2,
+                          CONFIG_RESAMPLER_QUALITY);
+    }
     if (flush_requested) {
       flush_requested = false;
+      audio_resample_reset();
       i2s_channel_disable(tx_handle);
       i2s_channel_enable(tx_handle);
     }
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
-      apply_volume(pcm, samples * 2);
-      led_audio_feed(pcm, samples);
-      i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
+      int16_t *play_buf = pcm;
+      size_t play_samples = samples;
+      if (audio_resample_is_active()) {
+        play_samples = audio_resample_process(pcm, samples, resample_buf,
+                                              MAX_RESAMPLE_FRAMES);
+        play_buf = resample_buf;
+      }
+      apply_volume(play_buf, play_samples * 2);
+      led_audio_feed(play_buf, play_samples);
+      i2s_channel_write(tx_handle, play_buf, play_samples * 4, &written,
+                        portMAX_DELAY);
       taskYIELD();
     } else {
       led_audio_feed(silence, FRAME_SAMPLES);
@@ -87,7 +110,7 @@ esp_err_t audio_output_init(void) {
                       "channel create failed");
 
   i2s_std_config_t std_cfg = {
-      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(OUTPUT_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
@@ -115,14 +138,23 @@ esp_err_t audio_output_init(void) {
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
 
+  audio_resample_init(44100, OUTPUT_RATE, 2, CONFIG_RESAMPLER_QUALITY);
+
   return ESP_OK;
 }
 
 void audio_output_start(void) {
-  xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
+  xTaskCreatePinnedToCore(playback_task, "audio_play", 8192, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }
 
 void audio_output_flush(void) {
   flush_requested = true;
+}
+
+void audio_output_set_source_rate(int rate) {
+  if (rate > 0 && rate != source_rate) {
+    source_rate = rate;
+    resample_reinit_needed = true;
+  }
 }

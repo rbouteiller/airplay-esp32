@@ -278,13 +278,13 @@ static void tas58xx_dump_status(const char *context) {
   }
 
   if (tas58xx_read_reg(REG_DIG_VOL, &val) == ESP_OK) {
-    float db = (0x30 - (int)val) * 0.5f;
+    float db = (float)(0x30 - (int)val) * 0.5f;
     ESP_LOGD(TAG, "  DIG_VOL=0x%02X (%.1f dB%s)", val, db,
              val == DIG_VOL_MUTE ? " MUTED" : "");
   }
 
   if (tas58xx_read_reg(REG_AGAIN, &val) == ESP_OK) {
-    float again_db = -(val & 0x1F) * 0.5f;
+    float again_db = -(float)(val & 0x1F) * 0.5f;
     ESP_LOGD(TAG, "  AGAIN=0x%02X (%.1f dB)", val, again_db);
   }
 
@@ -600,10 +600,12 @@ static void tas58xx_set_volume(float volume_airplay_db) {
     reg_val = DIG_VOL_MUTE;
   } else {
     int raw = DIG_VOL_0DB - (int)(db_level * 2.0f);
-    if (raw < 0x00)
+    if (raw < 0x00) {
       raw = 0x00;
-    if (raw > 0xFE)
+    }
+    if (raw > 0xFE) {
       raw = 0xFE;
+    }
     reg_val = (uint8_t)raw;
   }
 
@@ -666,11 +668,13 @@ static const float eq_center_freq[TAS58XX_EQ_BANDS] = {
 static inline esp_err_t select_book_page(uint8_t book, uint8_t page) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   err = tas58xx_write_reg(REG_BOOK_SEL, book);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   return tas58xx_write_reg(REG_PAGE_SEL, page);
 }
 
@@ -678,11 +682,13 @@ static inline esp_err_t select_book_page(uint8_t book, uint8_t page) {
 static inline esp_err_t select_default_page(void) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   err = tas58xx_write_reg(REG_BOOK_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   return tas58xx_write_reg(REG_PAGE_SEL, 0x00);
 }
 
@@ -697,8 +703,9 @@ static esp_err_t write_biquad_coeff(uint8_t page, uint8_t reg_start,
 
   /* Select coefficient page */
   err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   uint8_t buf[BQ_COEFF_SIZE];
   for (int i = 0; i < 5; i++) {
@@ -721,8 +728,9 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
                                   const uint8_t data[EQ_COEFF_BYTES]) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, sub_addr, data,
                        EQ_COEFF_BYTES);
@@ -730,8 +738,9 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
 
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
   esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   uint8_t buf[4] = {(uint8_t)(val >> 24), (uint8_t)(val >> 16),
                     (uint8_t)(val >> 8), (uint8_t)(val)};
   return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg, buf, 4);
@@ -751,8 +760,9 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
    * All values from SLAA786A Table 9 (Process Flow 1).
    */
   err = select_book_page(0x8C, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   /* Volume softening filter alpha (Page 0x01 Reg 0x2C) */
   write_dsp_coeff32(0x01, 0x2C, 0x00E2C46B);
@@ -771,34 +781,34 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
   write_dsp_coeff32(0x06, 0x70, 0x00000000); /* K0_1 (no compression) */
   write_dsp_coeff32(0x06, 0x74, 0x00000000); /* K1_1 */
   write_dsp_coeff32(0x06, 0x78, 0x00000000); /* K2_1 */
-  write_dsp_coeff32(0x06, 0x7C, 0xE7000000); /* T1_1 threshold */
-  write_dsp_coeff32(0x07, 0x08, 0xFE800000); /* T2_1 threshold */
-  write_dsp_coeff32(0x07, 0x0C, 0x00000000); /* off1_1 */
-  write_dsp_coeff32(0x07, 0x10, 0x00000000); /* off2_1 */
+  write_dsp_coeff32(0x06, 0x7C, (int32_t)0xE7000000); /* T1_1 threshold */
+  write_dsp_coeff32(0x07, 0x08, (int32_t)0xFE800000); /* T2_1 threshold */
+  write_dsp_coeff32(0x07, 0x0C, 0x00000000);          /* off1_1 */
+  write_dsp_coeff32(0x07, 0x10, 0x00000000);          /* off2_1 */
   /* DRC2 time constants */
   write_dsp_coeff32(0x07, 0x14, 0x7FFFFFFF); /* DRC2 Energy  */
   write_dsp_coeff32(0x07, 0x18, 0x7FFFFFFF); /* DRC2 Attack  */
   write_dsp_coeff32(0x07, 0x1C, 0x7FFFFFFF); /* DRC2 Decay   */
   /* DRC2 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x20, 0x00000000); /* k0_2 */
-  write_dsp_coeff32(0x07, 0x24, 0x00000000); /* k1_2 */
-  write_dsp_coeff32(0x07, 0x28, 0x00000000); /* k2_2 */
-  write_dsp_coeff32(0x07, 0x2C, 0xE7000000); /* t1_2 */
-  write_dsp_coeff32(0x07, 0x30, 0xFE800000); /* t2_2 */
-  write_dsp_coeff32(0x07, 0x34, 0x00000000); /* off1_2 */
-  write_dsp_coeff32(0x07, 0x38, 0x00000000); /* off2_2 */
+  write_dsp_coeff32(0x07, 0x20, 0x00000000);          /* k0_2 */
+  write_dsp_coeff32(0x07, 0x24, 0x00000000);          /* k1_2 */
+  write_dsp_coeff32(0x07, 0x28, 0x00000000);          /* k2_2 */
+  write_dsp_coeff32(0x07, 0x2C, (int32_t)0xE7000000); /* t1_2 */
+  write_dsp_coeff32(0x07, 0x30, (int32_t)0xFE800000); /* t2_2 */
+  write_dsp_coeff32(0x07, 0x34, 0x00000000);          /* off1_2 */
+  write_dsp_coeff32(0x07, 0x38, 0x00000000);          /* off2_2 */
   /* DRC3 time constants */
   write_dsp_coeff32(0x07, 0x3C, 0x7FFFFFFF); /* DRC3 Energy  */
   write_dsp_coeff32(0x07, 0x40, 0x7FFFFFFF); /* DRC3 Attack  */
   write_dsp_coeff32(0x07, 0x44, 0x7FFFFFFF); /* DRC3 Decay   */
   /* DRC3 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x48, 0x00000000); /* k0_3 */
-  write_dsp_coeff32(0x07, 0x4C, 0x00000000); /* k1_3 */
-  write_dsp_coeff32(0x07, 0x50, 0x00000000); /* k2_3 */
-  write_dsp_coeff32(0x07, 0x54, 0xE7000000); /* t1_3 */
-  write_dsp_coeff32(0x07, 0x58, 0xFE800000); /* t2_3 */
-  write_dsp_coeff32(0x07, 0x5C, 0x00000000); /* off1_3 */
-  write_dsp_coeff32(0x07, 0x60, 0x00000000); /* off2_3 */
+  write_dsp_coeff32(0x07, 0x48, 0x00000000);          /* k0_3 */
+  write_dsp_coeff32(0x07, 0x4C, 0x00000000);          /* k1_3 */
+  write_dsp_coeff32(0x07, 0x50, 0x00000000);          /* k2_3 */
+  write_dsp_coeff32(0x07, 0x54, (int32_t)0xE7000000); /* t1_3 */
+  write_dsp_coeff32(0x07, 0x58, (int32_t)0xFE800000); /* t2_3 */
+  write_dsp_coeff32(0x07, 0x5C, 0x00000000);          /* off1_3 */
+  write_dsp_coeff32(0x07, 0x60, 0x00000000);          /* off2_3 */
 
   /* FS Clipper (Page 0x07) */
   write_dsp_coeff32(0x07, 0x64, 0x00800000); /* THD Boost (unity) */
@@ -935,8 +945,9 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
 static esp_err_t ensure_custom_coeffs_mode(void) {
   uint8_t dsp_ctrl;
   esp_err_t err = tas58xx_read_reg(REG_DSP_CTRL, &dsp_ctrl);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   if (dsp_ctrl & 0x01) {
     /* Mute while we reconfigure the entire coefficient RAM */
@@ -952,8 +963,9 @@ static esp_err_t ensure_custom_coeffs_mode(void) {
     if (!s_dsp_defaults_written) {
       err = write_dsp_signal_path_defaults();
       if (err != ESP_OK) {
-        if (was_unmuted)
+        if (was_unmuted) {
           tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+        }
         return err;
       }
     }
@@ -1004,13 +1016,15 @@ static esp_err_t program_biquad_raw(int bq,
 
   /* Ensure DSP has all signal-path defaults before using custom coefficients */
   err = ensure_custom_coeffs_mode();
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   /* Enter coefficient book */
   err = select_book_page(BQ_COEFF_BOOK, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     goto out;
+  }
 
   /* Channel 1 (Left) */
   err =
@@ -1044,8 +1058,9 @@ static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
 
   err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   uint8_t mode_data[EQ_MODE_SIZE] = {
       0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
@@ -1089,10 +1104,12 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
 
   /* Clamp gain to integer dB range of pre-computed table */
   int gain_int = (int)roundf(gain_db);
-  if (gain_int > TAS58XX_EQ_MAX_GAIN_DB)
+  if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
-  if (gain_int < TAS58XX_EQ_MIN_GAIN_DB)
+  }
+  if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
+  }
 
   int idx = gain_int + EQ_GAIN_OFFSET;
   ESP_LOGD(TAG, "EQ: band %d (%.0f Hz) -> %+d dB (table idx %d)", band,
@@ -1105,8 +1122,9 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
 }
 
 esp_err_t tas58xx_eq_set_all(const float gains_db[TAS58XX_EQ_BANDS]) {
-  if (!gains_db)
+  if (!gains_db) {
     return ESP_ERR_INVALID_ARG;
+  }
 
   REG_LOCK();
 
@@ -1120,10 +1138,12 @@ esp_err_t tas58xx_eq_set_all(const float gains_db[TAS58XX_EQ_BANDS]) {
   esp_err_t first_err = ESP_OK;
   for (int i = 0; i < TAS58XX_EQ_BANDS; i++) {
     int gain_int = (int)roundf(gains_db[i]);
-    if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB)
+    if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB) {
       gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
-    if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB)
+    }
+    if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB) {
       gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
+    }
 
     int idx = gain_int + EQ_GAIN_OFFSET;
     esp_err_t err = program_biquad_raw(i, eq_coeff_table[idx][i].bytes);
@@ -1175,8 +1195,9 @@ esp_err_t tas58xx_eq_flat(void) {
 }
 
 float tas58xx_eq_get_center_freq(int band) {
-  if (band < 0 || band >= TAS58XX_EQ_BANDS)
+  if (band < 0 || band >= TAS58XX_EQ_BANDS) {
     return 0.0f;
+  }
   return eq_center_freq[band];
 }
 

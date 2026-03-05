@@ -34,7 +34,7 @@
 
 /** Gain limits per band (dB) — matches reference ±15 dB range */
 #define TAS58XX_EQ_MAX_GAIN_DB 15.0f
-#define TAS58XX_EQ_MIN_GAIN_DB -15.0f
+#define TAS58XX_EQ_MIN_GAIN_DB (-15.0f)
 
 /**
  * Enable or disable the on-chip parametric EQ.

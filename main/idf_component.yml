@@ -3,3 +3,4 @@ dependencies:
   espressif/libsodium: "*"
   espressif/esp_audio_codec: "^2.4.0"
   espressif/led_strip: "*"
+  esphome/esp-audio-libs: "^2.0.3"

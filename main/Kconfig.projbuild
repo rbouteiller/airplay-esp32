@@ -125,6 +125,35 @@ menu "Airplay ESP Configuration"
             When enabled, the SPDIF output driver is compiled instead of the
             standard I2S output driver. Configure the SPDIF data output GPIO
             in the board pin configuration.
+
+    choice OUTPUT_SAMPLE_RATE
+        prompt "Output sample rate"
+        default OUTPUT_SAMPLE_RATE_44100
+        help
+            Sample rate for I2S/SPDIF output. If the AirPlay source
+            sends a different rate, the audio is resampled automatically.
+
+        config OUTPUT_SAMPLE_RATE_44100
+            bool "44100 Hz (native AirPlay, no resampling)"
+        config OUTPUT_SAMPLE_RATE_48000
+            bool "48000 Hz (resampled from 44100)"
+    endchoice
+
+    config OUTPUT_SAMPLE_RATE_HZ
+        int
+        default 44100 if OUTPUT_SAMPLE_RATE_44100
+        default 48000 if OUTPUT_SAMPLE_RATE_48000
+
+    config RESAMPLER_QUALITY
+        int "Resampler filter size (16=fast, 48=good, 320=best)"
+        range 16 320
+        default 48
+        help
+            Number of filters and taps for the ART sinc resampler.
+            Only used when output rate differs from source rate.
+            16 = ~4 KB RAM, lowest quality.
+            48 = ~16 KB RAM, good quality (recommended).
+            320 = ~219 KB RAM, highest quality.
     endmenu
 
     menu "Display Configuration"

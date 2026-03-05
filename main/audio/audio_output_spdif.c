@@ -28,6 +28,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
+#include "audio_resample.h"
 #include "led.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
@@ -39,8 +40,12 @@
 #include <string.h>
 
 #define TAG           "audio_spdif"
-#define SAMPLE_RATE   44100
+#define OUTPUT_RATE   CONFIG_OUTPUT_OUTPUT_RATE_HZ
 #define FRAME_SAMPLES 352
+
+/* Max output frames after resampling one input frame */
+#define MAX_RESAMPLE_FRAMES \
+  ((size_t)((FRAME_SAMPLES + 2) * ((double)OUTPUT_RATE / 44100) + 16))
 
 #define SPDIF_DO_PIN CONFIG_SPDIF_DO_IO
 
@@ -121,6 +126,8 @@ static const int16_t bmc_tab[256] = {
 
 static i2s_chan_handle_t tx_handle;
 static volatile bool flush_requested = false;
+static volatile int source_rate = 44100;
+static volatile bool resample_reinit_needed = false;
 
 /* ── SPDIF encode buffer and write pointer ─────────────────────────────── */
 
@@ -192,17 +199,25 @@ static void spdif_write(const void *src, size_t size) {
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
   int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
-  if (!pcm || !silence) {
+  int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+  if (!pcm || !silence || !resample_buf) {
     ESP_LOGE(TAG, "Failed to allocate PCM buffers");
     free(pcm);
     free(silence);
+    free(resample_buf);
     vTaskDelete(NULL);
     return;
   }
 
   while (true) {
+    if (resample_reinit_needed) {
+      resample_reinit_needed = false;
+      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2,
+                          CONFIG_RESAMPLER_QUALITY);
+    }
     if (flush_requested) {
       flush_requested = false;
+      audio_resample_reset();
       i2s_channel_disable(tx_handle);
       spdif_buf_init();
       spdif_ptr = spdif_buf;
@@ -210,9 +225,16 @@ static void playback_task(void *arg) {
     }
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
-      apply_volume(pcm, samples * 2);
-      led_audio_feed(pcm, samples);
-      spdif_write(pcm, samples * 2 * sizeof(int16_t));
+      int16_t *play_buf = pcm;
+      size_t play_samples = samples;
+      if (audio_resample_is_active()) {
+        play_samples = audio_resample_process(pcm, samples, resample_buf,
+                                              MAX_RESAMPLE_FRAMES);
+        play_buf = resample_buf;
+      }
+      apply_volume(play_buf, play_samples * 2);
+      led_audio_feed(play_buf, play_samples);
+      spdif_write(play_buf, play_samples * 2 * sizeof(int16_t));
       taskYIELD();
     } else {
       led_audio_feed(silence, FRAME_SAMPLES);
@@ -244,7 +266,7 @@ esp_err_t audio_output_init(void) {
    * Only DOUT carries the SPDIF signal; BCK and WS are internal-only.
    * APLL provides exact audio-rate clocking (ESP32). */
   i2s_std_clk_config_t clk_cfg =
-      I2S_STD_CLK_DEFAULT_CONFIG((uint32_t)SAMPLE_RATE * BMC_FACTOR);
+      I2S_STD_CLK_DEFAULT_CONFIG((uint32_t)OUTPUT_RATE * BMC_FACTOR);
 #if SOC_I2S_SUPPORTS_APLL
   clk_cfg.clk_src = I2S_CLK_SRC_APLL;
 #endif
@@ -279,16 +301,25 @@ esp_err_t audio_output_init(void) {
     }
   }
 
-  ESP_LOGI(TAG, "SPDIF output ready  rate=%d×%d  dma=%d×%d", SAMPLE_RATE,
+  audio_resample_init(44100, OUTPUT_RATE, 2, CONFIG_RESAMPLER_QUALITY);
+
+  ESP_LOGI(TAG, "SPDIF output ready  rate=%d×%d  dma=%d×%d", OUTPUT_RATE,
            BMC_FACTOR, DMA_BUF_FRAMES, DMA_BUF_COUNT);
   return ESP_OK;
 }
 
 void audio_output_start(void) {
-  xTaskCreatePinnedToCore(playback_task, "spdif_play", 4096, NULL, 7, NULL,
+  xTaskCreatePinnedToCore(playback_task, "spdif_play", 8192, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }
 
 void audio_output_flush(void) {
   flush_requested = true;
+}
+
+void audio_output_set_source_rate(int rate) {
+  if (rate > 0 && rate != source_rate) {
+    source_rate = rate;
+    resample_reinit_needed = true;
+  }
 }

@@ -37,6 +37,7 @@ set( SRC_FILES
     "network/dns_server.c"
     "led.c"
     "audio/eq_events.c"
+    "audio/audio_resample.cpp"
 )
 
 # Select audio output implementation at compile time

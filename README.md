@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/logo_airplay_esp32.png" alt="AirPlay ESP32" width="200">
+<img src="docs/logo_airplay_esp32.png" alt="AirPlay ESP32" width="400">
 
 # ESP32 AirPlay 2 Receiver
 
@@ -7,6 +7,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/rbouteiller/airplay-esp32?style=flat-square)](https://github.com/rbouteiller/airplay-esp32/network)
 [![License](https://img.shields.io/badge/license-Non--Commercial-blue?style=flat-square)](LICENSE)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
+[![Platform](https://img.shields.io/badge/platform-ESP32-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Platform](https://img.shields.io/badge/platform-SqueezeAMP-green?style=flat-square)](https://github.com/philippe44/SqueezeAMP)
 
@@ -18,7 +19,7 @@
 
 ## What is this?
 
-This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Also supports the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** (ESP32 + TAS5756 DAC) and **[Esparagus Audio Brick](https://esparagus.com/)** (ESP32 + TAS5825M DAC/amp) boards with built-in amplifiers.
+This turns a cheap ESP32 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Works with **ESP32** and **ESP32-S3** chips, including the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** (ESP32 + TAS5756 DAC) and **[Esparagus Audio Brick](https://esparagus.com/)** (ESP32 + TAS5825M DAC/amp) boards with built-in amplifiers.
 
 **No cloud. No app. Just tap and play.**
 
@@ -30,11 +31,9 @@ You only need 2 boards and a few wires. Everything is available on AliExpress / 
 
 | Component                | What to search for                                                      | Price |
 | ------------------------ | ----------------------------------------------------------------------- | ----- |
-| **ESP32-S3 dev board**   | "ESP32-S3 N16R8" (must have **8MB PSRAM**)                              | ~5$   |
+| **ESP32-S3 dev board**   | "ESP32-S3 N16R8"                                                        | ~5$   |
 | **PCM5102A DAC board**   | "PCM5102A I2S DAC" (the small purple board with 3.5mm jack)             | ~3$   |
 | **Female 2.54mm header** | "Female pin header 2.54mm single row" (1x6 or longer, then cut to size) | ~0.5$ |
-
-> **Important:** The ESP32-S3 must have **8MB PSRAM** (the N16R8 variant). Boards without enough PSRAM will not work — the audio decoding needs the extra memory.
 
 > **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** or **[Esparagus Audio Brick](https://esparagus.com/)** board, you don't need a separate DAC — just flash the appropriate firmware target. See the [SqueezeAMP](#squeezeamp) and [Esparagus Audio Brick](#esparagus-audio-brick) sections below.
 
@@ -230,16 +229,16 @@ pio run -e esparagus-audio-brick -t monitor
 
 ### Default GPIO Assignments
 
-| Function       | GPIO | Notes                              |
-| -------------- | ---- | ---------------------------------- |
-| I2S BCK        | 26   | Bit clock                          |
-| I2S WS         | 25   | Word select (LRCLK)                |
-| I2S DO         | 22   | Serial audio data                  |
-| I2C SDA        | 21   | DAC control (TAS5825M)             |
-| I2C SCL        | 27   | DAC control (TAS5825M)             |
-| Jack detect    | 34   | Headphone jack insertion (input)   |
-| DAC warning    | 36   | TAS5825M warning output (input)    |
-| Speaker fault  | 39   | TAS5825M fault output (input)      |
+| Function      | GPIO | Notes                            |
+| ------------- | ---- | -------------------------------- |
+| I2S BCK       | 26   | Bit clock                        |
+| I2S WS        | 25   | Word select (LRCLK)              |
+| I2S DO        | 22   | Serial audio data                |
+| I2C SDA       | 21   | DAC control (TAS5825M)           |
+| I2C SCL       | 27   | DAC control (TAS5825M)           |
+| Jack detect   | 34   | Headphone jack insertion (input) |
+| DAC warning   | 36   | TAS5825M warning output (input)  |
+| Speaker fault | 39   | TAS5825M fault output (input)    |
 
 > GPIOs 34–39 on ESP32 are input-only with no internal pull-up. The board provides external pull-ups on the fault and warning lines.
 
@@ -320,6 +319,7 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 - **Multi-room support** — PTP-based timing for synchronized playback across devices
 - **Web configuration** — set up WiFi and device name from your browser
 - **OTA updates** — update firmware over WiFi, no USB needed after first flash
+- **48 kHz output** — optional sample rate conversion (44.1 kHz → 48 kHz) via ART sinc resampler for DACs and S/PDIF receivers that need it
 - **LED indicator** — visual feedback for playback status
 - **OLED display** — optional screen showing track metadata, progress bar, and playback time
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
@@ -401,8 +401,14 @@ MCLK is not used for PCM5102A as generates it internally. It is, however, connec
                         │
                         ▼
               ┌──────────────────┐
+              │   Resampler      │
+              │  (optional SRC)  │
+              └──────────────────┘
+                        │
+                        ▼
+              ┌──────────────────┐
               │    I2S Output    │
-              │   (44.1kHz/16b)  │
+              │ (44.1 or 48kHz)  │
               └──────────────────┘
 ```
 

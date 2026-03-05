@@ -8,6 +8,7 @@
 
 #include "audio_buffer.h"
 #include "audio_decoder.h"
+#include "audio_output.h"
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
@@ -132,6 +133,7 @@ void audio_receiver_set_format(const audio_format_t *format) {
   }
 
   audio_timing_set_format(&receiver.timing, format);
+  audio_output_set_source_rate(format->sample_rate);
 }
 
 void audio_receiver_set_encryption(const audio_encrypt_t *encrypt) {

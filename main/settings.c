@@ -257,9 +257,20 @@ esp_err_t settings_set_eq_gains(const float gains_db[SETTINGS_EQ_BANDS]) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  /* Skip write if unchanged */
-  if (g_eq_loaded && memcmp(gains_db, g_eq_gains, sizeof(g_eq_gains)) == 0) {
-    return ESP_OK;
+  /* Skip write if unchanged (compare element-by-element to avoid
+     memcmp on floats, which is flagged by
+     bugprone-suspicious-memory-comparison) */
+  if (g_eq_loaded) {
+    bool unchanged = true;
+    for (int i = 0; i < SETTINGS_EQ_BANDS; i++) {
+      if (gains_db[i] != g_eq_gains[i]) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) {
+      return ESP_OK;
+    }
   }
 
   nvs_handle_t nvs;

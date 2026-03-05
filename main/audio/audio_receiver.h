@@ -223,14 +223,3 @@ void audio_receiver_stop_buffered_only(void);
  * Set the stream type (realtime vs buffered)
  */
 void audio_receiver_set_stream_type(audio_stream_type_t type);
-
-/**
- * Set a deferred flush: keep playing until RTP timestamp flush_until_ts,
- * then bulk-flush the buffer and resume fresh (post_flush = true so the
- * first new-track frame plays immediately without waiting for a pre-buffer).
- * Called by handle_flushbuffered when flushFromSeq/flushUntilTS are present.
- * Thread-safe: flush_until_ts is written before the bool flag so the DMA
- * callback task always reads a consistent value (release on write,
- * acquire on read — natural on Xtensa aligned 32-bit stores/loads).
- */
-void audio_receiver_set_deferred_flush(uint32_t flush_until_ts);
