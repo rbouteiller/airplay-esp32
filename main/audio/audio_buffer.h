@@ -23,7 +23,11 @@ typedef struct __attribute__((packed)) {
   uint8_t reserved;
 } audio_frame_header_t;
 
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+#define MAX_RING_BUFFER_FRAMES 1000
+#else
 #define MAX_RING_BUFFER_FRAMES 500
+#endif
 #define BYTES_PER_FRAME                                          \
   ((size_t)sizeof(audio_frame_header_t) +                        \
    ((size_t)AAC_FRAMES_PER_PACKET * (size_t)AUDIO_MAX_CHANNELS * \
