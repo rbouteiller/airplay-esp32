@@ -9,8 +9,10 @@
 
 #include "settings.h"
 #include "wifi.h"
+#include "ethernet.h"
 #include "ota.h"
 #include "rtsp_server.h"
+#include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -127,6 +129,8 @@ static const char *HTML_CONTROL_PANEL =
     "id='info-name'>-</span></div>\n"
     "<div class='info-item'><label>Free Memory</label><span "
     "id='info-heap'>-</span></div>\n"
+    "<div class='info-item'><label>Firmware</label><span "
+    "id='info-fw'>-</span></div>\n"
     "</div>\n"
     "<div class='actions'><button class='btn btn-danger' "
     "onclick='restart()'>Restart Device</button></div>\n"
@@ -204,8 +208,10 @@ static const char *HTML_CONTROL_PANEL =
     "  try{var r=await fetch('/api/system/info');var d=await r.json();\n"
     "    if(d.success){var i=d.info;var "
     "b=document.getElementById('status-bar');\n"
-    "      if(i.wifi_connected){b.className='status-bar "
-    "ok';b.innerHTML='Connected to WiFi: '+i.ip;}\n"
+    "      if(i.eth_connected){b.className='status-bar "
+    "ok';b.innerHTML='Ethernet: '+i.ip;}\n"
+    "      else if(i.wifi_connected){b.className='status-bar "
+    "ok';b.innerHTML='WiFi: '+i.ip;}\n"
     "      else{b.className='status-bar err';b.innerHTML='Not connected - "
     "Configure WiFi below';}\n"
     "      document.getElementById('info-ip').textContent=i.ip||'-';\n"
@@ -215,6 +221,8 @@ static const char *HTML_CONTROL_PANEL =
     "      "
     "document.getElementById('info-heap').textContent=Math.round(i.free_heap/"
     "1024)+' KB';\n"
+    "      "
+    "document.getElementById('info-fw').textContent=i.firmware_version||'-';\n"
     "      "
     "document.getElementById('dev-name').placeholder=i.device_name||'';}}catch("
     "e){}}\n"
@@ -421,16 +429,26 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   char mac_str[18] = {0};
   char device_name[65] = {0};
   bool wifi_connected = wifi_is_connected();
+  bool eth_connected = ethernet_is_connected();
 
-  wifi_get_ip_str(ip_str, sizeof(ip_str));
-  wifi_get_mac_str(mac_str, sizeof(mac_str));
+  // Show IP and MAC for the active interface
+  if (eth_connected) {
+    ethernet_get_ip_str(ip_str, sizeof(ip_str));
+    ethernet_get_mac_str(mac_str, sizeof(mac_str));
+  } else {
+    wifi_get_ip_str(ip_str, sizeof(ip_str));
+    wifi_get_mac_str(mac_str, sizeof(mac_str));
+  }
   settings_get_device_name(device_name, sizeof(device_name));
 
   cJSON_AddStringToObject(info, "ip", ip_str);
   cJSON_AddStringToObject(info, "mac", mac_str);
   cJSON_AddStringToObject(info, "device_name", device_name);
   cJSON_AddBoolToObject(info, "wifi_connected", wifi_connected);
+  cJSON_AddBoolToObject(info, "eth_connected", eth_connected);
   cJSON_AddNumberToObject(info, "free_heap", esp_get_free_heap_size());
+  const esp_app_desc_t *app_desc = esp_app_get_description();
+  cJSON_AddStringToObject(info, "firmware_version", app_desc->version);
 
   cJSON_AddItemToObject(json, "info", info);
   cJSON_AddBoolToObject(json, "success", true);

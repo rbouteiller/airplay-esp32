@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "rtsp_server.h"
+#include <inttypes.h>
 #include <stdlib.h>
 
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
@@ -34,6 +35,8 @@
 
 static i2s_chan_handle_t tx_handle;
 static volatile bool flush_requested = false;
+static volatile bool playback_running = false;
+static TaskHandle_t playback_task_handle = NULL;
 
 static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
@@ -51,12 +54,13 @@ static void playback_task(void *arg) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
     free(silence);
+    playback_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
 
   size_t written;
-  while (true) {
+  while (playback_running) {
     if (flush_requested) {
       flush_requested = false;
       i2s_channel_disable(tx_handle);
@@ -75,6 +79,11 @@ static void playback_task(void *arg) {
       vTaskDelay(1);
     }
   }
+
+  free(pcm);
+  free(silence);
+  playback_task_handle = NULL;
+  vTaskDelete(NULL);
 }
 
 esp_err_t audio_output_init(void) {
@@ -119,8 +128,45 @@ esp_err_t audio_output_init(void) {
 }
 
 void audio_output_start(void) {
-  xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
-                          PLAYBACK_CORE);
+  if (playback_task_handle != NULL) {
+    return; // already running
+  }
+  playback_running = true;
+  xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7,
+                          &playback_task_handle, PLAYBACK_CORE);
+}
+
+void audio_output_stop(void) {
+  if (playback_task_handle == NULL) {
+    return;
+  }
+  playback_running = false;
+  // Wait for task to exit cleanly
+  int timeout = 40;
+  while (playback_task_handle != NULL && timeout-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  if (playback_task_handle != NULL) {
+    ESP_LOGW(TAG, "Playback task did not exit within timeout");
+  } else {
+    ESP_LOGI(TAG, "Playback task stopped");
+  }
+}
+
+esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
+  size_t written = 0;
+  return i2s_channel_write(tx_handle, data, bytes, &written, wait);
+}
+
+void audio_output_set_sample_rate(uint32_t rate) {
+  // Only safe to call when no writer task is actively using I2S
+  // (AirPlay playback task must be stopped, BT calls this before
+  // the I2S writer task starts consuming data)
+  ESP_LOGI(TAG, "Setting sample rate to %" PRIu32 " Hz", rate);
+  i2s_channel_disable(tx_handle);
+  i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+  i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
+  i2s_channel_enable(tx_handle);
 }
 
 void audio_output_flush(void) {

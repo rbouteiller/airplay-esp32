@@ -17,7 +17,7 @@
 
 #define RTP_HEADER_SIZE         12
 #define AUDIO_RECV_STACK_SIZE   12288
-#define AUDIO_CTRL_STACK_SIZE   8192
+#define AUDIO_CTRL_STACK_SIZE   4096
 #define STACK_LOG_INTERVAL_US   5000000
 #define RESEND_ERROR_BACKOFF_US 100000 // 100ms backoff after sendto failure
 #define MAX_RESEND_GAP          100 // Don't request retransmit for gaps > 100
@@ -298,14 +298,16 @@ static void control_receiver_task(void *pvParameters) {
       break;
 
     case 0xD7: // AirPlay 2 anchor timing packet (PTP timing)
-      // Format: [4] RTP frame, [8] PTP time ns, [20] clock ID
+      // Format: [4] RTP frame, [8] PTP time ns, [16] RTP frame 2, [20] clock ID
+      // The RTP timestamp at [4] is the frame that should play at the
+      // PTP time — use it directly (matching the NTP anchor path).
+      // compute_early_us handles hardware latency compensation.
       if (len >= 28) {
         uint32_t frame_1 = nctoh32(packet + 4);
         uint64_t network_time_ns = nctoh64(packet + 8);
         uint64_t clock_id = nctoh64(packet + 20);
 
-        audio_receiver_set_anchor_time(clock_id, network_time_ns,
-                                       frame_1 - 11035);
+        audio_receiver_set_anchor_time(clock_id, network_time_ns, frame_1);
       }
       break;
 
@@ -389,7 +391,7 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
                                   AUDIO_CTRL_STACK_SIZE, stream, 7,
                                   &state->control_task_handle, AUDIO_TASK_CORE);
     if (ret != pdPASS) {
-      ESP_LOGW(TAG, "Failed to create control receiver task");
+      ESP_LOGE(TAG, "Failed to create control receiver task");
       close(state->control_socket);
       state->control_socket = 0;
     }

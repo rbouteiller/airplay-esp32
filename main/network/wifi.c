@@ -133,7 +133,8 @@ static void wifi_select_best_ap(const char *ssid) {
       .channel = 0,
       .show_hidden = false,
       .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-      .scan_time = {.active = {.min = 100, .max = 300}},
+      .scan_time = {.active = {.min = 0,
+                               .max = 0}}, // 0, 0 needed for BT co-exist
   };
 
   esp_err_t err = esp_wifi_scan_start(&scan_config, true);

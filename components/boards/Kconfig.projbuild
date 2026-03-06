@@ -149,6 +149,57 @@ menu "Board Configuration"
                     Active level for mute GPIO (0=active low, 1=active high).
         endmenu
 
+        menu "SPI and Ethernet Configuration"
+            config ETH_W5500_ENABLED
+                bool "Enable W5500 SPI Ethernet"
+                default n
+                help
+                    Enable W5500 SPI Ethernet support. Requires SPI bus pins
+                    and W5500 chip-select, interrupt and reset GPIOs.
+
+            config SPI_CLK_GPIO
+                int "SPI Clock GPIO"
+                default 18
+                depends on ETH_W5500_ENABLED
+                help
+                    SPI bus clock GPIO (shared with display).
+
+            config SPI_MOSI_GPIO
+                int "SPI MOSI GPIO"
+                default 23
+                depends on ETH_W5500_ENABLED
+                help
+                    SPI bus MOSI GPIO (shared with display).
+
+            config SPI_MISO_GPIO
+                int "SPI MISO GPIO"
+                default 19
+                depends on ETH_W5500_ENABLED
+                help
+                    SPI bus MISO GPIO (shared with display).
+
+            config ETH_W5500_CS_GPIO
+                int "W5500 Chip Select GPIO"
+                default 5
+                depends on ETH_W5500_ENABLED
+                help
+                    GPIO for W5500 SPI chip select.
+
+            config ETH_W5500_INT_GPIO
+                int "W5500 Interrupt GPIO"
+                default 35
+                depends on ETH_W5500_ENABLED
+                help
+                    GPIO for W5500 interrupt. Set to -1 to use polling.
+
+            config ETH_W5500_RST_GPIO
+                int "W5500 Reset GPIO"
+                default 14
+                depends on ETH_W5500_ENABLED
+                help
+                    GPIO for W5500 hardware reset. Set to -1 to disable.
+        endmenu
+
     endmenu
 
 endmenu

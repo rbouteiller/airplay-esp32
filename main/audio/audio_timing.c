@@ -37,6 +37,11 @@
 // and must be discarded rather than played.  10 s is well above the deepest
 // observed AirPlay 2 pre-buffer depth and well below any real seek delta.
 #define POST_FLUSH_STALE_THRESHOLD_US 10000000LL // 10 seconds
+// POST_FLUSH_TIMEOUT_US: maximum duration of the post_flush bypass.  After a
+// seek/flush the phone's pre-buffer window causes frames to appear hundreds of
+// ms early.  We play them immediately for this duration so the user hears audio
+// right away, then revert to normal timing so the anchor can enforce A/V sync.
+#define POST_FLUSH_TIMEOUT_US 500000LL // 500 ms
 
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
@@ -150,6 +155,7 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->consecutive_early_frames = 0;
   timing->consecutive_late_frames = 0;
   timing->post_flush = false;
+  timing->post_flush_start_us = 0;
   timing->deferred_flush_pending = false;
   timing->flush_until_ts = 0;
 }
@@ -180,6 +186,10 @@ uint32_t audio_timing_get_output_latency(const audio_timing_t *timing) {
   }
 
   return timing->output_latency_us;
+}
+
+uint32_t audio_timing_get_hardware_latency(void) {
+  return HARDWARE_OUTPUT_LATENCY_US;
 }
 
 void audio_timing_set_anchor(audio_timing_t *timing,
@@ -350,6 +360,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         // post_flush = true so the first frame of the next track plays
         // immediately rather than waiting out the phone's pre-buffer window.
         timing->post_flush = true;
+        timing->post_flush_start_us = 0;
         return 0;
       }
     }
@@ -372,6 +383,15 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
           // Bypass: play regardless of early/late — the phone pre-buffers
           // several seconds ahead of the anchor's current position after a
           // seek, so frames appear early through no fault of the stream.
+          //
+          // Track the start time so we can exit post_flush after a timeout
+          // rather than requiring early to reach ±TIMING_THRESHOLD_US (which
+          // may never happen if the pre-buffer depth exceeds the threshold).
+          if (timing->post_flush_start_us == 0) {
+            timing->post_flush_start_us = esp_timer_get_time();
+          }
+          int64_t flush_elapsed =
+              esp_timer_get_time() - timing->post_flush_start_us;
           // Exception: frames that are MORE than POST_FLUSH_STALE_THRESHOLD_US
           // early are old-position data still draining from the TCP kernel
           // buffer (e.g. frames from 2:30 after a seek back to 0:00).  Discard
@@ -401,11 +421,19 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
             // buffer will play immediately rather than waiting out the anchor.
             return 0;
           }
-          // Within pre-buffer depth — play and check if anchor is now on-time.
-          if (early_us >= -TIMING_THRESHOLD_US &&
-              early_us <= TIMING_THRESHOLD_US) {
-            ESP_LOGI(TAG, "post_flush: anchor on-time, resuming normal timing");
+          // Within pre-buffer depth — play and check if we should exit.
+          // Exit post_flush when either:
+          //  1. early is within ±TIMING_THRESHOLD_US (anchor is on-time), or
+          //  2. POST_FLUSH_TIMEOUT_US has elapsed (pre-buffer depth exceeds
+          //     threshold but anchor is stable — let normal timing take over
+          //     so frames are held until their scheduled play point).
+          if ((early_us >= -TIMING_THRESHOLD_US &&
+               early_us <= TIMING_THRESHOLD_US) ||
+              flush_elapsed >= POST_FLUSH_TIMEOUT_US) {
+            ESP_LOGI(TAG, "post_flush done: early=%lld ms, elapsed=%lld ms",
+                     early_us / 1000LL, flush_elapsed / 1000LL);
             timing->post_flush = false;
+            timing->post_flush_start_us = 0;
           }
           timing->consecutive_early_frames = 0;
           timing->consecutive_late_frames = 0;

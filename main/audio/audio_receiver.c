@@ -161,6 +161,10 @@ uint32_t audio_receiver_get_output_latency_us(void) {
   return audio_timing_get_output_latency(&receiver.timing);
 }
 
+uint32_t audio_receiver_get_hardware_latency_us(void) {
+  return audio_timing_get_hardware_latency();
+}
+
 void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                                     uint32_t rtp_time) {
   if (!receiver.stream) {
@@ -446,6 +450,7 @@ void audio_receiver_seek_flush(void) {
   // Also disarms any pending deferred flush (audio_timing_reset clears it).
   audio_receiver_flush();
   receiver.timing.post_flush = true;
+  receiver.timing.post_flush_start_us = 0; // will be set on first frame
   // Request that the RTP gate be armed as soon as the next anchor arrives.
   // This covers the forward-seek case where the buffer is already empty by
   // the time SETRATEANCHORTIME arrives, so the seek-detection heuristic

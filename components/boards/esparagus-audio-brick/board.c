@@ -24,6 +24,10 @@
 #include "rtsp_events.h"
 #include "settings.h"
 
+#ifdef CONFIG_ETH_W5500_ENABLED
+#include "driver/spi_master.h"
+#endif
+
 #define ISR_HANDLER_TASK_STACK_SIZE 2048
 #define ISR_HANDLER_TASK_PRIORITY   5
 
@@ -37,6 +41,10 @@ static bool s_board_initialized = false;
 static TaskHandle_t gpio_task_handle = NULL;
 static volatile bool speaker_fault_active = false;
 static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
+
+#ifdef CONFIG_ETH_W5500_ENABLED
+static bool s_spi_bus_initialized = false;
+#endif
 
 static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data);
@@ -57,6 +65,11 @@ board_res_handle_t iot_board_get_handle(int id) {
   switch (id) {
   case BOARD_I2C0_ID:
     return (board_res_handle_t)s_i2c_bus_handle;
+#ifdef CONFIG_ETH_W5500_ENABLED
+  case BOARD_SPI2_ID:
+    return s_spi_bus_initialized ? (board_res_handle_t)(intptr_t)BOARD_SPI_HOST
+                                 : NULL;
+#endif
   default:
     return NULL;
   }
@@ -135,6 +148,25 @@ esp_err_t iot_board_init(void) {
   ESP_LOGI(TAG, "I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
            BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
 
+#ifdef CONFIG_ETH_W5500_ENABLED
+  // Initialize SPI bus (shared between W5500 and future display)
+  spi_bus_config_t spi_bus_cfg = {
+      .mosi_io_num = BOARD_SPI_MOSI_GPIO,
+      .miso_io_num = BOARD_SPI_MISO_GPIO,
+      .sclk_io_num = BOARD_SPI_CLK_GPIO,
+      .quadwp_io_num = -1,
+      .quadhd_io_num = -1,
+  };
+  err = spi_bus_initialize(BOARD_SPI_HOST, &spi_bus_cfg, SPI_DMA_CH_AUTO);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(err));
+    return err;
+  }
+  s_spi_bus_initialized = true;
+  ESP_LOGI(TAG, "SPI bus initialized: mosi=%d, miso=%d, clk=%d",
+           BOARD_SPI_MOSI_GPIO, BOARD_SPI_MISO_GPIO, BOARD_SPI_CLK_GPIO);
+#endif
+
   err = dac_init(s_i2c_bus_handle);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize DAC: %s", esp_err_to_name(err));
@@ -190,6 +222,13 @@ esp_err_t iot_board_deinit(void) {
     i2c_del_master_bus(s_i2c_bus_handle);
     s_i2c_bus_handle = NULL;
   }
+
+#ifdef CONFIG_ETH_W5500_ENABLED
+  if (s_spi_bus_initialized) {
+    spi_bus_free(BOARD_SPI_HOST);
+    s_spi_bus_initialized = false;
+  }
+#endif
 
   s_board_initialized = false;
   return ESP_OK;

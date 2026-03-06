@@ -383,7 +383,6 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
       vTaskDelay(pdMS_TO_TICKS(5));
     }
   }
-  ESP_LOGI(TAG, "Init sequence complete");
 
   // Give the device time to reach PLAY state
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -415,30 +414,8 @@ static esp_err_t tas58xx_deinit(void) {
 
 static void tas58xx_set_power_mode(dac_power_mode_t mode) {
   REG_LOCK();
-
-  const char *mode_str;
-  switch (mode) {
-  case DAC_POWER_ON:
-    mode_str = "ON(PLAY)";
-    break;
-  case DAC_POWER_STANDBY:
-    mode_str = "STANDBY(HIZ)";
-    break;
-  case DAC_POWER_OFF:
-    mode_str = "OFF(DEEP_SLEEP)";
-    break;
-  default:
-    ESP_LOGW(TAG, "Unhandled power mode %d", mode);
-    REG_UNLOCK();
-    return;
-  }
-
-  // Read current state for logging
   uint8_t cur_ctrl2 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL2, &cur_ctrl2);
-  ESP_LOGI(TAG, "Power mode -> %s (DEVICE_CTRL2 was 0x%02X)", mode_str,
-           cur_ctrl2);
-
   uint8_t cur_state = cur_ctrl2 & CTRL2_STATE_MASK;
 
   if (mode == DAC_POWER_ON) {
@@ -446,7 +423,7 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     // The PLL needs valid I2S clocks to lock — they must be present
     // by the time this function is called.
     if (cur_state != CTRL2_HIZ) {
-      ESP_LOGI(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
+      ESP_LOGW(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -480,7 +457,6 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     vTaskDelay(pdMS_TO_TICKS(5));
 
     // Request transition to PLAY (unmuted)
-    ESP_LOGI(TAG, "Requesting PLAY...");
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
 
     // Poll POWER_STATE until the device actually reaches PLAY.
@@ -600,14 +576,16 @@ static void tas58xx_set_volume(float volume_airplay_db) {
     reg_val = DIG_VOL_MUTE;
   } else {
     int raw = DIG_VOL_0DB - (int)(db_level * 2.0f);
-    if (raw < 0x00)
+    if (raw < 0x00) {
       raw = 0x00;
-    if (raw > 0xFE)
+    }
+    if (raw > 0xFE) {
       raw = 0xFE;
+    }
     reg_val = (uint8_t)raw;
   }
 
-  ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
+  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
            volume_airplay_db, db_level, reg_val);
 
   tas58xx_write_reg(REG_DIG_VOL, reg_val);
@@ -666,11 +644,13 @@ static const float eq_center_freq[TAS58XX_EQ_BANDS] = {
 static inline esp_err_t select_book_page(uint8_t book, uint8_t page) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   err = tas58xx_write_reg(REG_BOOK_SEL, book);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   return tas58xx_write_reg(REG_PAGE_SEL, page);
 }
 
@@ -678,11 +658,13 @@ static inline esp_err_t select_book_page(uint8_t book, uint8_t page) {
 static inline esp_err_t select_default_page(void) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   err = tas58xx_write_reg(REG_BOOK_SEL, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   return tas58xx_write_reg(REG_PAGE_SEL, 0x00);
 }
 
@@ -697,8 +679,9 @@ static esp_err_t write_biquad_coeff(uint8_t page, uint8_t reg_start,
 
   /* Select coefficient page */
   err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   uint8_t buf[BQ_COEFF_SIZE];
   for (int i = 0; i < 5; i++) {
@@ -721,8 +704,9 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
                                   const uint8_t data[EQ_COEFF_BYTES]) {
   esp_err_t err;
   err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, sub_addr, data,
                        EQ_COEFF_BYTES);
@@ -730,8 +714,9 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
 
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
   esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
   uint8_t buf[4] = {(uint8_t)(val >> 24), (uint8_t)(val >> 16),
                     (uint8_t)(val >> 8), (uint8_t)(val)};
   return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg, buf, 4);
@@ -751,8 +736,9 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
    * All values from SLAA786A Table 9 (Process Flow 1).
    */
   err = select_book_page(0x8C, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   /* Volume softening filter alpha (Page 0x01 Reg 0x2C) */
   write_dsp_coeff32(0x01, 0x2C, 0x00E2C46B);
@@ -935,8 +921,9 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
 static esp_err_t ensure_custom_coeffs_mode(void) {
   uint8_t dsp_ctrl;
   esp_err_t err = tas58xx_read_reg(REG_DSP_CTRL, &dsp_ctrl);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   if (dsp_ctrl & 0x01) {
     /* Mute while we reconfigure the entire coefficient RAM */
@@ -952,8 +939,9 @@ static esp_err_t ensure_custom_coeffs_mode(void) {
     if (!s_dsp_defaults_written) {
       err = write_dsp_signal_path_defaults();
       if (err != ESP_OK) {
-        if (was_unmuted)
+        if (was_unmuted) {
           tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2);
+        }
         return err;
       }
     }
@@ -1004,13 +992,15 @@ static esp_err_t program_biquad_raw(int bq,
 
   /* Ensure DSP has all signal-path defaults before using custom coefficients */
   err = ensure_custom_coeffs_mode();
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   /* Enter coefficient book */
   err = select_book_page(BQ_COEFF_BOOK, 0x00);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     goto out;
+  }
 
   /* Channel 1 (Left) */
   err =
@@ -1044,8 +1034,9 @@ static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
 
   err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
     return err;
+  }
 
   uint8_t mode_data[EQ_MODE_SIZE] = {
       0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
@@ -1089,10 +1080,12 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
 
   /* Clamp gain to integer dB range of pre-computed table */
   int gain_int = (int)roundf(gain_db);
-  if (gain_int > TAS58XX_EQ_MAX_GAIN_DB)
+  if (gain_int > TAS58XX_EQ_MAX_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
-  if (gain_int < TAS58XX_EQ_MIN_GAIN_DB)
+  }
+  if (gain_int < TAS58XX_EQ_MIN_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
+  }
 
   int idx = gain_int + EQ_GAIN_OFFSET;
   ESP_LOGD(TAG, "EQ: band %d (%.0f Hz) -> %+d dB (table idx %d)", band,
@@ -1105,8 +1098,9 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
 }
 
 esp_err_t tas58xx_eq_set_all(const float gains_db[TAS58XX_EQ_BANDS]) {
-  if (!gains_db)
+  if (!gains_db) {
     return ESP_ERR_INVALID_ARG;
+  }
 
   REG_LOCK();
 
@@ -1120,10 +1114,12 @@ esp_err_t tas58xx_eq_set_all(const float gains_db[TAS58XX_EQ_BANDS]) {
   esp_err_t first_err = ESP_OK;
   for (int i = 0; i < TAS58XX_EQ_BANDS; i++) {
     int gain_int = (int)roundf(gains_db[i]);
-    if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB)
+    if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB) {
       gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
-    if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB)
+    }
+    if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB) {
       gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
+    }
 
     int idx = gain_int + EQ_GAIN_OFFSET;
     esp_err_t err = program_biquad_raw(i, eq_coeff_table[idx][i].bytes);
@@ -1175,8 +1171,9 @@ esp_err_t tas58xx_eq_flat(void) {
 }
 
 float tas58xx_eq_get_center_freq(int band) {
-  if (band < 0 || band >= TAS58XX_EQ_BANDS)
+  if (band < 0 || band >= TAS58XX_EQ_BANDS) {
     return 0.0f;
+  }
   return eq_center_freq[band];
 }
 

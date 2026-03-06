@@ -74,7 +74,7 @@ jobs:
     needs: [format-check, lint-check]
     strategy:
       matrix:
-        target: [esp32s3, squeezeamp, squeezeamp-4m, esparagus-audio-brick]
+        target: [esp32s3, squeezeamp, squeezeamp-bt, squeezeamp-4m, esparagus-audio-brick, esparagus-audio-brick-bt]
     steps:
       - uses: actions/checkout@v6
 

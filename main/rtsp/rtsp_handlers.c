@@ -19,6 +19,9 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
+#ifdef CONFIG_BT_A2DP_ENABLE
+#include "dac.h"
+#endif
 #include "hap.h"
 #include "ntp_clock.h"
 #include "plist.h"
@@ -403,13 +406,25 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_array_end(&p);
 
     // Audio latencies array
+    // Type 96 (realtime/UDP): PTP sync + internal hardware compensation
+    // means audio exits the speaker at the correct wall-clock time;
+    // reporting additional latency would cause the sender to over-delay video.
+    // Type 103 (buffered/TCP): no timestamp-based scheduling, so the full
+    // jitter-buffer depth + hardware pipeline delay applies.
     plist_dict_array_begin(&p, "audioLatencies");
     plist_dict_begin(&p);
     plist_dict_int(&p, "type", 96);
     plist_dict_int(&p, "audioType", 0x64);
     plist_dict_int(&p, "inputLatencyMicros", 0);
+    plist_dict_int(&p, "outputLatencyMicros", 0);
+    plist_dict_end(&p);
+    plist_dict_begin(&p);
+    plist_dict_int(&p, "type", 103);
+    plist_dict_int(&p, "audioType", 0x64);
+    plist_dict_int(&p, "inputLatencyMicros", 0);
     plist_dict_int(&p, "outputLatencyMicros",
-                   audio_receiver_get_output_latency_us());
+                   audio_receiver_get_output_latency_us() +
+                       audio_receiver_get_hardware_latency_us());
     plist_dict_end(&p);
     plist_array_end(&p);
 
@@ -973,6 +988,12 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                                       conn->client_control_port);
   }
 
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Apply saved AirPlay volume before playback starts — the DAC may have
+  // been left at a different level by Bluetooth A2DP.
+  dac_set_volume(conn->volume_db);
+#endif
+
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
   conn->stream_active = true;
@@ -986,6 +1007,12 @@ static void handle_record(int socket, rtsp_conn_t *conn,
 
   ESP_LOGI(TAG, "RECORD received - starting playback, stream_paused was %d",
            conn->stream_paused);
+
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Ensure DAC is at the saved AirPlay volume before any audio plays —
+  // Bluetooth A2DP may have left it at a different level.
+  dac_set_volume(conn->volume_db);
+#endif
 
   if (conn->stream_paused) {
     // Resuming from PAUSE: the stream listener is still running and the
@@ -1002,12 +1029,10 @@ static void handle_record(int socket, rtsp_conn_t *conn,
   conn->stream_paused = false;
   rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
 
+  // AirPlay 1 RECORD is always type 96 (realtime/UDP) with NTP sync.
+  // Internal timing already compensates for hardware latency, so report 0.
   char headers[128];
-  uint32_t output_latency_us = audio_receiver_get_output_latency_us();
-  int sample_rate = conn->sample_rate > 0 ? conn->sample_rate : 44100;
-  uint32_t latency_samples =
-      (uint32_t)(((uint64_t)output_latency_us * (uint64_t)sample_rate) /
-                 1000000ULL);
+  uint32_t latency_samples = 0;
   snprintf(headers, sizeof(headers),
            "Audio-Latency: %" PRIu32 "\r\n"
            "Audio-Jack-Status: connected\r\n",

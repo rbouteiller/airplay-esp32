@@ -28,6 +28,23 @@ esp_err_t settings_get_volume(float *volume_db);
  */
 esp_err_t settings_set_volume(float volume_db);
 
+#ifdef CONFIG_BT_A2DP_ENABLE
+/**
+ * Get saved Bluetooth volume (AVRC 0-127 scale).
+ * @param volume Output: 0 (mute) to 127 (max)
+ * @return ESP_OK if found, ESP_ERR_NOT_FOUND if no saved value
+ */
+esp_err_t settings_get_bt_volume(uint8_t *volume);
+
+/**
+ * Save Bluetooth volume to persistent storage (AVRC 0-127 scale).
+ * Does NOT apply the volume — caller is responsible for calling
+ * dac_set_volume().
+ * @param volume 0 (mute) to 127 (max)
+ */
+esp_err_t settings_set_bt_volume(uint8_t volume);
+#endif
+
 /**
  * Get saved WiFi SSID
  * @param ssid Output buffer for SSID

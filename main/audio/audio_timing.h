@@ -36,9 +36,11 @@ typedef struct {
   // Post-seek/skip flag: set by audio_receiver_seek_flush() via
   // audio_timing_t so that audio_timing_read plays frames immediately rather
   // than silencing them during the phone's pre-buffer window (which can be
-  // several seconds).  Cleared automatically on the first on-time frame,
-  // matching shairport-sync's first_packet_timestamp==0 behaviour.
+  // several seconds).  Cleared automatically after POST_FLUSH_TIMEOUT_US of
+  // real-time playback so normal timing re-engages and frames are held until
+  // their scheduled play point.
   bool post_flush;
+  int64_t post_flush_start_us; // esp_timer_get_time() when post_flush began
   // Deferred flush (AirPlay 2 FLUSHBUFFERED with flushFromSeq present):
   // keep playing until a frame with rtp_timestamp >= flush_until_ts arrives,
   // then bulk-flush and start fresh.  Written by the RTSP task, read by the
@@ -56,6 +58,7 @@ void audio_timing_set_output_latency(audio_timing_t *timing,
                                      const audio_format_t *format,
                                      uint32_t latency_us);
 uint32_t audio_timing_get_output_latency(const audio_timing_t *timing);
+uint32_t audio_timing_get_hardware_latency(void);
 void audio_timing_set_anchor(audio_timing_t *timing,
                              const audio_format_t *format, uint64_t clock_id,
                              uint64_t network_time_ns, uint32_t rtp_time);

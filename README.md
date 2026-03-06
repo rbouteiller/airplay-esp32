@@ -8,9 +8,10 @@
 [![License](https://img.shields.io/badge/license-Non--Commercial-blue?style=flat-square)](LICENSE)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32-s3)
+[![Platform](https://img.shields.io/badge/platform-ESP32-green?style=flat-square)](https://www.espressif.com/en/products/socs/esp32)
 [![Platform](https://img.shields.io/badge/platform-SqueezeAMP-green?style=flat-square)](https://github.com/philippe44/SqueezeAMP)
 
-**Stream music from your Apple devices to any speaker for ~10$**
+**Stream music from your Apple devices — or phone via Bluetooth — to any speaker for ~10$**
 
 </div>
 
@@ -19,6 +20,8 @@
 ## What is this?
 
 This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Also supports the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** (ESP32 + TAS5756 DAC) and **[Esparagus Audio Brick](https://esparagus.com/)** (ESP32 + TAS5825M DAC/amp) boards with built-in amplifiers.
+
+ESP32 boards (SqueezeAMP, Esparagus Audio Brick) also support **Bluetooth A2DP** — stream from any phone or tablet over Bluetooth when AirPlay isn't in use. The Esparagus Audio Brick additionally supports **wired Ethernet** via an optional W5500 SPI module.
 
 **No cloud. No app. Just tap and play.**
 
@@ -107,7 +110,10 @@ Flash a pre-built firmware directly from your browser — no toolchain, no code,
 1. Download the latest firmware from the [Releases page](https://github.com/rbouteiller/airplay-esp32/releases/latest):
    - **`airplay2-receiver-esp32s3.bin`** — for generic ESP32-S3 + PCM5102A
    - **`airplay2-receiver-squeezeamp.bin`** — for SqueezeAMP boards
+   - **`airplay2-receiver-squeezeamp-bt.bin`** — for SqueezeAMP enabling Bluetooth
    - **`airplay2-receiver-squeezeamp-4m.bin`** — for SqueezeAMP with 4MB flash
+   - **`airplay2-receiver-esparagus-audio-brick.bin`** — for Esparagus Audio Brick
+   - **`airplay2-receiver-esparagus-audio-brick-bt.bin`** — for Esparagus Audio Brick enabling Bluetooth
 2. Open the [ESP Web Flasher](https://espressif.github.io/esptool-js/) (requires Chrome or Edge)
 3. Plug your ESP32 via USB-C, click **Connect** and select the serial port
 4. Set the flash address to **`0x0`**, select the downloaded `.bin` file, and click **Program**
@@ -204,6 +210,17 @@ The SqueezeAMP build selects the TAS57xx DAC driver automatically via Kconfig (`
 
 A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
 
+### Bluetooth Build
+
+To build with Bluetooth A2DP support:
+
+```bash
+# PlatformIO
+pio run -e squeezeamp-bt -t upload
+```
+
+See the [Bluetooth A2DP](#bluetooth-a2dp) section for details.
+
 ---
 
 ## Esparagus Audio Brick
@@ -212,17 +229,22 @@ The **[Esparagus Audio Brick](https://github.com/sonocotta/esparagus-media-cente
 
 ### Features
 
-- TAS5825M with on-chip DSP and 15-band parametric EQ (25 Hz – 16 kHz) (EQ NOT YET IMPLEMENTED IN THIS FIRMWARE)
+- TAS5825M with on-chip DSP and 15-band parametric EQ (25 Hz – 16 kHz)
 - Hardware volume control with configurable max level
 - Speaker fault detection with automatic mute/recovery
 - Automatic power state management (deep sleep / standby / play) based on AirPlay session state
 - 8 MB flash
+- Optional **Bluetooth A2DP** — receive audio from phones/tablets over Bluetooth
+- **W5500 SPI Ethernet** — wired network connection with automatic WiFi failover
 
 ### Flashing
 
 ```bash
-# PlatformIO
+# PlatformIO (AirPlay only)
 pio run -e esparagus-audio-brick -t upload
+
+# PlatformIO (AirPlay + Bluetooth)
+pio run -e esparagus-audio-brick-bt -t upload
 
 # Monitor serial output
 pio run -e esparagus-audio-brick -t monitor
@@ -244,6 +266,91 @@ pio run -e esparagus-audio-brick -t monitor
 > GPIOs 34–39 on ESP32 are input-only with no internal pull-up. The board provides external pull-ups on the fault and warning lines.
 
 The build selects the TAS58xx DAC driver automatically (`CONFIG_DAC_TAS58XX`). The driver auto-detects the TAS5825M I2C address (0x4C–0x4F) at startup.
+
+### Bluetooth Build
+
+To build with Bluetooth A2DP support:
+
+```bash
+pio run -e esparagus-audio-brick-bt -t upload
+```
+
+See the [Bluetooth A2DP](#bluetooth-a2dp) section for details.
+
+### Ethernet (W5500)
+
+The Esparagus Audio Brick supports wired Ethernet via an external W5500 SPI module. This is enabled by default in the `esparagus-audio-brick-bt` build environment.
+
+See the [Ethernet (W5500)](#ethernet-w5500) section for details.
+
+---
+
+## Bluetooth A2DP
+
+ESP32-based boards (SqueezeAMP, Esparagus Audio Brick) can also receive audio over **Bluetooth Classic A2DP**. This lets any phone, tablet, or laptop stream music via Bluetooth — no Apple device required.
+
+Bluedroid Bluetooth stack is used for A2DP support. The device appears as a standard Bluetooth speaker with AVRCP metadata and volume control. It is very tight on RAM and flash.
+
+### How It Works
+
+- AirPlay and Bluetooth coexist but are **mutually exclusive at runtime**
+- When a BT device connects, AirPlay is automatically suspended
+- When the BT device disconnects, AirPlay resumes
+- BT discoverability is disabled during active AirPlay sessions to prevent interruptions
+- AVRCP support for volume sync and track metadata (artist, title, album) on the OLED display
+- BT volume is saved to NVS and restored on reconnect
+
+### Pairing
+
+The device appears as a Bluetooth speaker with the same name as your AirPlay device name (set via the web interface). Pairing uses a fixed PIN code (default: `05032026`, configurable via `idf.py menuconfig` → Bluetooth Configuration).
+
+Secure Simple Pairing (SSP) can optionally be enabled for BT 2.1+ devices — this uses numeric confirmation instead of a PIN. SSP requires a display to show the confirmation number. This is not implemented on the display yet.
+
+### Build Environments
+
+| Environment | Board | Features |
+|---|---|---|
+| `squeezeamp-bt` | SqueezeAMP | AirPlay + Bluetooth |
+| `esparagus-audio-brick-bt` | Esparagus Audio Brick | AirPlay + Bluetooth + Ethernet |
+
+> **Note:** Bluetooth Classic is only available on the original ESP32 (not ESP32-S3). The ESP32-S3 generic build does not include Bluetooth support.
+
+---
+
+## Ethernet (W5500)
+
+The Esparagus Audio Brick supports wired Ethernet via a **W5500 SPI Ethernet module**. This provides a reliable, low-latency network connection — useful in setups where WiFi is unreliable or unavailable.
+
+### How It Works
+
+- Ethernet is checked first at boot — if a cable is connected, WiFi is skipped entirely
+- If the Ethernet cable is unplugged at runtime, WiFi automatically starts as a fallback (AP + STA mode)
+- If the Ethernet cable is plugged back in, WiFi is stopped and Ethernet takes over
+- The web interface shows "Ethernet" or "WiFi" depending on the active connection
+- AirPlay and Bluetooth work identically on either interface
+
+### Wiring
+
+The W5500 module connects via SPI (shared bus with the OLED display):
+
+| W5500 Pin | ESP32 GPIO | Function |
+|---|---|---|
+| CLK | GPIO 18 | SPI clock |
+| MOSI | GPIO 23 | SPI data out |
+| MISO | GPIO 19 | SPI data in |
+| CS | GPIO 5 | Chip select |
+| INT | GPIO 35 | Interrupt |
+| RST | GPIO 14 | Hardware reset |
+| 3V3 | 3.3V | Power |
+| GND | GND | Ground |
+
+### Configuration
+
+Ethernet is enabled by default in the `esparagus-audio-brick-bt` build. The GPIOs can be changed via `idf.py menuconfig` → Board Configuration → SPI and Ethernet Configuration.
+
+To disable Ethernet, set `CONFIG_ETH_W5500_ENABLED=n` in menuconfig. When disabled, all Ethernet code is compiled out — zero impact on flash size or RAM.
+
+> **Note:** The W5500 has no factory MAC address. The firmware derives a unique MAC from the ESP32's base MAC using `ESP_MAC_ETH`, so each board gets a stable, unique Ethernet MAC.
 
 ---
 
@@ -318,6 +425,8 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
 - **ALAC & AAC decoding** — handles both live streaming (Siri, calls) and music playback
 - **Multi-room support** — PTP-based timing for synchronized playback across devices
+- **Bluetooth A2DP** — receive audio from phones/tablets over Bluetooth (ESP32 boards only)
+- **W5500 Ethernet** — wired network with automatic WiFi failover (Esparagus Audio Brick)
 - **Web configuration** — set up WiFi and device name from your browser
 - **OTA updates** — update firmware over WiFi, no USB needed after first flash
 - **LED indicator** — visual feedback for playback status
@@ -338,14 +447,16 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 ### Signal Flow
 
 ```
-┌─────────────────┐      WiFi       ┌─────────────┐
-│  iPhone / Mac   │ ─────────────►  │   ESP32-S3  │
+┌─────────────────┐   WiFi / Eth   ┌─────────────┐
+│  iPhone / Mac   │ ────────────►  │    ESP32    │
 │    (AirPlay)    │                 │             │
 └─────────────────┘                 └──────┬──────┘
-                                           │ I2S
-                                    ┌──────▼──────┐
+┌─────────────────┐                        │
+│  Phone / Tablet │   Bluetooth      │ I2S
+│     (A2DP)      │ ────────────►  │
+└─────────────────┘          ┌──────▼──────┐
                                     │  PCM5102A   │
-                                    │    DAC      │
+                                    │  / TAS58xx  │
                                     └──────┬──────┘
                                            │ Analog
                                     ┌──────▼──────┐
@@ -415,26 +526,29 @@ MCLK is not used for PCM5102A as generates it internally. It is, however, connec
 
 ### Key Components
 
-| Module              | Location              | Purpose                             |
-| ------------------- | --------------------- | ----------------------------------- |
-| **RTSP Server**     | `main/rtsp/`          | Handles AirPlay control messages    |
-| **HAP Pairing**     | `main/hap/`           | Cryptographic device pairing        |
-| **Audio Pipeline**  | `main/audio/`         | Decoding, buffering, timing         |
-| **PTP Clock**       | `main/network/`       | Synchronization with source         |
-| **Web Server**      | `main/network/`       | Configuration interface             |
-| **DAC Abstraction** | `components/dac/`     | Abstract DAC API (Kconfig-selected) |
-| **Board Support**   | `components/boards/`  | Per-board HAL (GPIOs, init, events) |
-| **Display**         | `components/display/` | OLED display driver (u8g2-based)    |
+| Module              | Location              | Purpose                                   |
+| ------------------- | --------------------- | ----------------------------------------- |
+| **RTSP Server**     | `main/rtsp/`          | Handles AirPlay control messages          |
+| **HAP Pairing**     | `main/hap/`           | Cryptographic device pairing              |
+| **Audio Pipeline**  | `main/audio/`         | Decoding, buffering, timing               |
+| **A2DP Sink**       | `main/audio/`         | Bluetooth audio receiver (ESP32 only)     |
+| **PTP Clock**       | `main/network/`       | Synchronization with source               |
+| **WiFi**            | `main/network/`       | WiFi AP+STA management                    |
+| **Ethernet**        | `main/network/`       | W5500 SPI Ethernet driver                 |
+| **Web Server**      | `main/network/`       | Configuration interface                   |
+| **DAC Abstraction** | `components/dac/`     | Abstract DAC API (Kconfig-selected)       |
+| **Board Support**   | `components/boards/`  | Per-board HAL (GPIOs, SPI bus, init)      |
+| **Display**         | `components/display/` | OLED display driver (u8g2-based)          |
 
 ### Project Structure
 
 ```
 main/
-├── audio/          # Decoders, buffers, timing sync
+├── audio/          # Decoders, buffers, timing sync, A2DP sink
 ├── rtsp/           # RTSP server and handlers
 ├── hap/            # HomeKit pairing (SRP, Ed25519)
 ├── plist/          # Binary plist parsing
-├── network/        # WiFi, mDNS, PTP, web server
+├── network/        # WiFi, Ethernet, mDNS, PTP, web server
 ├── main.c          # Entry point
 └── settings.c      # NVS persistence
 components/
