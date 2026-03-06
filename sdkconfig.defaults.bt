@@ -19,6 +19,16 @@ CONFIG_BT_SSP_ENABLED=n
 CONFIG_BT_PIN_CODE=05032026
 
 
+# Disable BLE host stack — A2DP uses Classic BT only.  Disabling BLE avoids
+# compiling GATT server/client, SMP and L2CAP-BLE, recovering ~30-40 KB DRAM.
+CONFIG_BT_BLE_ENABLED=n
+
+# Only one A2DP connection at a time — reduce from defaults to save DRAM.
+# BR/EDR ACL: 1.2 KB per connection (default 2 → 1 saves 1.2 KB)
+# Bluedroid ACL: default 4 → 1
+CONFIG_BTDM_CTRL_BR_EDR_MAX_ACL_CONN=1
+CONFIG_BT_ACL_CONNECTIONS=1
+
 # Allow Bluedroid to allocate from SPIRAM first, freeing internal DRAM for
 # timers, DMA buffers and WiFi.  Fixes osi_alarm_new OOM crash when WiFi +
 # Classic BT are both active.
