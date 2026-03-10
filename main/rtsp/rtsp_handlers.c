@@ -31,6 +31,7 @@
 #include "tlv8.h"
 
 #include "rtsp_events.h"
+#include "dacp_client.h"
 
 static const char *TAG = "rtsp_handlers";
 
@@ -322,12 +323,59 @@ static const rtsp_method_handler_t method_handlers[] = {
     {"SETPEERSX", handle_setpeers},
     {NULL, NULL}};
 
+// Parse a named header value from raw RTSP request data (case-insensitive).
+// Returns pointer to a static buffer with the trimmed value, or NULL.
+static const char *parse_raw_header(const uint8_t *raw, size_t raw_len,
+                                    const char *name) {
+  static char value_buf[64];
+  const char *hdr = strcasestr((const char *)raw, name);
+  if (!hdr || (size_t)(hdr - (const char *)raw) >= raw_len) {
+    return NULL;
+  }
+  hdr += strlen(name);
+  // Skip optional whitespace
+  while (*hdr == ' ' || *hdr == '\t') {
+    hdr++;
+  }
+  // Copy until CR/LF
+  size_t i = 0;
+  while (i < sizeof(value_buf) - 1 && hdr[i] && hdr[i] != '\r' &&
+         hdr[i] != '\n') {
+    value_buf[i] = hdr[i];
+    i++;
+  }
+  value_buf[i] = '\0';
+  return value_buf;
+}
+
 int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
                   size_t raw_len) {
   rtsp_request_t req;
   if (rtsp_request_parse(raw_request, raw_len, &req) < 0) {
     ESP_LOGW(TAG, "Failed to parse RTSP request");
     return -1;
+  }
+
+  // Extract DACP headers if present (AirPlay 1 only — AirPlay 2 never sends these).
+  // parse_raw_header uses a static buffer — copy before calling again.
+  if (conn->dacp_id[0] == '\0') {
+    const char *val = parse_raw_header(raw_request, raw_len, "DACP-ID:");
+    if (val) {
+      strlcpy(conn->dacp_id, val, sizeof(conn->dacp_id));
+      ESP_LOGI(TAG, "DACP-ID: %s (from %s)", conn->dacp_id, req.method);
+    }
+  }
+  if (conn->active_remote[0] == '\0') {
+    const char *val = parse_raw_header(raw_request, raw_len, "Active-Remote:");
+    if (val) {
+      strlcpy(conn->active_remote, val, sizeof(conn->active_remote));
+      ESP_LOGI(TAG, "Active-Remote: %s (from %s)", conn->active_remote,
+               req.method);
+    }
+  }
+  // Update DACP client session when both identifiers are available
+  if (conn->dacp_id[0] != '\0' && conn->active_remote[0] != '\0') {
+    dacp_set_session(conn->dacp_id, conn->active_remote, conn->client_ip);
   }
 
   // Find handler in dispatch table
@@ -1411,6 +1459,9 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
 
   if (!has_streams) {
     rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+    dacp_clear_session();
+    conn->dacp_id[0] = '\0';
+    conn->active_remote[0] = '\0';
     // Full teardown - stop NTP timing
     ntp_clock_stop();
     conn->timing_port = 0;

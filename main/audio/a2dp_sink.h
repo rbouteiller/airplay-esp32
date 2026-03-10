@@ -45,3 +45,13 @@ bool bt_a2dp_sink_is_connected(void);
  * @param discoverable true to allow new BT connections, false to block them
  */
 void bt_a2dp_sink_set_discoverable(bool discoverable);
+
+/**
+ * AVRCP passthrough commands for hardware button control.
+ * These send commands to the connected BT source device.
+ */
+void bt_a2dp_send_playpause(void);
+void bt_a2dp_send_next(void);
+void bt_a2dp_send_prev(void);
+void bt_a2dp_send_volume_up(void);
+void bt_a2dp_send_volume_down(void);

@@ -49,6 +49,10 @@ struct rtsp_conn {
   int sample_rate;
   int channels;
   int bits_per_sample;
+
+  // DACP identifiers for sending commands back to the client
+  char dacp_id[32];       // DACP-ID header (hex string)
+  char active_remote[32]; // Active-Remote header (token string)
 };
 
 /**

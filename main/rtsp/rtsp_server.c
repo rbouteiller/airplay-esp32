@@ -111,7 +111,12 @@ static void process_rtsp_buffer(client_slot_t *slot, uint8_t *buffer,
       break;
     }
 
+    // Null-terminate so strcasestr in parse_raw_header won't read past
+    // the message boundary (buffer capacity > total_len).
+    uint8_t saved = buffer[total_len];
+    buffer[total_len] = '\0';
     rtsp_dispatch(slot->socket, slot->conn, buffer, total_len);
+    buffer[total_len] = saved;
     free(header_str);
 
     if (*buf_len > total_len) {

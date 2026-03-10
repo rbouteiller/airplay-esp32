@@ -267,4 +267,48 @@ menu "Airplay ESP Configuration"
                     How often the display redraws in milliseconds.
         endif
     endmenu
+
+    menu "Button Configuration"
+        config BTN_PLAY_PAUSE_GPIO
+            int "Play/Pause button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the play/pause button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_VOLUME_UP_GPIO
+            int "Volume Up button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume up button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_VOLUME_DOWN_GPIO
+            int "Volume Down button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume down button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_NEXT_GPIO
+            int "Next Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the next track button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_PREV_GPIO
+            int "Previous Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the previous track button (active-low, internal pull-up).
+                Set to -1 to disable.
+    endmenu
 endmenu

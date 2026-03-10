@@ -37,6 +37,9 @@ set( SRC_FILES
     "network/dns_server.c"
     "led.c"
     "audio/eq_events.c"
+    "buttons.c"
+    "playback_control.c"
+    "dacp_client.c"
 )
 
 # Select audio output implementation at compile time
@@ -75,6 +78,7 @@ set( DEPS
     esp_driver_i2s
     esp_timer
     esp_http_server
+    esp_http_client
     app_update
     json
     mbedtls

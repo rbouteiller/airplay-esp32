@@ -723,3 +723,67 @@ void bt_a2dp_sink_set_discoverable(bool discoverable) {
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
   }
 }
+
+// ============================================================================
+// AVRCP passthrough commands for hardware button control
+// ============================================================================
+
+static void send_passthrough(uint8_t key_code) {
+  if (!s_connected) {
+    return;
+  }
+  esp_avrc_ct_send_passthrough_cmd(0, key_code,
+                                   ESP_AVRC_PT_CMD_STATE_PRESSED);
+  vTaskDelay(pdMS_TO_TICKS(50));
+  esp_avrc_ct_send_passthrough_cmd(0, key_code,
+                                   ESP_AVRC_PT_CMD_STATE_RELEASED);
+}
+
+void bt_a2dp_send_playpause(void) {
+  // Use PLAY or PAUSE based on current A2DP audio state
+  // PAUSE key code = 0x46, PLAY = 0x44
+  // Use the toggle-friendly approach: send PAUSE if playing, PLAY if not
+  send_passthrough(ESP_AVRC_PT_CMD_PAUSE);
+  ESP_LOGI(TAG, "AVRCP: play/pause");
+}
+
+void bt_a2dp_send_next(void) {
+  send_passthrough(ESP_AVRC_PT_CMD_FORWARD);
+  ESP_LOGI(TAG, "AVRCP: next");
+}
+
+void bt_a2dp_send_prev(void) {
+  send_passthrough(ESP_AVRC_PT_CMD_BACKWARD);
+  ESP_LOGI(TAG, "AVRCP: prev");
+}
+
+void bt_a2dp_send_volume_up(void) {
+  // Adjust local AVRCP volume by ~10 units (≈3 dB equivalent)
+  uint8_t new_vol = s_avrc_volume;
+  if (new_vol <= 117) {
+    new_vol += 10;
+  } else {
+    new_vol = 127;
+  }
+  s_avrc_volume = new_vol;
+  esp_avrc_ct_send_set_absolute_volume_cmd(0, new_vol);
+  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
+  dac_set_volume(volume_db);
+  settings_set_bt_volume(new_vol);
+  ESP_LOGI(TAG, "AVRCP: volume up -> %d/127", new_vol);
+}
+
+void bt_a2dp_send_volume_down(void) {
+  uint8_t new_vol = s_avrc_volume;
+  if (new_vol >= 10) {
+    new_vol -= 10;
+  } else {
+    new_vol = 0;
+  }
+  s_avrc_volume = new_vol;
+  esp_avrc_ct_send_set_absolute_volume_cmd(0, new_vol);
+  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
+  dac_set_volume(volume_db);
+  settings_set_bt_volume(new_vol);
+  ESP_LOGI(TAG, "AVRCP: volume down -> %d/127", new_vol);
+}

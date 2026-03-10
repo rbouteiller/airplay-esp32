@@ -1,5 +1,6 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "buttons.h"
 #include "display.h"
 #include "dns_server.h"
 #include "ethernet.h"
@@ -7,6 +8,7 @@
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
+#include "playback_control.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "settings.h"
@@ -59,6 +61,7 @@ static void start_airplay_services(void) {
   ESP_ERROR_CHECK(rtsp_server_start());
 
   s_airplay_started = true;
+  playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
   ESP_LOGI(TAG, "AirPlay ready");
 }
 #ifdef CONFIG_BT_A2DP_ENABLE
@@ -73,6 +76,7 @@ static void stop_airplay_services(void) {
   audio_output_stop();
 
   s_airplay_started = false;
+  playback_control_set_source(PLAYBACK_SOURCE_NONE);
   ESP_LOGI(TAG, "AirPlay stopped");
 }
 #endif
@@ -143,8 +147,10 @@ static void on_bt_state_changed(bool connected) {
   if (connected) {
     ESP_LOGI(TAG, "BT connected — disabling AirPlay");
     stop_airplay_services();
+    playback_control_set_source(PLAYBACK_SOURCE_BLUETOOTH);
   } else {
     ESP_LOGI(TAG, "BT disconnected — re-enabling AirPlay");
+    playback_control_set_source(PLAYBACK_SOURCE_NONE);
     if (ethernet_is_connected() || wifi_is_connected()) {
       start_airplay_services();
     }
@@ -184,6 +190,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  ESP_ERROR_CHECK(playback_control_init());
   led_init();
   display_init();
 
@@ -257,6 +264,8 @@ void app_main(void) {
     }
   }
 #endif
+
+  buttons_init();
 
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(10000));
