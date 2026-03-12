@@ -8,3 +8,6 @@ managed_components/
 sdkconfig
 sdkconfig.*
 !sdkconfig.defaults.*
+
+#
+user_platformio.ini
