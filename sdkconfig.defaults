@@ -34,3 +34,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions.csv"
 
 # Compiler optimization
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# HTTP server WebSocket support (for log streaming)
+CONFIG_HTTPD_WS_SUPPORT=y

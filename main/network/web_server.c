@@ -11,6 +11,7 @@
 #include "wifi.h"
 #include "ethernet.h"
 #include "ota.h"
+#include "log_stream.h"
 #include "rtsp_server.h"
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
@@ -135,6 +136,10 @@ static const char *HTML_CONTROL_PANEL =
     "<div class='actions'><button class='btn btn-danger' "
     "onclick='restart()'>Restart Device</button></div>\n"
     "</div>\n"
+    "<div class='card'><h2>System Logs</h2>\n"
+    "<p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log "
+    "output via WebSocket</p>\n"
+    "<a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>\n"
 #ifdef CONFIG_DAC_TAS58XX
     "<div class='card'><h2>Equalizer</h2>\n"
     "<p style='color:#888;font-size:13px;margin-bottom:12px'>15-band "
@@ -235,10 +240,84 @@ static const char *HTML_CONTROL_PANEL =
     "  loadInfo();setInterval(loadInfo,30000);};\n"
     "</script></body></html>";
 
+// Log viewer page — streams logs from /ws/logs WebSocket
+static const char *HTML_LOG_PAGE =
+    "<!DOCTYPE html><html><head>\n"
+    "<meta charset='UTF-8'>\n"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
+    "<title>System Logs</title>\n"
+    "<style>\n"
+    "*{box-sizing:border-box;margin:0;padding:0}\n"
+    "body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;"
+    "color:#c9d1d9;min-height:100vh;display:flex;flex-direction:column}\n"
+    ".toolbar{background:#161b22;padding:10px 16px;display:flex;align-items:"
+    "center;gap:12px;border-bottom:1px solid #30363d}\n"
+    ".toolbar h1{font-size:16px;font-weight:600;flex:1}\n"
+    ".toolbar a{color:#58a6ff;text-decoration:none;font-size:13px}\n"
+    ".dot{width:10px;height:10px;border-radius:50%;background:#f85149}\n"
+    ".dot.ok{background:#3fb950}\n"
+    ".btn-sm{padding:6px 12px;border:1px solid #30363d;border-radius:6px;"
+    "background:#21262d;color:#c9d1d9;font-size:12px;cursor:pointer}\n"
+    ".btn-sm:hover{background:#30363d}\n"
+    "#log{flex:1;overflow-y:auto;padding:12px 16px;font-family:'SF Mono',"
+    "Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;"
+    "word-break:break-all}\n"
+    ".log-E{color:#f85149}.log-W{color:#d29922}.log-I{color:#58a6ff}"
+    ".log-D{color:#8b949e}.log-V{color:#6e7681}\n"
+    "</style></head><body>\n"
+    "<div class='toolbar'>\n"
+    "<a href='/'>&larr; Back</a>\n"
+    "<h1>System Logs</h1>\n"
+    "<span id='dot' class='dot'></span>\n"
+    "<button class='btn-sm' onclick='clear_log()'>Clear</button>\n"
+    "<button class='btn-sm' id='scroll-btn' onclick='toggle_scroll()'>"
+    "Auto-scroll: ON</button>\n"
+    "</div>\n"
+    "<div id='log'></div>\n"
+    "<script>\n"
+    "var log=document.getElementById('log'),dot=document.getElementById('dot'),"
+    "autoScroll=true,maxLines=2000;\n"
+    "function toggle_scroll(){autoScroll=!autoScroll;document.getElementById("
+    "'scroll-btn').textContent='Auto-scroll: '+(autoScroll?'ON':'OFF');}\n"
+    "function clear_log(){log.textContent='';}\n"
+    "function colorize(text){\n"
+    "  var frag=document.createDocumentFragment();\n"
+    "  text.split('\\n').forEach(function(line){\n"
+    "    if(!line)return;\n"
+    "    var span=document.createElement('span');\n"
+    "    if(line.charAt(0)==='E')span.className='log-E';\n"
+    "    else if(line.charAt(0)==='W')span.className='log-W';\n"
+    "    else if(line.charAt(0)==='I')span.className='log-I';\n"
+    "    else if(line.charAt(0)==='D')span.className='log-D';\n"
+    "    else if(line.charAt(0)==='V')span.className='log-V';\n"
+    "    span.textContent=line+'\\n';\n"
+    "    frag.appendChild(span);\n"
+    "  });\n"
+    "  log.appendChild(frag);\n"
+    "  while(log.childNodes.length>maxLines)"
+    "log.removeChild(log.firstChild);\n"
+    "  if(autoScroll)log.scrollTop=log.scrollHeight;\n"
+    "}\n"
+    "function connect(){\n"
+    "  var ws=new WebSocket('ws://'+location.host+'/ws/logs');\n"
+    "  ws.onopen=function(){dot.classList.add('ok');};\n"
+    "  ws.onclose=function(){dot.classList.remove('ok');"
+    "setTimeout(connect,2000);};\n"
+    "  ws.onmessage=function(e){colorize(e.data);};\n"
+    "}\n"
+    "connect();\n"
+    "</script></body></html>";
+
 // API handlers
 static esp_err_t root_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   httpd_resp_send(req, HTML_CONTROL_PANEL, strlen(HTML_CONTROL_PANEL));
+  return ESP_OK;
+}
+
+static esp_err_t logs_page_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, HTML_LOG_PAGE, strlen(HTML_LOG_PAGE));
   return ESP_OK;
 }
 
@@ -768,6 +847,10 @@ esp_err_t web_server_start(uint16_t port) {
       .uri = "/", .method = HTTP_GET, .handler = root_handler};
   httpd_register_uri_handler(s_server, &root_uri);
 
+  httpd_uri_t logs_uri = {
+      .uri = "/logs", .method = HTTP_GET, .handler = logs_page_handler};
+  httpd_register_uri_handler(s_server, &logs_uri);
+
   httpd_uri_t wifi_scan_uri = {.uri = "/api/wifi/scan",
                                .method = HTTP_GET,
                                .handler = wifi_scan_handler};
@@ -835,6 +918,8 @@ esp_err_t web_server_start(uint16_t port) {
       .uri = "/api/eq", .method = HTTP_POST, .handler = eq_post_handler};
   httpd_register_uri_handler(s_server, &eq_post_uri);
 #endif
+
+  log_stream_register(s_server);
 
   ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
            port);

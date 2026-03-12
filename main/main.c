@@ -13,6 +13,7 @@
 #include "rtsp_server.h"
 #include "settings.h"
 #include "web_server.h"
+#include "log_stream.h"
 #include "wifi.h"
 
 #ifdef CONFIG_BT_A2DP_ENABLE
@@ -190,6 +191,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();
   display_init();

@@ -35,6 +35,7 @@ set( SRC_FILES
     "network/web_server.c"
     "network/ota.c"
     "network/dns_server.c"
+    "network/log_stream.c"
     "led.c"
     "audio/eq_events.c"
     "buttons.c"
