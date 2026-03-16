@@ -6,4 +6,4 @@ dependencies:
   espressif/usb_device_uac:
     version: "*"
     rules:
-      - if: "idf_version >=5.0"
+      - if: "idf_version >=5.0 && (target in [esp32s2, esp32s3, esp32p4])"

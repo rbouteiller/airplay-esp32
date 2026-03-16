@@ -95,6 +95,6 @@ direct_dependencies:
 - espressif/libsodium
 - espressif/mdns
 - espressif/usb_device_uac
-manifest_hash: 3b13ce0bbec3b32a7ac9c42d2412da5f29d89ab024b9ecae82f80ec1678607d7
+manifest_hash: 0d776e99e455c30063084b7dd3d4741393da1373cf2e505438a8cd53bae0dcea
 target: esp32s3
 version: 2.0.0
