@@ -190,14 +190,8 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
 }
 
 esp_err_t buttons_init(void) {
-  // Install GPIO ISR service (shared across all buttons).
-  // ESP_ERR_INVALID_STATE means another component already installed it.
-  esp_err_t err = gpio_install_isr_service(0);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s",
-             esp_err_to_name(err));
-    return err;
-  }
+  // This function assumes that the GLOBAL ISR was created in the board.c layer.
+  // See gpio_install_isr_service() for details
 
   // Configure each button from Kconfig (adds ISR handlers)
   configure_button(BTN_PLAY_PAUSE, CONFIG_BTN_PLAY_PAUSE_GPIO, false);
