@@ -85,16 +85,12 @@ set( DEPS
     dac_tas58xx
     display
     audio-resampler
+    esp_eth
 )
 
 # Bluetooth component only needed when A2DP is enabled
 if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND DEPS bt)
-endif()
-
-# Ethernet component only needed when W5500 is enabled
-if(CONFIG_ETH_W5500_ENABLED)
-    list(APPEND DEPS esp_eth)
 endif()
 
 idf_component_register(
