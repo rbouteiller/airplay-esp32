@@ -17,6 +17,7 @@
 #include "web_server.h"
 #include "log_stream.h"
 #include "wifi.h"
+#include "spiffs_storage.h"
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
@@ -197,6 +198,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  spiffs_storage_init();
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();

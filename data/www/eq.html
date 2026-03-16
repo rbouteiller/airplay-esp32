@@ -1,0 +1,132 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>EQ - AirPlay Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
+.wrap{max-width:720px;margin:0 auto}
+.header{text-align:center;padding:20px 0}
+.header h1{font-size:24px;font-weight:600;margin-bottom:4px}
+.header p{color:#888;font-size:13px}
+.nav{text-align:center;margin-bottom:16px}
+.nav a{color:#e94560;text-decoration:none;font-size:13px}
+.card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.eq-container{display:flex;gap:4px;justify-content:center;align-items:flex-end;height:280px;padding:10px 0}
+.eq-band{display:flex;flex-direction:column;align-items:center;flex:1;min-width:0}
+.eq-band .val{font-size:11px;color:#e94560;font-weight:600;margin-bottom:4px;min-height:16px;text-align:center}
+.eq-band input[type=range]{-webkit-appearance:none;appearance:none;writing-mode:vertical-lr;direction:rtl;width:28px;height:200px;background:transparent;cursor:pointer}
+.eq-band input[type=range]::-webkit-slider-runnable-track{width:4px;background:rgba(255,255,255,0.15);border-radius:2px}
+.eq-band input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#e94560;margin-left:-6px;cursor:pointer}
+.eq-band input[type=range]::-moz-range-track{width:4px;background:rgba(255,255,255,0.15);border-radius:2px}
+.eq-band input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#e94560;border:none;cursor:pointer}
+.eq-band .freq{font-size:10px;color:#888;margin-top:6px;text-align:center;white-space:nowrap}
+.eq-scale{display:flex;flex-direction:column;justify-content:space-between;margin:48px 6px 25px 0;padding:0}
+.eq-scale span{font-size:10px;color:#555;text-align:right;min-width:28px}
+.eq-actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.presets{margin-top:12px}
+.presets select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:8px 12px;font-size:13px;cursor:pointer;min-width:160px}
+.presets select option{background:#16213e}
+.msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+</style></head><body>
+<div class='wrap'>
+<div class='header'><h1>Equalizer</h1><p>15-Band Parametric EQ</p></div>
+<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
+<div class='card'><h2>EQ Bands</h2>
+<div style='display:flex'>
+<div class='eq-scale'><span>+15</span><span>+7</span><span>0</span><span>-7</span><span>-15</span></div>
+<div class='eq-container' id='eq-sliders'></div>
+</div>
+<div class='eq-actions'>
+<button class='btn btn-primary' id='apply-btn' onclick='applyEQ()'>Apply</button>
+<button class='btn btn-secondary' onclick='flatEQ()'>Flat (Reset)</button>
+<div class='presets'>
+<select id='preset-sel' onchange='loadPreset(this.value)'>
+<option value=''>-- Presets --</option>
+<option value='bass_boost'>Bass Boost</option>
+<option value='treble_boost'>Treble Boost</option>
+<option value='v_shape'>V-Shape</option>
+<option value='vocal'>Vocal Presence</option>
+<option value='loudness'>Loudness</option>
+</select></div>
+</div>
+<div id='eq-msg'></div>
+</div></div>
+<script>
+var BANDS=15;
+var FREQS=[20,31.5,50,80,125,200,315,500,800,'1.25k','2k','3.15k','5k','8k','16k'];
+var gains=new Array(BANDS).fill(0);
+var dirty=false;
+function fmtFreq(f){return typeof f==='number'?f+'':f;}
+function fmtGain(v){return (v>0?'+':'')+v;}
+function buildSliders(){
+  var c=document.getElementById('eq-sliders');c.innerHTML='';
+  for(var i=0;i<BANDS;i++){
+    var d=document.createElement('div');d.className='eq-band';
+    var v=document.createElement('div');v.className='val';v.id='val-'+i;v.textContent=fmtGain(gains[i]);
+    var s=document.createElement('input');s.type='range';s.min=-15;s.max=15;s.step=1;s.value=gains[i];s.dataset.band=i;
+    s.addEventListener('input',function(e){
+      var b=parseInt(e.target.dataset.band);gains[b]=parseFloat(e.target.value);
+      document.getElementById('val-'+b).textContent=fmtGain(gains[b]);
+      dirty=true;document.getElementById('apply-btn').disabled=false;
+    });
+    var f=document.createElement('div');f.className='freq';f.textContent=fmtFreq(FREQS[i]);
+    d.appendChild(v);d.appendChild(s);d.appendChild(f);c.appendChild(d);
+  }
+}
+function updateSliders(){
+  for(var i=0;i<BANDS;i++){
+    var s=document.querySelector('[data-band="'+i+'"]');
+    if(s){s.value=gains[i];}
+    var v=document.getElementById('val-'+i);
+    if(v){v.textContent=fmtGain(gains[i]);}
+  }
+  dirty=false;document.getElementById('apply-btn').disabled=true;
+}
+function msg(txt,type){
+  var e=document.getElementById('eq-msg');
+  e.innerHTML='<div class="msg '+type+'">'+txt+'</div>';
+  setTimeout(function(){e.innerHTML='';},3000);
+}
+async function loadEQ(){
+  try{var r=await fetch('/api/eq');var d=await r.json();
+    if(d.success&&d.gains){gains=d.gains;updateSliders();}}
+  catch(e){msg('Failed to load EQ','err');}
+}
+async function applyEQ(){
+  document.getElementById('apply-btn').disabled=true;
+  try{var r=await fetch('/api/eq',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gains:gains})});
+    var d=await r.json();
+    if(d.success){msg('EQ applied','ok');dirty=false;}
+    else{msg(d.error||'Failed','err');document.getElementById('apply-btn').disabled=false;}}
+  catch(e){msg('Error applying EQ','err');document.getElementById('apply-btn').disabled=false;}
+}
+function flatEQ(){
+  gains=new Array(BANDS).fill(0);updateSliders();
+  dirty=true;document.getElementById('apply-btn').disabled=false;
+  document.getElementById('preset-sel').value='';
+}
+var PRESETS={
+  bass_boost:[8,6,5,4,2,0,0,0,0,0,0,0,0,0,0],
+  treble_boost:[0,0,0,0,0,0,0,0,0,1,3,4,6,7,7],
+  v_shape:[5,4,2,1,0,-1,-2,-3,-2,0,1,3,4,5,5],
+  vocal:[0,0,0,0,0,1,3,4,4,3,1,0,0,0,0],
+  loudness:[7,5,3,0,-1,-2,-3,-2,0,1,3,4,6,7,5]
+};
+function loadPreset(name){
+  if(!name||!PRESETS[name])return;
+  gains=PRESETS[name].slice();updateSliders();
+  dirty=true;document.getElementById('apply-btn').disabled=false;
+}
+window.onload=function(){buildSliders();loadEQ();};
+</script></body></html>

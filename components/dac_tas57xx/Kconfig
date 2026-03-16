@@ -1,22 +1,14 @@
 if DAC_TAS57XX
 
-    choice TAS57XX_HYBRID_FLOW
-        prompt "DSP hybrid flow configuration"
-        default TAS57XX_HF1
+    config TAS57XX_HYBRID_FLOW
+        string "Hybrid flow filename (blank = none)"
+        default ""
         help
-            Select which PurePath Console hybrid flow to load at boot.
-
-        config TAS57XX_HF1
-            bool "HF1 (tt_hf1)"
-            help
-                Load the HF1 hybrid flow configuration.
-
-        config TAS57XX_HF6
-            bool "HF6 (tt_hf6)"
-            help
-                Load the HF6 hybrid flow configuration.
-
-    endchoice
+            Name of the hybrid flow .bin file to load from SPIFFS at boot.
+            The file is expected at /spiffs/hf/<name>.bin.
+            Leave blank for standard initialization only.
+            Only applies to TAS575x (TAS5754M) chips with a miniDSP.
+            Examples: tt_hf1, tt_hf6
 
     config TAS57XX_MAX_VOLUME
         int "Maximum DAC volume (dB)"

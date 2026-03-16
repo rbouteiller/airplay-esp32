@@ -4,8 +4,11 @@
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "cJSON.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 #include "settings.h"
 #include "wifi.h"
@@ -25,300 +28,38 @@
 static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
 
-// HTML control panel
-static const char *HTML_CONTROL_PANEL =
-    "<!DOCTYPE html><html><head>\n"
-    "<meta charset='UTF-8'>\n"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
-    "<title>AirPlay Receiver</title>\n"
-    "<style>\n"
-    "*{box-sizing:border-box;margin:0;padding:0}\n"
-    "body{font-family:-apple-system,system-ui,sans-serif;background:linear-"
-    "gradient(135deg,#1a1a2e 0%,#16213e "
-    "100%);min-height:100vh;padding:20px;color:#fff}\n"
-    ".wrap{max-width:480px;margin:0 auto}\n"
-    ".header{text-align:center;padding:30px 0}\n"
-    ".header h1{font-size:28px;font-weight:600;margin-bottom:8px}\n"
-    ".header p{color:#888;font-size:14px}\n"
-    ".status-bar{background:#0f3460;border-radius:12px;padding:16px;margin-"
-    "bottom:20px;text-align:center}\n"
-    ".status-bar.ok{background:#1b4332}\n"
-    ".status-bar.err{background:#5c1a1a}\n"
-    ".card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border-"
-    "radius:16px;padding:20px;margin-bottom:16px;border:1px solid "
-    "rgba(255,255,255,0.1)}\n"
-    ".card "
-    "h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}\n"
-    ".form-group{margin-bottom:14px}\n"
-    ".form-group "
-    "label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-"
-    "transform:uppercase;letter-spacing:0.5px}\n"
-    "input[type=text],input[type=password]{width:100%;padding:12px "
-    "14px;background:rgba(0,0,0,0.3);border:1px solid "
-    "rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}\n"
-    "input:focus{outline:none;border-color:#e94560}\n"
-    ".btn{display:inline-block;padding:12px "
-    "20px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:"
-    "pointer;transition:all 0.2s}\n"
-    ".btn-primary{background:#e94560;color:#fff}\n"
-    ".btn-primary:hover{background:#d63850}\n"
-    ".btn-secondary{background:rgba(255,255,255,0.1);color:#fff}\n"
-    ".btn-secondary:hover{background:rgba(255,255,255,0.2)}\n"
-    ".btn-danger{background:#dc3545;color:#fff}\n"
-    ".btn-danger:hover{background:#c82333}\n"
-    ".btn-block{width:100%;margin-top:10px}\n"
-    ".btn:disabled{opacity:0.5;cursor:not-allowed}\n"
-    ".wifi-list{max-height:180px;overflow-y:auto;margin:12px "
-    "0;border-radius:8px}\n"
-    ".wifi-item{padding:12px;background:rgba(0,0,0,0.2);margin-bottom:4px;"
-    "border-radius:6px;cursor:pointer;display:flex;justify-content:space-"
-    "between;align-items:center}\n"
-    ".wifi-item:hover{background:rgba(233,69,96,0.2)}\n"
-    ".wifi-item.sel{background:rgba(233,69,96,0.3);border:1px solid #e94560}\n"
-    ".wifi-item .ssid{font-weight:500}\n"
-    ".wifi-item .rssi{font-size:12px;color:#888}\n"
-    ".info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}\n"
-    ".info-item{background:rgba(0,0,0,0.2);padding:12px;border-radius:8px}\n"
-    ".info-item "
-    "label{font-size:11px;color:#888;display:block;margin-bottom:4px}\n"
-    ".info-item span{font-size:14px;font-weight:500}\n"
-    ".msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px}\n"
-    ".msg.ok{background:rgba(27,67,50,0.5)}\n"
-    ".msg.err{background:rgba(92,26,26,0.5)}\n"
-    ".msg.info{background:rgba(15,52,96,0.5)}\n"
-    ".file-row{display:flex;gap:10px;align-items:center}\n"
-    ".file-name{flex:1;font-size:13px;color:#888}\n"
-    ".actions{display:flex;gap:10px;margin-top:10px}\n"
-    "</style></head><body>\n"
-    "<div class='wrap'>\n"
-    "<div class='header'><h1>AirPlay Receiver</h1><p>ESP32 Configuration "
-    "Panel</p></div>\n"
-    "<div id='status-bar' class='status-bar'>Loading...</div>\n"
-    "<div class='card'><h2>WiFi Network</h2>\n"
-    "<button class='btn btn-secondary' onclick='scanWiFi()'>Scan "
-    "Networks</button>\n"
-    "<div id='wifi-list' class='wifi-list'></div>\n"
-    "<div class='form-group'><label>Network Name (SSID)</label><input "
-    "type='text' id='wifi-ssid' placeholder='Enter or select network'></div>\n"
-    "<div class='form-group'><label>Password</label><input type='password' "
-    "id='wifi-pass' placeholder='Enter password'></div>\n"
-    "<button class='btn btn-primary btn-block' onclick='saveWiFi()'>Connect to "
-    "WiFi</button>\n"
-    "<div id='wifi-msg'></div></div>\n"
-    "<div class='card'><h2>Device Settings</h2>\n"
-    "<div class='form-group'><label>AirPlay Device Name</label><input "
-    "type='text' id='dev-name' placeholder='My Speaker'></div>\n"
-    "<button class='btn btn-primary' onclick='saveName()'>Save Name</button>\n"
-    "<div id='name-msg'></div></div>\n"
-    "<div class='card'><h2>Firmware Update</h2>\n"
-    "<div class='file-row'><input type='file' id='fw-file' accept='.bin' "
-    "style='display:none'>\n"
-    "<button class='btn btn-secondary' "
-    "onclick='document.getElementById(\"fw-file\").click()'>Choose "
-    "File</button>\n"
-    "<span class='file-name' id='fw-name'>No file selected</span></div>\n"
-    "<button class='btn btn-primary btn-block' id='ota-btn' "
-    "onclick='startOTA()' disabled>Upload Firmware</button>\n"
-    "<div id='ota-msg'></div></div>\n"
-    "<div class='card'><h2>System</h2>\n"
-    "<div class='info-grid'>\n"
-    "<div class='info-item'><label>IP Address</label><span "
-    "id='info-ip'>-</span></div>\n"
-    "<div class='info-item'><label>MAC Address</label><span "
-    "id='info-mac'>-</span></div>\n"
-    "<div class='info-item'><label>Device Name</label><span "
-    "id='info-name'>-</span></div>\n"
-    "<div class='info-item'><label>Free Memory</label><span "
-    "id='info-heap'>-</span></div>\n"
-    "<div class='info-item'><label>Firmware</label><span "
-    "id='info-fw'>-</span></div>\n"
-    "</div>\n"
-    "<div class='actions'><button class='btn btn-danger' "
-    "onclick='restart()'>Restart Device</button></div>\n"
-    "</div>\n"
-    "<div class='card'><h2>System Logs</h2>\n"
-    "<p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log "
-    "output via WebSocket</p>\n"
-    "<a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>\n"
-#ifdef CONFIG_DAC_TAS58XX
-    "<div class='card'><h2>Equalizer</h2>\n"
-    "<p style='color:#888;font-size:13px;margin-bottom:12px'>15-band "
-    "parametric EQ for DAC tuning</p>\n"
-    "<a href='/eq' class='btn btn-primary'>Open Equalizer</a></div>\n"
-#endif
-    "</div>\n"
-    "<script>\n"
-    "function msg(id,txt,type){var "
-    "e=document.getElementById(id);if(e){e.innerHTML='<div class=\"msg "
-    "'+type+'\">'+txt+'</"
-    "div>';setTimeout(function(){e.innerHTML='';},4000);}}\n"
-    "async function scanWiFi(){\n"
-    "  var l=document.getElementById('wifi-list');l.innerHTML='<div "
-    "class=\"msg info\">Scanning...</div>';\n"
-    "  try{var r=await fetch('/api/wifi/scan');var d=await r.json();\n"
-    "    "
-    "if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach("
-    "function(n){\n"
-    "      var i=document.createElement('div');i.className='wifi-item';\n"
-    "      i.innerHTML='<span class=\"ssid\">'+n.ssid+'</span><span "
-    "class=\"rssi\">'+n.rssi+' dBm</span>';\n"
-    "      "
-    "i.onclick=function(){document.querySelectorAll('.wifi-item').forEach("
-    "function(x){x.classList.remove('sel');});i.classList.add('sel');document."
-    "getElementById('wifi-ssid').value=n.ssid;};\n"
-    "      l.appendChild(i);});}\n"
-    "    else{l.innerHTML='<div class=\"msg info\">No networks "
-    "found</div>';}}\n"
-    "  catch(e){l.innerHTML='<div class=\"msg err\">Scan failed</div>';}}\n"
-    "async function saveWiFi(){\n"
-    "  var s=document.getElementById('wifi-ssid').value.trim();var "
-    "p=document.getElementById('wifi-pass').value;\n"
-    "  if(!s){msg('wifi-msg','Enter network name','err');return;}\n"
-    "  try{var r=await "
-    "fetch('/api/wifi/"
-    "config',{method:'POST',headers:{'Content-Type':'application/"
-    "json'},body:JSON.stringify({ssid:s,password:p})});\n"
-    "    var d=await r.json();if(d.success){msg('wifi-msg','Saved! "
-    "Restarting...','ok');}else{msg('wifi-msg',d.error,'err');}}\n"
-    "  catch(e){msg('wifi-msg','Error','err');}}\n"
-    "async function saveName(){\n"
-    "  var "
-    "n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','"
-    "Enter a name','err');return;}\n"
-    "  try{var r=await "
-    "fetch('/api/device/"
-    "name',{method:'POST',headers:{'Content-Type':'application/"
-    "json'},body:JSON.stringify({name:n})});\n"
-    "    var d=await r.json();if(d.success){msg('name-msg','Saved! Restart to "
-    "apply.','ok');loadInfo();}else{msg('name-msg',d.error,'err');}}\n"
-    "  catch(e){msg('name-msg','Error','err');}}\n"
-    "async function startOTA(){\n"
-    "  var "
-    "f=document.getElementById('fw-file').files[0];if(!f){msg('ota-msg','"
-    "Select a file','err');return;}\n"
-    "  "
-    "document.getElementById('ota-btn').disabled=true;msg('ota-msg','Uploading."
-    "..','info');\n"
-    "  try{await "
-    "fetch('/api/ota/"
-    "update',{method:'POST',headers:{'Content-Type':'application/"
-    "octet-stream'},body:f});msg('ota-msg','Done! Rebooting...','ok');}\n"
-    "  catch(e){msg('ota-msg','Rebooting...','ok');}}\n"
-    "async function restart(){\n"
-    "  if(!confirm('Restart the device?'))return;\n"
-    "  try{await "
-    "fetch('/api/system/"
-    "restart',{method:'POST'});msg('','Restarting...','info');}catch(e){}}\n"
-    "async function loadInfo(){\n"
-    "  try{var r=await fetch('/api/system/info');var d=await r.json();\n"
-    "    if(d.success){var i=d.info;var "
-    "b=document.getElementById('status-bar');\n"
-    "      if(i.eth_connected){b.className='status-bar "
-    "ok';b.innerHTML='Ethernet: '+i.ip;}\n"
-    "      else if(i.wifi_connected){b.className='status-bar "
-    "ok';b.innerHTML='WiFi: '+i.ip;}\n"
-    "      else{b.className='status-bar err';b.innerHTML='Not connected - "
-    "Configure WiFi below';}\n"
-    "      document.getElementById('info-ip').textContent=i.ip||'-';\n"
-    "      document.getElementById('info-mac').textContent=i.mac||'-';\n"
-    "      "
-    "document.getElementById('info-name').textContent=i.device_name||'-';\n"
-    "      "
-    "document.getElementById('info-heap').textContent=Math.round(i.free_heap/"
-    "1024)+' KB';\n"
-    "      "
-    "document.getElementById('info-fw').textContent=i.firmware_version||'-';\n"
-    "      "
-    "document.getElementById('dev-name').placeholder=i.device_name||'';}}catch("
-    "e){}}\n"
-    "window.onload=function(){\n"
-    "  document.getElementById('fw-file').onchange=function(e){var "
-    "f=e.target.files[0];\n"
-    "    document.getElementById('fw-name').textContent=f?f.name:'No file "
-    "selected';\n"
-    "    document.getElementById('ota-btn').disabled=!f;};\n"
-    "  loadInfo();setInterval(loadInfo,30000);};\n"
-    "</script></body></html>";
+#define SPIFFS_CHUNK_SIZE 1024
 
-// Log viewer page — streams logs from /ws/logs WebSocket
-static const char *HTML_LOG_PAGE =
-    "<!DOCTYPE html><html><head>\n"
-    "<meta charset='UTF-8'>\n"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
-    "<title>System Logs</title>\n"
-    "<style>\n"
-    "*{box-sizing:border-box;margin:0;padding:0}\n"
-    "body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;"
-    "color:#c9d1d9;min-height:100vh;display:flex;flex-direction:column}\n"
-    ".toolbar{background:#161b22;padding:10px 16px;display:flex;align-items:"
-    "center;gap:12px;border-bottom:1px solid #30363d}\n"
-    ".toolbar h1{font-size:16px;font-weight:600;flex:1}\n"
-    ".toolbar a{color:#58a6ff;text-decoration:none;font-size:13px}\n"
-    ".dot{width:10px;height:10px;border-radius:50%;background:#f85149}\n"
-    ".dot.ok{background:#3fb950}\n"
-    ".btn-sm{padding:6px 12px;border:1px solid #30363d;border-radius:6px;"
-    "background:#21262d;color:#c9d1d9;font-size:12px;cursor:pointer}\n"
-    ".btn-sm:hover{background:#30363d}\n"
-    "#log{flex:1;overflow-y:auto;padding:12px 16px;font-family:'SF Mono',"
-    "Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;"
-    "word-break:break-all}\n"
-    ".log-E{color:#f85149}.log-W{color:#d29922}.log-I{color:#58a6ff}"
-    ".log-D{color:#8b949e}.log-V{color:#6e7681}\n"
-    "</style></head><body>\n"
-    "<div class='toolbar'>\n"
-    "<a href='/'>&larr; Back</a>\n"
-    "<h1>System Logs</h1>\n"
-    "<span id='dot' class='dot'></span>\n"
-    "<button class='btn-sm' onclick='clear_log()'>Clear</button>\n"
-    "<button class='btn-sm' id='scroll-btn' onclick='toggle_scroll()'>"
-    "Auto-scroll: ON</button>\n"
-    "</div>\n"
-    "<div id='log'></div>\n"
-    "<script>\n"
-    "var log=document.getElementById('log'),dot=document.getElementById('dot'),"
-    "autoScroll=true,maxLines=2000;\n"
-    "function toggle_scroll(){autoScroll=!autoScroll;document.getElementById("
-    "'scroll-btn').textContent='Auto-scroll: '+(autoScroll?'ON':'OFF');}\n"
-    "function clear_log(){log.textContent='';}\n"
-    "function colorize(text){\n"
-    "  var frag=document.createDocumentFragment();\n"
-    "  text.split('\\n').forEach(function(line){\n"
-    "    if(!line)return;\n"
-    "    var span=document.createElement('span');\n"
-    "    if(line.charAt(0)==='E')span.className='log-E';\n"
-    "    else if(line.charAt(0)==='W')span.className='log-W';\n"
-    "    else if(line.charAt(0)==='I')span.className='log-I';\n"
-    "    else if(line.charAt(0)==='D')span.className='log-D';\n"
-    "    else if(line.charAt(0)==='V')span.className='log-V';\n"
-    "    span.textContent=line+'\\n';\n"
-    "    frag.appendChild(span);\n"
-    "  });\n"
-    "  log.appendChild(frag);\n"
-    "  while(log.childNodes.length>maxLines)"
-    "log.removeChild(log.firstChild);\n"
-    "  if(autoScroll)log.scrollTop=log.scrollHeight;\n"
-    "}\n"
-    "function connect(){\n"
-    "  var ws=new WebSocket('ws://'+location.host+'/ws/logs');\n"
-    "  ws.onopen=function(){dot.classList.add('ok');};\n"
-    "  ws.onclose=function(){dot.classList.remove('ok');"
-    "setTimeout(connect,2000);};\n"
-    "  ws.onmessage=function(e){colorize(e.data);};\n"
-    "}\n"
-    "connect();\n"
-    "</script></body></html>";
-
-// API handlers
-static esp_err_t root_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, HTML_CONTROL_PANEL, strlen(HTML_CONTROL_PANEL));
+static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
+                                   const char *content_type) {
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to open %s", path);
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, content_type);
+  char buf[SPIFFS_CHUNK_SIZE];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+    if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+      fclose(f);
+      httpd_resp_send_chunk(req, NULL, 0);
+      return ESP_FAIL;
+    }
+  }
+  fclose(f);
+  httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
 }
 
+// API handlers
+static esp_err_t root_handler(httpd_req_t *req) {
+  return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
+}
+
 static esp_err_t logs_page_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, HTML_LOG_PAGE, strlen(HTML_LOG_PAGE));
-  return ESP_OK;
+  return serve_spiffs_file(req, "/spiffs/www/logs.html", "text/html");
 }
 
 // Captive portal detection handlers
@@ -559,186 +300,176 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
 }
 
 /* ================================================================== */
+/*  SPIFFS File Management API                                         */
+/* ================================================================== */
+
+// Allowed path prefixes for file upload (prevent writes outside SPIFFS)
+static const char *ALLOWED_PREFIXES[] = {"/spiffs/"};
+
+static bool is_path_allowed(const char *path) {
+  for (int i = 0; i < sizeof(ALLOWED_PREFIXES) / sizeof(ALLOWED_PREFIXES[0]);
+       i++) {
+    if (strncmp(path, ALLOWED_PREFIXES[i], strlen(ALLOWED_PREFIXES[i])) == 0) {
+      // Reject path traversal
+      if (strstr(path, "..") != NULL) {
+        return false;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+static esp_err_t fs_upload_handler(httpd_req_t *req) {
+  // Get target path from query string
+  char query[128] = {0};
+  char path[64] = {0};
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "path", path, sizeof(path)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Missing 'path' query parameter");
+    return ESP_FAIL;
+  }
+
+  if (!is_path_allowed(path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Path not allowed");
+    return ESP_FAIL;
+  }
+
+  if (req->content_len == 0 || req->content_len > 64 * 1024) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Body required (max 64KB)");
+    return ESP_FAIL;
+  }
+
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to create %s", path);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Failed to create file");
+    return ESP_FAIL;
+  }
+
+  char buf[SPIFFS_CHUNK_SIZE];
+  int remaining = req->content_len;
+  while (remaining > 0) {
+    int to_read = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+    int received = httpd_req_recv(req, buf, to_read);
+    if (received <= 0) {
+      fclose(f);
+      remove(path);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Receive failed");
+      return ESP_FAIL;
+    }
+    fwrite(buf, 1, received, f);
+    remaining -= received;
+  }
+  fclose(f);
+
+  ESP_LOGI(TAG, "Uploaded %d bytes to %s", req->content_len, path);
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "size", req->content_len);
+  cJSON_AddStringToObject(json, "path", path);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t fs_delete_handler(httpd_req_t *req) {
+  char query[128] = {0};
+  char path[64] = {0};
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "path", path, sizeof(path)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Missing 'path' query parameter");
+    return ESP_FAIL;
+  }
+
+  if (!is_path_allowed(path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Path not allowed");
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  if (remove(path) == 0) {
+    ESP_LOGI(TAG, "Deleted %s", path);
+    cJSON_AddBoolToObject(json, "success", true);
+  } else {
+    cJSON_AddBoolToObject(json, "success", false);
+    cJSON_AddStringToObject(json, "error", "File not found");
+  }
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t fs_list_handler(httpd_req_t *req) {
+  char query[128] = {0};
+  char dir_path[64] = "/spiffs";
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+    httpd_query_key_value(query, "dir", dir_path, sizeof(dir_path));
+  }
+
+  if (!is_path_allowed(dir_path) &&
+      strcmp(dir_path, "/spiffs") != 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Path not allowed");
+    return ESP_FAIL;
+  }
+
+  DIR *d = opendir(dir_path);
+  cJSON *json = cJSON_CreateObject();
+  cJSON *files = cJSON_CreateArray();
+
+  if (d) {
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+      cJSON *item = cJSON_CreateObject();
+      cJSON_AddStringToObject(item, "name", entry->d_name);
+
+      char full_path[320];
+      snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+      struct stat st;
+      if (stat(full_path, &st) == 0) {
+        cJSON_AddNumberToObject(item, "size", st.st_size);
+      }
+      cJSON_AddItemToArray(files, item);
+    }
+    closedir(d);
+    cJSON_AddBoolToObject(json, "success", true);
+  } else {
+    cJSON_AddBoolToObject(json, "success", false);
+    cJSON_AddStringToObject(json, "error", "Cannot open directory");
+  }
+
+  cJSON_AddItemToObject(json, "files", files);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+/* ================================================================== */
 /*  EQ Page + API  (only when TAS58xx DAC is configured)               */
 /* ================================================================== */
 
 #ifdef CONFIG_DAC_TAS58XX
 
-static const char *HTML_EQ_PAGE =
-    "<!DOCTYPE html><html><head>\n"
-    "<meta charset='UTF-8'>\n"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
-    "<title>EQ - AirPlay Receiver</title>\n"
-    "<style>\n"
-    "*{box-sizing:border-box;margin:0;padding:0}\n"
-    "body{font-family:-apple-system,system-ui,sans-serif;background:linear-"
-    "gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;"
-    "color:#fff}\n"
-    ".wrap{max-width:720px;margin:0 auto}\n"
-    ".header{text-align:center;padding:20px 0}\n"
-    ".header h1{font-size:24px;font-weight:600;margin-bottom:4px}\n"
-    ".header p{color:#888;font-size:13px}\n"
-    ".nav{text-align:center;margin-bottom:16px}\n"
-    ".nav a{color:#e94560;text-decoration:none;font-size:13px}\n"
-    ".card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);"
-    "border-radius:16px;padding:20px;margin-bottom:16px;"
-    "border:1px solid rgba(255,255,255,0.1)}\n"
-    ".card "
-    "h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}\n"
-    ".eq-container{display:flex;gap:4px;justify-content:center;"
-    "align-items:flex-end;height:280px;padding:10px 0}\n"
-    ".eq-band{display:flex;flex-direction:column;align-items:center;"
-    "flex:1;min-width:0}\n"
-    ".eq-band .val{font-size:11px;color:#e94560;font-weight:600;"
-    "margin-bottom:4px;min-height:16px;text-align:center}\n"
-    ".eq-band input[type=range]{-webkit-appearance:none;appearance:none;"
-    "writing-mode:vertical-lr;direction:rtl;"
-    "width:28px;height:200px;background:transparent;cursor:pointer}\n"
-    ".eq-band input[type=range]::-webkit-slider-runnable-track{"
-    "width:4px;background:rgba(255,255,255,0.15);border-radius:2px}\n"
-    ".eq-band input[type=range]::-webkit-slider-thumb{"
-    "-webkit-appearance:none;width:16px;height:16px;border-radius:50%;"
-    "background:#e94560;margin-left:-6px;cursor:pointer}\n"
-    ".eq-band input[type=range]::-moz-range-track{"
-    "width:4px;background:rgba(255,255,255,0.15);border-radius:2px}\n"
-    ".eq-band input[type=range]::-moz-range-thumb{"
-    "width:14px;height:14px;border-radius:50%;background:#e94560;"
-    "border:none;cursor:pointer}\n"
-    ".eq-band .freq{font-size:10px;color:#888;margin-top:6px;"
-    "text-align:center;white-space:nowrap}\n"
-    ".eq-scale{display:flex;flex-direction:column;justify-content:space-"
-    "between;margin:48px 6px 25px 0;padding:0}\n"
-    ".eq-scale "
-    "span{font-size:10px;color:#555;text-align:right;min-width:28px}\n"
-    ".eq-actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}\n"
-    ".btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;"
-    "font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}\n"
-    ".btn-primary{background:#e94560;color:#fff}\n"
-    ".btn-primary:hover{background:#d63850}\n"
-    ".btn-secondary{background:rgba(255,255,255,0.1);color:#fff}\n"
-    ".btn-secondary:hover{background:rgba(255,255,255,0.2)}\n"
-    ".btn:disabled{opacity:0.5;cursor:not-allowed}\n"
-    ".presets{margin-top:12px}\n"
-    ".presets select{background:rgba(0,0,0,0.3);border:1px solid "
-    "rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:8px 12px;"
-    "font-size:13px;cursor:pointer;min-width:160px}\n"
-    ".presets select option{background:#16213e}\n"
-    ".msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}\n"
-    ".msg.ok{background:rgba(27,67,50,0.5)}\n"
-    ".msg.err{background:rgba(92,26,26,0.5)}\n"
-    ".msg.info{background:rgba(15,52,96,0.5)}\n"
-    "</style></head><body>\n"
-    "<div class='wrap'>\n"
-    "<div class='header'><h1>Equalizer</h1>"
-    "<p>15-Band Parametric EQ</p></div>\n"
-    "<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>\n"
-    "<div class='card'><h2>EQ Bands</h2>\n"
-    "<div style='display:flex'>\n"
-    "<div class='eq-scale'>"
-    "<span>+15</span><span>+7</span><span>0</span>"
-    "<span>-7</span><span>-15</span></div>\n"
-    "<div class='eq-container' id='eq-sliders'></div>\n"
-    "</div>\n"
-    "<div class='eq-actions'>\n"
-    "<button class='btn btn-primary' id='apply-btn' "
-    "onclick='applyEQ()'>Apply</button>\n"
-    "<button class='btn btn-secondary' onclick='flatEQ()'>Flat "
-    "(Reset)</button>\n"
-    "<div class='presets'>\n"
-    "<select id='preset-sel' onchange='loadPreset(this.value)'>\n"
-    "<option value=''>-- Presets --</option>\n"
-    "<option value='bass_boost'>Bass Boost</option>\n"
-    "<option value='treble_boost'>Treble Boost</option>\n"
-    "<option value='v_shape'>V-Shape</option>\n"
-    "<option value='vocal'>Vocal Presence</option>\n"
-    "<option value='loudness'>Loudness</option>\n"
-    "</select></div>\n"
-    "</div>\n"
-    "<div id='eq-msg'></div>\n"
-    "</div></div>\n"
-    "<script>\n"
-    "var BANDS=15;\n"
-    "var FREQS=[20,31.5,50,80,125,200,315,500,800,'1.25k','2k','3.15k',"
-    "'5k','8k','16k'];\n"
-    "var gains=new Array(BANDS).fill(0);\n"
-    "var dirty=false;\n"
-    "function fmtFreq(f){return typeof f==='number'?f+'':f;}\n"
-    "function fmtGain(v){return (v>0?'+':'')+v;}\n"
-    "function buildSliders(){\n"
-    "  var c=document.getElementById('eq-sliders');c.innerHTML='';\n"
-    "  for(var i=0;i<BANDS;i++){\n"
-    "    var d=document.createElement('div');d.className='eq-band';\n"
-    "    var v=document.createElement('div');v.className='val';"
-    "v.id='val-'+i;v.textContent=fmtGain(gains[i]);\n"
-    "    var s=document.createElement('input');s.type='range';"
-    "s.min=-15;s.max=15;s.step=1;s.value=gains[i];s.dataset.band=i;\n"
-    "    s.addEventListener('input',function(e){\n"
-    "      var "
-    "b=parseInt(e.target.dataset.band);gains[b]=parseFloat(e.target.value);\n"
-    "      document.getElementById('val-'+b).textContent=fmtGain(gains[b]);\n"
-    "      dirty=true;document.getElementById('apply-btn').disabled=false;\n"
-    "    });\n"
-    "    var f=document.createElement('div');f.className='freq';"
-    "f.textContent=fmtFreq(FREQS[i]);\n"
-    "    d.appendChild(v);d.appendChild(s);d.appendChild(f);c.appendChild(d);\n"
-    "  }\n"
-    "}\n"
-    "function updateSliders(){\n"
-    "  for(var i=0;i<BANDS;i++){\n"
-    "    var s=document.querySelector('[data-band=\"'+i+'\"]');\n"
-    "    if(s){s.value=gains[i];}\n"
-    "    var v=document.getElementById('val-'+i);\n"
-    "    if(v){v.textContent=fmtGain(gains[i]);}\n"
-    "  }\n"
-    "  dirty=false;document.getElementById('apply-btn').disabled=true;\n"
-    "}\n"
-    "function msg(txt,type){\n"
-    "  var e=document.getElementById('eq-msg');\n"
-    "  e.innerHTML='<div class=\"msg '+type+'\">'+txt+'</div>';\n"
-    "  setTimeout(function(){e.innerHTML='';},3000);\n"
-    "}\n"
-    "async function loadEQ(){\n"
-    "  try{var r=await fetch('/api/eq');var d=await r.json();\n"
-    "    if(d.success&&d.gains){gains=d.gains;updateSliders();}}\n"
-    "  catch(e){msg('Failed to load EQ','err');}\n"
-    "}\n"
-    "async function applyEQ(){\n"
-    "  document.getElementById('apply-btn').disabled=true;\n"
-    "  try{var r=await fetch('/api/eq',{method:'POST',"
-    "headers:{'Content-Type':'application/json'},"
-    "body:JSON.stringify({gains:gains})});\n"
-    "    var d=await r.json();\n"
-    "    if(d.success){msg('EQ applied','ok');dirty=false;}\n"
-    "    "
-    "else{msg(d.error||'Failed','err');document.getElementById('apply-btn')."
-    "disabled=false;}}\n"
-    "  catch(e){msg('Error applying "
-    "EQ','err');document.getElementById('apply-btn').disabled=false;}\n"
-    "}\n"
-    "function flatEQ(){\n"
-    "  gains=new Array(BANDS).fill(0);updateSliders();\n"
-    "  dirty=true;document.getElementById('apply-btn').disabled=false;\n"
-    "  document.getElementById('preset-sel').value='';\n"
-    "}\n"
-    "var PRESETS={\n"
-    "  bass_boost:[8,6,5,4,2,0,0,0,0,0,0,0,0,0,0],\n"
-    "  treble_boost:[0,0,0,0,0,0,0,0,0,1,3,4,6,7,7],\n"
-    "  v_shape:[5,4,2,1,0,-1,-2,-3,-2,0,1,3,4,5,5],\n"
-    "  vocal:[0,0,0,0,0,1,3,4,4,3,1,0,0,0,0],\n"
-    "  loudness:[7,5,3,0,-1,-2,-3,-2,0,1,3,4,6,7,5]\n"
-    "};\n"
-    "function loadPreset(name){\n"
-    "  if(!name||!PRESETS[name])return;\n"
-    "  gains=PRESETS[name].slice();updateSliders();\n"
-    "  dirty=true;document.getElementById('apply-btn').disabled=false;\n"
-    "}\n"
-    "window.onload=function(){buildSliders();loadEQ();};\n"
-    "</script></body></html>";
-
 static esp_err_t eq_page_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, HTML_EQ_PAGE, strlen(HTML_EQ_PAGE));
-  return ESP_OK;
+  return serve_spiffs_file(req, "/spiffs/www/eq.html", "text/html");
 }
 
 static esp_err_t eq_get_handler(httpd_req_t *req) {
@@ -881,6 +612,22 @@ esp_err_t web_server_start(uint16_t port) {
                                     .method = HTTP_POST,
                                     .handler = system_restart_handler};
   httpd_register_uri_handler(s_server, &system_restart_uri);
+
+  // File management API
+  httpd_uri_t fs_upload_uri = {.uri = "/api/fs/upload",
+                               .method = HTTP_POST,
+                               .handler = fs_upload_handler};
+  httpd_register_uri_handler(s_server, &fs_upload_uri);
+
+  httpd_uri_t fs_delete_uri = {.uri = "/api/fs/delete",
+                               .method = HTTP_POST,
+                               .handler = fs_delete_handler};
+  httpd_register_uri_handler(s_server, &fs_delete_uri);
+
+  httpd_uri_t fs_list_uri = {.uri = "/api/fs/list",
+                             .method = HTTP_GET,
+                             .handler = fs_list_handler};
+  httpd_register_uri_handler(s_server, &fs_list_uri);
 
   // Captive portal detection endpoints
   // Apple iOS/macOS

@@ -6,6 +6,9 @@
 
 #include "dac_tas57xx.h"
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/param.h>
 
 #include "driver/i2s_std.h"
@@ -13,16 +16,11 @@
 #include "driver/i2c_types.h"
 #include "esp_log.h"
 
-#if defined(CONFIG_TAS57XX_HF6)
-#include "hybridflows/tt_hf6.h"
-#define TAS57XX_HF_SEQ tt_hf6_seq
-#else
-#include "hybridflows/tt_hf1.h"
-#define TAS57XX_HF_SEQ tt_hf1_seq
-#endif
-
 #define TAS575x (0x98 >> 1)
 #define TAS578x (0x90 >> 1)
+
+// TAS578x device ID register (Book 0, Page 0)
+#define TAS578x_REG_DEVICE_ID 0x67
 
 #define I2C_TIMEOUT    100
 #define I2C_LINE_SPEED 100000
@@ -83,6 +81,8 @@ static int tas57xx_detect(i2c_master_bus_handle_t s_bus_handle);
 // I2C functions
 static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
                                uint8_t reg, const uint8_t *data, size_t len);
+static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t reg,
+                              uint8_t *data, size_t len);
 static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *dev_handle);
 static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
@@ -133,13 +133,47 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
     return err;
   }
 
-  // Apply hybrid flow configuration (handles standby enter/exit internally)
-  err = tas57xx_write_hf(TAS57XX_HF_SEQ);
-  if (err != ESP_OK) {
-    return err;
+  // Read chip identity for feature availability
+  if (tas57xx_addr == TAS578x) {
+    uint8_t page = 0x00;
+    i2c_bus_write(tas57xx_device_handle, tas57xx_addr, 0x00, &page, 1);
+    uint8_t device_id = 0;
+    if (i2c_bus_read(tas57xx_device_handle, TAS578x_REG_DEVICE_ID, &device_id,
+                     1) == ESP_OK) {
+      ESP_LOGI(TAG, "TAS578x device ID: 0x%02X", device_id);
+    }
+  } else if (tas57xx_addr == TAS575x) {
+    ESP_LOGI(TAG, "TAS575x detected (no device ID register)");
   }
 
-  // Apply additional init registers not covered by the HF config
+  // Load hybrid flow from SPIFFS for TAS575x (TAS5754M with miniDSP)
+  if (tas57xx_addr == TAS575x && strlen(CONFIG_TAS57XX_HYBRID_FLOW) > 0) {
+    char path[64];
+    snprintf(path, sizeof(path), "/spiffs/hf/%s.bin",
+             CONFIG_TAS57XX_HYBRID_FLOW);
+    FILE *f = fopen(path, "rb");
+    if (f) {
+      fseek(f, 0, SEEK_END);
+      long size = ftell(f);
+      fseek(f, 0, SEEK_SET);
+      uint8_t *buf = malloc(size);
+      if (buf && fread(buf, 1, size, f) == (size_t)size) {
+        err = tas57xx_write_hf(buf);
+      } else {
+        ESP_LOGE(TAG, "Failed to read HF file %s", path);
+        err = ESP_ERR_NO_MEM;
+      }
+      free(buf);
+      fclose(f);
+      if (err != ESP_OK) {
+        return err;
+      }
+    } else {
+      ESP_LOGW(TAG, "HF file not found: %s", path);
+    }
+  }
+
+  // Apply additional init registers
   for (int i = 0; tas57xx_init_seq[i].reg != 0xff; i++) {
     err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr,
                         tas57xx_init_seq[i].reg, &tas57xx_init_seq[i].value,
@@ -320,6 +354,17 @@ static esp_err_t i2c_bus_add_device(uint8_t addr,
 
 static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle) {
   return i2c_master_bus_rm_device(dev_handle);
+}
+
+/**
+ * Read data from an I2C device register
+ */
+static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t reg,
+                              uint8_t *data, size_t len) {
+  if (dev == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return i2c_master_transmit_receive(dev, &reg, 1, data, len, I2C_TIMEOUT);
 }
 
 /**

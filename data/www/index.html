@@ -1,0 +1,133 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>AirPlay Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
+.wrap{max-width:480px;margin:0 auto}
+.header{text-align:center;padding:30px 0}
+.header h1{font-size:28px;font-weight:600;margin-bottom:8px}
+.header p{color:#888;font-size:14px}
+.status-bar{background:#0f3460;border-radius:12px;padding:16px;margin-bottom:20px;text-align:center}
+.status-bar.ok{background:#1b4332}
+.status-bar.err{background:#5c1a1a}
+.card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+input[type=text],input[type=password]{width:100%;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
+input:focus{outline:none;border-color:#e94560}
+.btn{display:inline-block;padding:12px 20px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn-danger{background:#dc3545;color:#fff}
+.btn-danger:hover{background:#c82333}
+.btn-block{width:100%;margin-top:10px}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.wifi-list{max-height:180px;overflow-y:auto;margin:12px 0;border-radius:8px}
+.wifi-item{padding:12px;background:rgba(0,0,0,0.2);margin-bottom:4px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.wifi-item:hover{background:rgba(233,69,96,0.2)}
+.wifi-item.sel{background:rgba(233,69,96,0.3);border:1px solid #e94560}
+.wifi-item .ssid{font-weight:500}
+.wifi-item .rssi{font-size:12px;color:#888}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.info-item{background:rgba(0,0,0,0.2);padding:12px;border-radius:8px}
+.info-item label{font-size:11px;color:#888;display:block;margin-bottom:4px}
+.info-item span{font-size:14px;font-weight:500}
+.msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+.file-row{display:flex;gap:10px;align-items:center}
+.file-name{flex:1;font-size:13px;color:#888}
+.actions{display:flex;gap:10px;margin-top:10px}
+</style></head><body>
+<div class='wrap'>
+<div class='header'><h1>AirPlay Receiver</h1><p>ESP32 Configuration Panel</p></div>
+<div id='status-bar' class='status-bar'>Loading...</div>
+<div class='card'><h2>WiFi Network</h2>
+<button class='btn btn-secondary' onclick='scanWiFi()'>Scan Networks</button>
+<div id='wifi-list' class='wifi-list'></div>
+<div class='form-group'><label>Network Name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select network'></div>
+<div class='form-group'><label>Password</label><input type='password' id='wifi-pass' placeholder='Enter password'></div>
+<button class='btn btn-primary btn-block' onclick='saveWiFi()'>Connect to WiFi</button>
+<div id='wifi-msg'></div></div>
+<div class='card'><h2>Device Settings</h2>
+<div class='form-group'><label>AirPlay Device Name</label><input type='text' id='dev-name' placeholder='My Speaker'></div>
+<button class='btn btn-primary' onclick='saveName()'>Save Name</button>
+<div id='name-msg'></div></div>
+<div class='card'><h2>Firmware Update</h2>
+<div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
+<button class='btn btn-secondary' onclick='document.getElementById("fw-file").click()'>Choose File</button>
+<span class='file-name' id='fw-name'>No file selected</span></div>
+<button class='btn btn-primary btn-block' id='ota-btn' onclick='startOTA()' disabled>Upload Firmware</button>
+<div id='ota-msg'></div></div>
+<div class='card'><h2>System</h2>
+<div class='info-grid'>
+<div class='info-item'><label>IP Address</label><span id='info-ip'>-</span></div>
+<div class='info-item'><label>MAC Address</label><span id='info-mac'>-</span></div>
+<div class='info-item'><label>Device Name</label><span id='info-name'>-</span></div>
+<div class='info-item'><label>Free Memory</label><span id='info-heap'>-</span></div>
+<div class='info-item'><label>Firmware</label><span id='info-fw'>-</span></div>
+</div>
+<div class='actions'><button class='btn btn-danger' onclick='restart()'>Restart Device</button></div>
+</div>
+<div class='card'><h2>System Logs</h2>
+<p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log output via WebSocket</p>
+<a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>
+<div class='card'><h2>Equalizer</h2>
+<p style='color:#888;font-size:13px;margin-bottom:12px'>15-band parametric EQ for DAC tuning</p>
+<a href='/eq' class='btn btn-primary'>Open Equalizer</a></div>
+</div>
+<script>
+function msg(id,txt,type){var e=document.getElementById(id);if(e){e.innerHTML='<div class="msg '+type+'">'+txt+'</div>';setTimeout(function(){e.innerHTML='';},4000);}}
+async function scanWiFi(){
+  var l=document.getElementById('wifi-list');l.innerHTML='<div class="msg info">Scanning...</div>';
+  try{var r=await fetch('/api/wifi/scan');var d=await r.json();
+    if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach(function(n){
+      var i=document.createElement('div');i.className='wifi-item';
+      i.innerHTML='<span class="ssid">'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span>';
+      i.onclick=function(){document.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});i.classList.add('sel');document.getElementById('wifi-ssid').value=n.ssid;};
+      l.appendChild(i);});}
+    else{l.innerHTML='<div class="msg info">No networks found</div>';}}
+  catch(e){l.innerHTML='<div class="msg err">Scan failed</div>';}}
+async function saveWiFi(){
+  var s=document.getElementById('wifi-ssid').value.trim();var p=document.getElementById('wifi-pass').value;
+  if(!s){msg('wifi-msg','Enter network name','err');return;}
+  try{var r=await fetch('/api/wifi/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,password:p})});
+    var d=await r.json();if(d.success){msg('wifi-msg','Saved! Restarting...','ok');}else{msg('wifi-msg',d.error,'err');}}
+  catch(e){msg('wifi-msg','Error','err');}}
+async function saveName(){
+  var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
+  try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
+    var d=await r.json();if(d.success){msg('name-msg','Saved! Restart to apply.','ok');loadInfo();}else{msg('name-msg',d.error,'err');}}
+  catch(e){msg('name-msg','Error','err');}}
+async function startOTA(){
+  var f=document.getElementById('fw-file').files[0];if(!f){msg('ota-msg','Select a file','err');return;}
+  document.getElementById('ota-btn').disabled=true;msg('ota-msg','Uploading...','info');
+  try{await fetch('/api/ota/update',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});msg('ota-msg','Done! Rebooting...','ok');}
+  catch(e){msg('ota-msg','Rebooting...','ok');}}
+async function restart(){
+  if(!confirm('Restart the device?'))return;
+  try{await fetch('/api/system/restart',{method:'POST'});msg('','Restarting...','info');}catch(e){}}
+async function loadInfo(){
+  try{var r=await fetch('/api/system/info');var d=await r.json();
+    if(d.success){var i=d.info;var b=document.getElementById('status-bar');
+      if(i.eth_connected){b.className='status-bar ok';b.innerHTML='Ethernet: '+i.ip;}
+      else if(i.wifi_connected){b.className='status-bar ok';b.innerHTML='WiFi: '+i.ip;}
+      else{b.className='status-bar err';b.innerHTML='Not connected - Configure WiFi below';}
+      document.getElementById('info-ip').textContent=i.ip||'-';
+      document.getElementById('info-mac').textContent=i.mac||'-';
+      document.getElementById('info-name').textContent=i.device_name||'-';
+      document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
+      document.getElementById('info-fw').textContent=i.firmware_version||'-';
+      document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
+window.onload=function(){
+  document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
+    document.getElementById('fw-name').textContent=f?f.name:'No file selected';
+    document.getElementById('ota-btn').disabled=!f;};
+  loadInfo();setInterval(loadInfo,30000);};
+</script></body></html>

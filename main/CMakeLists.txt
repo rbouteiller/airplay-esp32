@@ -92,6 +92,7 @@ set( DEPS
     display
     audio-resampler
     esp_eth
+    spiffs_storage
 )
 
 # TODO: why these fall over in CI and fine locally...

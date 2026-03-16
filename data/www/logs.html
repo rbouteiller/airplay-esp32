@@ -1,0 +1,54 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>System Logs</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;display:flex;flex-direction:column}
+.toolbar{background:#161b22;padding:10px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #30363d}
+.toolbar h1{font-size:16px;font-weight:600;flex:1}
+.toolbar a{color:#58a6ff;text-decoration:none;font-size:13px}
+.dot{width:10px;height:10px;border-radius:50%;background:#f85149}
+.dot.ok{background:#3fb950}
+.btn-sm{padding:6px 12px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;font-size:12px;cursor:pointer}
+.btn-sm:hover{background:#30363d}
+#log{flex:1;overflow-y:auto;padding:12px 16px;font-family:'SF Mono',Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.log-E{color:#f85149}.log-W{color:#d29922}.log-I{color:#58a6ff}.log-D{color:#8b949e}.log-V{color:#6e7681}
+</style></head><body>
+<div class='toolbar'>
+<a href='/'>&larr; Back</a>
+<h1>System Logs</h1>
+<span id='dot' class='dot'></span>
+<button class='btn-sm' onclick='clear_log()'>Clear</button>
+<button class='btn-sm' id='scroll-btn' onclick='toggle_scroll()'>Auto-scroll: ON</button>
+</div>
+<div id='log'></div>
+<script>
+var log=document.getElementById('log'),dot=document.getElementById('dot'),autoScroll=true,maxLines=2000;
+function toggle_scroll(){autoScroll=!autoScroll;document.getElementById('scroll-btn').textContent='Auto-scroll: '+(autoScroll?'ON':'OFF');}
+function clear_log(){log.textContent='';}
+function colorize(text){
+  var frag=document.createDocumentFragment();
+  text.split('\n').forEach(function(line){
+    if(!line)return;
+    var span=document.createElement('span');
+    if(line.charAt(0)==='E')span.className='log-E';
+    else if(line.charAt(0)==='W')span.className='log-W';
+    else if(line.charAt(0)==='I')span.className='log-I';
+    else if(line.charAt(0)==='D')span.className='log-D';
+    else if(line.charAt(0)==='V')span.className='log-V';
+    span.textContent=line+'\n';
+    frag.appendChild(span);
+  });
+  log.appendChild(frag);
+  while(log.childNodes.length>maxLines)log.removeChild(log.firstChild);
+  if(autoScroll)log.scrollTop=log.scrollHeight;
+}
+function connect(){
+  var ws=new WebSocket('ws://'+location.host+'/ws/logs');
+  ws.onopen=function(){dot.classList.add('ok');};
+  ws.onclose=function(){dot.classList.remove('ok');setTimeout(connect,2000);};
+  ws.onmessage=function(e){colorize(e.data);};
+}
+connect();
+</script></body></html>
