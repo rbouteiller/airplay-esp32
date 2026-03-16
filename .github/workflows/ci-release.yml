@@ -28,30 +28,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          submodules: "recursive"
 
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v5
+      - name: Build and generate compile_commands.json
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
-
-      - name: Install PlatformIO
-        run: pip install platformio==6.1.18
+          esp_idf_version: v5.5
+          target: esp32s3
+          command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3" build
 
       - name: Install clang-tidy
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
 
-      - name: Build to generate compile_commands.json
-        run: pio run -e esp32s3
-
       - name: Run clang-tidy
         run: |
-          COMPILE_DB=".pio/build/esp32s3"
+          COMPILE_DB="build"
           WARNINGS=0
           while IFS= read -r -d '' file; do
             echo "Checking $file..."
@@ -74,37 +66,38 @@ jobs:
     needs: [format-check, lint-check]
     strategy:
       matrix:
-        target: [esp32s3, squeezeamp, squeezeamp-4m, esparagus-audio-brick]
+        include:
+          - name: esp32s3
+            target: esp32s3
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3"
+          - name: squeezeamp
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp"
+          - name: squeezeamp-4m
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp-4m"
+          - name: esparagus-audio-brick
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esparagus-audio-brick"
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          submodules: "recursive"
 
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v5
+      - name: Build ${{ matrix.name }}
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
-
-      - name: Install PlatformIO
-        run: pip install platformio==6.1.18
-
-      - name: Build ${{ matrix.target }}
-        run: pio run -e ${{ matrix.target }}
-
-      - name: Rename firmware binary
-        run: |
-          cp .pio/build/${{ matrix.target }}/firmware.bin \
-             airplay2-receiver-${{ matrix.target }}.bin
+          esp_idf_version: v5.5
+          target: ${{ matrix.target }}
+          command: >
+            idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build &&
+            idf.py merge-bin -o airplay2-receiver-${{ matrix.name }}.bin -f raw
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v6
         with:
-          name: firmware-${{ matrix.target }}
-          path: airplay2-receiver-${{ matrix.target }}.bin
+          name: firmware-${{ matrix.name }}
+          path: airplay2-receiver-${{ matrix.name }}.bin
 
   release:
     if: github.event_name == 'push'
