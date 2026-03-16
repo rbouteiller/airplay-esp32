@@ -129,6 +129,7 @@ menu "Airplay ESP Configuration"
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
         default OUTPUT_SAMPLE_RATE_44100
+        depends on !DAC_TAS57XX && !DAC_TAS58XX
         help
             Sample rate for I2S/SPDIF output. If the AirPlay source
             sends a different rate, the audio is resampled automatically.
@@ -144,16 +145,19 @@ menu "Airplay ESP Configuration"
         default 44100 if OUTPUT_SAMPLE_RATE_44100
         default 48000 if OUTPUT_SAMPLE_RATE_48000
 
-    config RESAMPLER_QUALITY
-        int "Resampler filter size (16=fast, 48=good, 320=best)"
-        range 16 320
-        default 48
+    config RESAMPLER_TAPS
+        int "Resampler filter taps (quality)" if OUTPUT_SAMPLE_RATE_48000
+        range 4 64
+        default 28 if IDF_TARGET_ESP32S3
+        default 12 if IDF_TARGET_ESP32
+        default 16
         help
-            Number of filters and taps for the ART sinc resampler.
-            Only used when output rate differs from source rate.
-            16 = ~4 KB RAM, lowest quality.
-            48 = ~16 KB RAM, good quality (recommended).
-            320 = ~219 KB RAM, highest quality.
+            Number of taps for the sinc resampler filters.
+            More taps = better quality but higher CPU cost.
+            Must be a multiple of 4.
+            ESP32-S3 (hardware FPU): 28 recommended.
+            ESP32 (no FPU): 12 recommended.
+
     endmenu
 
     menu "Display Configuration"

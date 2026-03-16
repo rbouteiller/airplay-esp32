@@ -58,7 +58,7 @@ bool audio_resample_init(uint32_t input_rate, uint32_t output_rate,
 
   /* Compute the exact filter count for interpolation-free resampling.
    * For 44100→48000: gcd=300, exact_filters=160.
-   * Memory: 161 filters × 32 taps × 4 bytes ≈ 20 KB. */
+   * Memory: 161 filters × RESAMPLER_NUM_TAPS × 4 bytes. */
   unsigned long g = input_rate;
   unsigned long b = output_rate;
   while (b) {

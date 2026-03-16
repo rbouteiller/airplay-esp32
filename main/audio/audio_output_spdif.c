@@ -212,8 +212,7 @@ static void playback_task(void *arg) {
   while (true) {
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
-      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2,
-                          CONFIG_RESAMPLER_QUALITY);
+      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2);
     }
     if (flush_requested) {
       flush_requested = false;
@@ -301,7 +300,7 @@ esp_err_t audio_output_init(void) {
     }
   }
 
-  audio_resample_init(44100, OUTPUT_RATE, 2, CONFIG_RESAMPLER_QUALITY);
+  audio_resample_init(44100, OUTPUT_RATE, 2);
 
   ESP_LOGI(TAG, "SPDIF output ready  rate=%d×%d  dma=%d×%d", OUTPUT_RATE,
            BMC_FACTOR, DMA_BUF_FRAMES, DMA_BUF_COUNT);
@@ -309,7 +308,7 @@ esp_err_t audio_output_init(void) {
 }
 
 void audio_output_start(void) {
-  xTaskCreatePinnedToCore(playback_task, "spdif_play", 8192, NULL, 7, NULL,
+  xTaskCreatePinnedToCore(playback_task, "spdif_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }
 

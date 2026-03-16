@@ -68,8 +68,7 @@ static void playback_task(void *arg) {
   while (true) {
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
-      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2,
-                          CONFIG_RESAMPLER_QUALITY);
+      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2);
     }
     if (flush_requested) {
       flush_requested = false;
@@ -138,13 +137,13 @@ esp_err_t audio_output_init(void) {
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
 
-  audio_resample_init(44100, OUTPUT_RATE, 2, CONFIG_RESAMPLER_QUALITY);
+  audio_resample_init(44100, OUTPUT_RATE, 2);
 
   return ESP_OK;
 }
 
 void audio_output_start(void) {
-  xTaskCreatePinnedToCore(playback_task, "audio_play", 8192, NULL, 7, NULL,
+  xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7, NULL,
                           PLAYBACK_CORE);
 }
 

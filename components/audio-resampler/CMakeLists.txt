@@ -3,7 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
 )
 
-# Optimise for ESP32-S3: single-precision FPU, fast math, max optimisation
+# Optimise for ESP32/Xtensa: single-precision float, fast math, max optimisation
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-calloc-transposed-args
     -O3
