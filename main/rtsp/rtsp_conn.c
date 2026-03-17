@@ -28,7 +28,7 @@ rtsp_conn_t *rtsp_conn_create(void) {
       conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
     }
   } else {
-    conn->volume_q15 = 32768; // Full volume
+    conn->volume_q15 = 16384; // Half volume
     conn->volume_db = 0.0f;
   }
 

@@ -83,7 +83,7 @@ static float db_to_dacp_percent(float db) {
 static void airplay_adjust_volume(float step_db) {
   float current_db;
   if (settings_get_volume(&current_db) != ESP_OK) {
-    current_db = 0.0f;
+    current_db = -15.0f; // default 50 %
   }
 
   float new_db = clamp_volume(current_db + step_db);
@@ -119,7 +119,7 @@ void playback_control_play_pause(void) {
       // Fallback: mute/unmute the DAC locally when no DACP session
       if (!s_muted) {
         if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
-          s_pre_mute_db = 0.0f;
+          s_pre_mute_db = -15.0f; // default 50 %
         }
         dac_set_volume(VOLUME_MIN_DB);
         s_muted = true;

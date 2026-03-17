@@ -58,6 +58,12 @@ static esp_err_t root_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
 }
 
+static esp_err_t favicon_handler(httpd_req_t *req) {
+  httpd_resp_set_status(req, "204 No Content");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
 static esp_err_t logs_page_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/logs.html", "text/html");
 }
@@ -569,7 +575,8 @@ esp_err_t web_server_start(uint16_t port) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
   config.max_open_sockets = 3;  // Limit to save lwIP socket slots for AirPlay
-  config.max_uri_handlers = 20; // Room for captive portal + EQ handlers
+  config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
+  config.max_uri_handlers = 20;   // Room for captive portal + EQ handlers
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -583,6 +590,10 @@ esp_err_t web_server_start(uint16_t port) {
   httpd_uri_t root_uri = {
       .uri = "/", .method = HTTP_GET, .handler = root_handler};
   httpd_register_uri_handler(s_server, &root_uri);
+
+  httpd_uri_t favicon_uri = {
+      .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
+  httpd_register_uri_handler(s_server, &favicon_uri);
 
   httpd_uri_t logs_uri = {
       .uri = "/logs", .method = HTTP_GET, .handler = logs_page_handler};

@@ -98,7 +98,7 @@ static volatile bool s_audio_started = false;
 static volatile bool s_avrc_playing = false; /* AVRCP play state (instant) */
 static volatile bool s_i2s_task_running = false;
 static bool s_bt_discoverable = true;
-static uint8_t s_avrc_volume = 127; /* 0-127, AVRCP absolute volume */
+static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume (default 50 %) */
 
 static RingbufHandle_t s_ringbuf = NULL;
 static SemaphoreHandle_t s_i2s_sem = NULL;
@@ -720,7 +720,7 @@ static void bt_stack_evt_handler(uint16_t event, void *param) {
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
   }
 
-  // Restore saved BT volume (falls back to 127 / 0 dB if none stored)
+  // Restore saved BT volume (falls back to 64 / -15 dB if none stored)
   {
     uint8_t saved_vol;
     if (settings_get_bt_volume(&saved_vol) == ESP_OK) {

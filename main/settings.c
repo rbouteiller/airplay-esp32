@@ -21,12 +21,12 @@ static const char *TAG = "settings";
 #define MAX_WIFI_PASSWORD_LEN 64
 #define MAX_DEVICE_NAME_LEN   64
 
-// Cached values
-static float g_volume_db = 0.0f;
+// Cached values  (defaults = 50 %)
+static float g_volume_db = -15.0f;
 static bool g_volume_loaded = false;
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-static uint8_t g_bt_volume = 127; /* default: max */
+static uint8_t g_bt_volume = 64; /* default: 50 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
