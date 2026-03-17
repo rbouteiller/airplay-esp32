@@ -28,7 +28,7 @@
 #include "driver/spi_master.h"
 #endif
 
-#define ISR_HANDLER_TASK_STACK_SIZE 2048
+#define ISR_HANDLER_TASK_STACK_SIZE 4096
 #define ISR_HANDLER_TASK_PRIORITY   5
 
 // Notification bits for speaker fault task
