@@ -1,15 +1,5 @@
 if DAC_TAS57XX
 
-    config TAS57XX_HYBRID_FLOW
-        string "Hybrid flow filename (blank = none)"
-        default ""
-        help
-            Name of the hybrid flow .bin file to load from SPIFFS at boot.
-            The file is expected at /spiffs/hf/<name>.bin.
-            Leave blank for standard initialization only.
-            Only applies to TAS575x (TAS5754M) chips with a miniDSP.
-            Examples: tt_hf1, tt_hf6
-
     config TAS57XX_MAX_VOLUME
         int "Maximum DAC volume (dB)"
         range -100 0

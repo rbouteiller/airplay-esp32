@@ -37,6 +37,7 @@ static SemaphoreHandle_t s_mutex;
 static httpd_handle_t s_server;
 static int s_clients[MAX_WS_CLIENTS];
 static int s_client_count;
+static SemaphoreHandle_t s_client_mutex;
 
 static vprintf_like_t s_orig_vprintf;
 
@@ -50,12 +51,12 @@ static inline size_t ring_used(void) {
 
 static void ring_write(const char *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
+    /* If head is about to overwrite tail, discard oldest byte. */
+    if (((s_head + 1) & LOG_RING_MASK) == (s_tail & LOG_RING_MASK)) {
+      s_tail = (s_tail + 1) & LOG_RING_MASK;
+    }
     s_ring[s_head & LOG_RING_MASK] = data[i];
     s_head = (s_head + 1) & LOG_RING_MASK;
-  }
-  /* If we've lapped the tail, advance it (discard oldest data). */
-  if (ring_used() == 0 && len > 0) {
-    s_tail = (s_tail + 1) & LOG_RING_MASK;
   }
 }
 
@@ -103,12 +104,20 @@ static esp_err_t ws_log_handler(httpd_req_t *req) {
   if (req->method == HTTP_GET) {
     /* Handshake — register this socket. */
     int fd = httpd_req_to_sockfd(req);
-    if (s_client_count < MAX_WS_CLIENTS) {
-      s_clients[s_client_count++] = fd;
-      ESP_LOGI("log_stream", "WebSocket client connected (fd=%d, total=%d)",
-               fd, s_client_count);
+    if (xSemaphoreTake(s_client_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (s_client_count < MAX_WS_CLIENTS) {
+        s_clients[s_client_count++] = fd;
+        xSemaphoreGive(s_client_mutex);
+        ESP_LOGI("log_stream", "WebSocket client connected (fd=%d, total=%d)",
+                 fd, s_client_count);
+      } else {
+        xSemaphoreGive(s_client_mutex);
+        ESP_LOGW("log_stream", "Max WebSocket clients reached, rejecting fd=%d",
+                 fd);
+        return ESP_FAIL;
+      }
     } else {
-      ESP_LOGW("log_stream", "Max WebSocket clients reached, rejecting fd=%d", fd);
+      ESP_LOGW("log_stream", "Client mutex timeout, rejecting fd=%d", fd);
       return ESP_FAIL;
     }
     return ESP_OK;
@@ -152,14 +161,17 @@ static void broadcast_task(void *arg) {
         .len = len,
     };
 
-    for (int i = s_client_count - 1; i >= 0; i--) {
-      esp_err_t err =
-          httpd_ws_send_frame_async(s_server, s_clients[i], &frame);
-      if (err != ESP_OK) {
-        ESP_LOGW("log_stream", "Dropping WebSocket client fd=%d: %s",
-                 s_clients[i], esp_err_to_name(err));
-        remove_client(i);
+    if (xSemaphoreTake(s_client_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      for (int i = s_client_count - 1; i >= 0; i--) {
+        esp_err_t err =
+            httpd_ws_send_frame_async(s_server, s_clients[i], &frame);
+        if (err != ESP_OK) {
+          ESP_LOGW("log_stream", "Dropping WebSocket client fd=%d: %s",
+                   s_clients[i], esp_err_to_name(err));
+          remove_client(i);
+        }
       }
+      xSemaphoreGive(s_client_mutex);
     }
   }
 }
@@ -180,6 +192,10 @@ esp_err_t log_stream_init(void) {
 
   s_head = s_tail = 0;
   s_client_count = 0;
+
+  s_client_mutex = xSemaphoreCreateMutex();
+  if (!s_client_mutex)
+    return ESP_ERR_NO_MEM;
 
   /* Hook into esp_log — keep the original so UART output continues. */
   s_orig_vprintf = esp_log_set_vprintf(log_vprintf_hook);

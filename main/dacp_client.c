@@ -39,14 +39,24 @@ static uint32_t s_client_ip;
 static uint16_t s_dacp_port;   // Discovered via mDNS
 static bool s_session_valid;
 
+// Discover the DACP port via mDNS. Called WITHOUT the mutex held since
+// mDNS queries can block for several seconds. Copies the DACP-ID under
+// the lock, performs discovery lock-free, then stores the result.
 static void discover_dacp_port(void) {
-  if (s_dacp_id[0] == '\0') {
+  char dacp_id_local[DACP_ID_MAX];
+
+  xSemaphoreTake(s_mutex, portMAX_DELAY);
+  strlcpy(dacp_id_local, s_dacp_id, sizeof(dacp_id_local));
+  s_dacp_port = 0;
+  xSemaphoreGive(s_mutex);
+
+  if (dacp_id_local[0] == '\0') {
     return;
   }
 
-  s_dacp_port = 0;
+  uint16_t found_port = 0;
 
-  for (int attempt = 0; attempt < MDNS_RETRY_COUNT && s_dacp_port == 0;
+  for (int attempt = 0; attempt < MDNS_RETRY_COUNT && found_port == 0;
        attempt++) {
     if (attempt > 0) {
       vTaskDelay(pdMS_TO_TICKS(MDNS_RETRY_DELAY_MS));
@@ -72,11 +82,11 @@ static void discover_dacp_port(void) {
         continue;
       }
       // Match: exact, or instance contains the DACP-ID as a substring
-      if (strcasecmp(r->instance_name, s_dacp_id) == 0 ||
-          strcasestr(r->instance_name, s_dacp_id) != NULL) {
-        s_dacp_port = r->port;
+      if (strcasecmp(r->instance_name, dacp_id_local) == 0 ||
+          strcasestr(r->instance_name, dacp_id_local) != NULL) {
+        found_port = r->port;
         ESP_LOGI(TAG, "Matched DACP service: '%s' port %u", r->instance_name,
-                 s_dacp_port);
+                 found_port);
         break;
       }
     }
@@ -84,9 +94,14 @@ static void discover_dacp_port(void) {
     mdns_query_results_free(results);
   }
 
-  if (s_dacp_port == 0) {
+  // Store discovered port under the lock
+  xSemaphoreTake(s_mutex, portMAX_DELAY);
+  s_dacp_port = found_port;
+  xSemaphoreGive(s_mutex);
+
+  if (found_port == 0) {
     ESP_LOGW(TAG, "DACP service not found for ID '%s' after %d attempts",
-             s_dacp_id, MDNS_RETRY_COUNT);
+             dacp_id_local, MDNS_RETRY_COUNT);
   }
 }
 
@@ -102,25 +117,34 @@ static void send_dacp_request(const char *path) {
     return;
   }
 
-  // Lazy discover port on first command
-  if (s_dacp_port == 0) {
+  // Copy session state under the lock, then release before any I/O
+  char dacp_id_copy[DACP_ID_MAX];
+  char active_remote_copy[ACTIVE_REMOTE_MAX];
+  uint32_t client_ip_copy = s_client_ip;
+  uint16_t port_copy = s_dacp_port;
+  strlcpy(dacp_id_copy, s_dacp_id, sizeof(dacp_id_copy));
+  strlcpy(active_remote_copy, s_active_remote, sizeof(active_remote_copy));
+
+  xSemaphoreGive(s_mutex);
+
+  // Lazy discover port on first command (outside lock — mDNS can take seconds)
+  if (port_copy == 0) {
+    // discover_dacp_port reads s_dacp_id — safe because button task is the
+    // only caller of send_dacp_request and the ID doesn't change mid-session.
     discover_dacp_port();
-    if (s_dacp_port == 0) {
-      xSemaphoreGive(s_mutex);
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    port_copy = s_dacp_port;
+    xSemaphoreGive(s_mutex);
+    if (port_copy == 0) {
       return;
     }
   }
 
   // Build URL: http://<ip>:<port>/ctrl-int/1/<path>
   char url[128];
-  uint8_t *ip = (uint8_t *)&s_client_ip;
-  snprintf(url, sizeof(url), "http://%u.%u.%u.%u:%u/ctrl-int/1/%s",
-           ip[0], ip[1], ip[2], ip[3], s_dacp_port, path);
-
-  char active_remote_copy[ACTIVE_REMOTE_MAX];
-  strlcpy(active_remote_copy, s_active_remote, sizeof(active_remote_copy));
-
-  xSemaphoreGive(s_mutex);
+  uint8_t *ip = (uint8_t *)&client_ip_copy;
+  snprintf(url, sizeof(url), "http://%u.%u.%u.%u:%u/ctrl-int/1/%s", ip[0],
+           ip[1], ip[2], ip[3], port_copy, path);
 
   // Fire-and-forget HTTP GET
   esp_http_client_config_t config = {

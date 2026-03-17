@@ -246,7 +246,16 @@ static void receiver_task(void *pvParameters) {
     s_recv_packet_buf =
         heap_caps_malloc(MAX_RTP_PACKET_SIZE, MALLOC_CAP_SPIRAM);
   }
+  if (!s_recv_packet_buf) {
+    s_recv_packet_buf = malloc(MAX_RTP_PACKET_SIZE);
+  }
   uint8_t *packet = s_recv_packet_buf;
+  if (!packet) {
+    ESP_LOGE(TAG, "Failed to allocate receiver packet buffer");
+    state->task_handle = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
 
   struct sockaddr_in src_addr;
   socklen_t addr_len = sizeof(src_addr);
@@ -281,7 +290,16 @@ static void control_receiver_task(void *pvParameters) {
     s_ctrl_packet_buf =
         heap_caps_malloc(MAX_RTP_PACKET_SIZE, MALLOC_CAP_SPIRAM);
   }
+  if (!s_ctrl_packet_buf) {
+    s_ctrl_packet_buf = malloc(MAX_RTP_PACKET_SIZE);
+  }
   uint8_t *packet = s_ctrl_packet_buf;
+  if (!packet) {
+    ESP_LOGE(TAG, "Failed to allocate control packet buffer");
+    state->control_task_handle = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
   struct sockaddr_in src_addr;
   socklen_t addr_len = sizeof(src_addr);
 

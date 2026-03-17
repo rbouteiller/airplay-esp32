@@ -254,17 +254,21 @@ Paths are restricted to `/spiffs/` and directory traversal (`..`) is rejected. M
 
 ### Hybrid Flow Configuration (SqueezeAMP)
 
-The TAS575xM DAC supports **hybrid flow** DSP programs that run on the chip's miniDSP core. These are loaded from SPIFFS at boot.
+The TAS575xM DAC supports **hybrid flow** DSP programs that run on the chip's miniDSP core. At boot, the driver checks for `/spiffs/hf/tas57xx_fw.bin` and loads it automatically if present. No menuconfig setting is needed — just place the file and reboot.
 
-**To configure which hybrid flow is loaded:**
-
-Set `CONFIG_TAS57XX_HYBRID_FLOW` in menuconfig (AirPlay Receiver → DAC Configuration → TAS57xx Hybrid Flow) to the name of the `.bin` file (without the extension). For example, `hf1` loads `/spiffs/hf/hf1.bin`. Leave empty to disable.
-
-**To add a new hybrid flow:**
+**To add or update a hybrid flow:**
 
 1. Export a `.cfg` file from TI PurePath Console
 2. Convert to binary: `python3 components/dac_tas57xx/hybridflows/convert_cfg.py --bin my_flow.cfg`
-3. Copy `my_flow.bin` to `data/hf/` (for serial flash) or upload via the API
+3. Rename the output to `tas57xx_fw.bin`
+4. Copy to `data/hf/` (for serial flash) or upload via the API:
+   ```bash
+   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas57xx_fw.bin" \
+        --data-binary @tas57xx_fw.bin
+   ```
+5. Reboot the device
+
+To disable the hybrid flow, delete the file (or don't include one in the SPIFFS image).
 
 > **Note:** Hybrid flows are only available to TAS575xM chips. The driver detects the chip family at boot and skips HF loading on TAS578x devices.
 

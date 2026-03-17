@@ -147,11 +147,9 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
   }
 
   // Load hybrid flow from SPIFFS for TAS575x (TAS5754M with miniDSP)
-  if (tas57xx_addr == TAS575x && strlen(CONFIG_TAS57XX_HYBRID_FLOW) > 0) {
-    char path[64];
-    snprintf(path, sizeof(path), "/spiffs/hf/%s.bin",
-             CONFIG_TAS57XX_HYBRID_FLOW);
-    FILE *f = fopen(path, "rb");
+  static const char *hf_path = "/spiffs/hf/tas57xx_fw.bin";
+  if (tas57xx_addr == TAS575x) {
+    FILE *f = fopen(hf_path, "rb");
     if (f) {
       fseek(f, 0, SEEK_END);
       long size = ftell(f);
@@ -160,7 +158,7 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
       if (buf && fread(buf, 1, size, f) == (size_t)size) {
         err = tas57xx_write_hf(buf);
       } else {
-        ESP_LOGE(TAG, "Failed to read HF file %s", path);
+        ESP_LOGE(TAG, "Failed to read HF file %s", hf_path);
         err = ESP_ERR_NO_MEM;
       }
       free(buf);
@@ -169,7 +167,7 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
         return err;
       }
     } else {
-      ESP_LOGW(TAG, "HF file not found: %s", path);
+      ESP_LOGI(TAG, "No HF file at %s, skipping", hf_path);
     }
   }
 
