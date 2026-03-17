@@ -163,6 +163,59 @@ idf.py -p /dev/ttyUSB0 monitor
 
 ---
 
+## Custom Board Configuration
+
+If you're porting to your own hardware, you can create a **`user_platformio.ini`** file to define a custom build environment without modifying the main `platformio.ini`. This file is already included via `extra_configs` in the main config, so PlatformIO picks it up automatically.
+
+### How It Works
+
+1. Pick an existing environment to extend (e.g. `esp32s3`, `esp32wrover-dev`)
+2. Create a `sdkconfig.user.<your_board>` file with your board-specific Kconfig overrides (GPIO pins, DAC selection, display settings, etc.)
+3. Add an environment in `user_platformio.ini` that chains your sdkconfig file after the base defaults
+
+### Example
+
+Say you have a custom ESP32 board called "myboard" with a SqueezeAMP-compatible DAC but different GPIO assignments and an OLED display. Create two files:
+
+**`sdkconfig.user.myboard`** — your board-specific overrides:
+
+```ini
+# I2S pin assignments
+CONFIG_I2S_BCK_PIN=5
+CONFIG_I2S_WS_PIN=18
+CONFIG_I2S_DO_PIN=19
+
+# Enable OLED display
+CONFIG_DISPLAY_ENABLED=y
+CONFIG_DISPLAY_I2C_SDA=21
+CONFIG_DISPLAY_I2C_SCL=22
+```
+
+**`user_platformio.ini`** — your build environment:
+
+```ini
+[env:myboard]
+extends = env:esp32s3
+...
+board_build.cmake_extra_args =
+    "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.user.myboard"
+```
+
+Then build and flash:
+
+```bash
+pio run -e myboard -t upload
+```
+
+### Notes
+
+- The sdkconfig defaults are applied **left to right** — later files override earlier ones, so your `sdkconfig.user.*` should come last
+- `sdkconfig.user.*` files are gitignored (via the `sdkconfig.*` pattern), so they won't pollute the repo
+- If you change any sdkconfig defaults, delete the cached `sdkconfig.<env>` file before rebuilding so the new values are picked up
+- You can extend any base environment — use `squeezeamp` / `squeezeamp-bt` for TAS57xx boards, `esparagus-audio-brick` / `esparagus-audio-brick-bt` for TAS58xx boards, or `esp32s3` for S3-based boards
+
+---
+
 ## Setup (First Boot)
 
 1. **Power up** the ESP32 via USB-C
