@@ -12,7 +12,6 @@
 static const char *TAG = "rtsp_rsa";
 
 // Well-known AirPlay RSA private key (public knowledge, used by all receivers)
-// ggignore -- this is a publicly known protocol key, not a secret
 static const char airplay_rsa_private_key[] =
     "-----BEGIN RSA PRIVATE KEY-----\n"
     "MIIEpQIBAAKCAQEA59dE8qLieItsH1WgjrcFRKj6eUWqi+bGLOX1HL3U3GhC/j0Q\n"
