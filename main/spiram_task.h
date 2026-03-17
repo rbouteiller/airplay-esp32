@@ -26,10 +26,11 @@ typedef struct {
   void *tcb;
 } spiram_task_mem_t;
 
-static inline BaseType_t
-task_create_spiram(TaskFunction_t fn, const char *name, uint32_t depth,
-                   void *param, UBaseType_t prio, TaskHandle_t *handle,
-                   spiram_task_mem_t *mem) {
+static inline BaseType_t task_create_spiram(TaskFunction_t fn, const char *name,
+                                            uint32_t depth, void *param,
+                                            UBaseType_t prio,
+                                            TaskHandle_t *handle,
+                                            spiram_task_mem_t *mem) {
   if (mem) {
     mem->stack = NULL;
     mem->tcb = NULL;
@@ -48,4 +49,6 @@ task_create_pinned_spiram(TaskFunction_t fn, const char *name, uint32_t depth,
   return xTaskCreatePinnedToCore(fn, name, depth, param, prio, handle, core);
 }
 
-static inline void task_free_spiram(spiram_task_mem_t *mem) { (void)mem; }
+static inline void task_free_spiram(spiram_task_mem_t *mem) {
+  (void)mem;
+}

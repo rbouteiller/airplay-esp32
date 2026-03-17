@@ -85,13 +85,11 @@ static int ensure_pk_initialized(void) {
 static int b64_decode(const char *b64, uint8_t *out, size_t out_size,
                       size_t *out_len) {
   // Apple base64 may lack padding — libsodium handles that with _IGNORE variant
-  if (sodium_base642bin(out, out_size, b64, strlen(b64), "\r\n \t",
-                        out_len, NULL,
-                        sodium_base64_VARIANT_ORIGINAL_NO_PADDING) != 0) {
+  if (sodium_base642bin(out, out_size, b64, strlen(b64), "\r\n \t", out_len,
+                        NULL, sodium_base64_VARIANT_ORIGINAL_NO_PADDING) != 0) {
     // Try with padding variant
-    if (sodium_base642bin(out, out_size, b64, strlen(b64), "\r\n \t",
-                          out_len, NULL,
-                          sodium_base64_VARIANT_ORIGINAL) != 0) {
+    if (sodium_base642bin(out, out_size, b64, strlen(b64), "\r\n \t", out_len,
+                          NULL, sodium_base64_VARIANT_ORIGINAL) != 0) {
       return -1;
     }
   }
@@ -101,9 +99,8 @@ static int b64_decode(const char *b64, uint8_t *out, size_t out_size,
 // Simple base64 encode using libsodium, strip trailing '='
 static int b64_encode(const uint8_t *data, size_t data_len, char *out,
                       size_t out_size) {
-  char *result =
-      sodium_bin2base64(out, out_size, data, data_len,
-                        sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
+  char *result = sodium_bin2base64(out, out_size, data, data_len,
+                                   sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
   return result ? 0 : -1;
 }
 
@@ -117,8 +114,8 @@ int rsa_apple_challenge_response(const char *challenge_b64, uint32_t ip_addr,
   // Decode challenge
   uint8_t challenge[32];
   size_t challenge_len = 0;
-  if (b64_decode(challenge_b64, challenge, sizeof(challenge),
-                 &challenge_len) != 0) {
+  if (b64_decode(challenge_b64, challenge, sizeof(challenge), &challenge_len) !=
+      0) {
     ESP_LOGE(TAG, "Failed to decode Apple-Challenge");
     return -1;
   }
@@ -182,13 +179,14 @@ int rsa_decrypt_aes_key(const char *encrypted_b64, uint8_t *out_key,
   // Decode the base64 RSA-encrypted key
   uint8_t encrypted[512];
   size_t encrypted_len = 0;
-  if (b64_decode(encrypted_b64, encrypted, sizeof(encrypted),
-                 &encrypted_len) != 0) {
+  if (b64_decode(encrypted_b64, encrypted, sizeof(encrypted), &encrypted_len) !=
+      0) {
     ESP_LOGE(TAG, "Failed to decode RSA-encrypted AES key");
     return -1;
   }
 
-  ESP_LOGI(TAG, "RSA-encrypted AES key: %zu bytes (expected 256)", encrypted_len);
+  ESP_LOGI(TAG, "RSA-encrypted AES key: %zu bytes (expected 256)",
+           encrypted_len);
 
   // RSA OAEP-SHA1 decrypt (RAOP uses OAEP padding for the AES key)
   mbedtls_rsa_context *rsa = mbedtls_pk_rsa(s_pk_ctx);

@@ -43,8 +43,8 @@ typedef enum {
 
 typedef struct {
   int gpio;
-  bool pressed;          // Debounced state
-  bool repeatable;       // Supports auto-repeat (volume buttons)
+  bool pressed;    // Debounced state
+  bool repeatable; // Supports auto-repeat (volume buttons)
   TimerHandle_t debounce_timer;
   TimerHandle_t repeat_timer; // Only created for repeatable buttons
 } button_state_t;
@@ -156,9 +156,9 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
   }
 
   // Create one-shot debounce timer
-  buttons[id].debounce_timer = xTimerCreate(
-      "btn_db", pdMS_TO_TICKS(DEBOUNCE_MS), pdFALSE, // one-shot
-      (void *)(intptr_t)id, debounce_timer_cb);
+  buttons[id].debounce_timer =
+      xTimerCreate("btn_db", pdMS_TO_TICKS(DEBOUNCE_MS), pdFALSE, // one-shot
+                   (void *)(intptr_t)id, debounce_timer_cb);
 
   // Create one-shot repeat timer for volume buttons (manually restarted)
   if (repeatable) {
@@ -183,8 +183,7 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
   gpio_isr_handler_add(gpio, gpio_isr_handler, (void *)(intptr_t)id);
 
   if (!has_internal_pullup) {
-    ESP_LOGW(TAG,
-             "Button %d on GPIO %d: no internal pull-up, needs external",
+    ESP_LOGW(TAG, "Button %d on GPIO %d: no internal pull-up, needs external",
              id, gpio);
   }
   ESP_LOGI(TAG, "Button %d on GPIO %d (interrupt)", id, gpio);

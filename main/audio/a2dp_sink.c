@@ -412,9 +412,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
       // Register for notifications: track change, play status, position
       esp_avrc_ct_send_register_notification_cmd(1, ESP_AVRC_RN_TRACK_CHANGE,
                                                  0);
-      esp_avrc_ct_send_register_notification_cmd(2,
-                                                 ESP_AVRC_RN_PLAY_STATUS_CHANGE,
-                                                 0);
+      esp_avrc_ct_send_register_notification_cmd(
+          2, ESP_AVRC_RN_PLAY_STATUS_CHANGE, 0);
       esp_avrc_ct_send_register_notification_cmd(3,
                                                  ESP_AVRC_RN_PLAY_POS_CHANGED,
                                                  10); // report every 10 seconds
@@ -476,8 +475,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
     uint32_t position_ms = rc->play_status_rsp.song_position;
     esp_avrc_playback_stat_t status = rc->play_status_rsp.play_status;
 
-    ESP_LOGI(TAG, "Play status: state=%d pos=%lums dur=%lums",
-             status, (unsigned long)position_ms, (unsigned long)duration_ms);
+    ESP_LOGI(TAG, "Play status: state=%d pos=%lums dur=%lums", status,
+             (unsigned long)position_ms, (unsigned long)duration_ms);
 
     // Update duration and position in metadata for display
     // 0xFFFFFFFF means "not available" per AVRCP spec
@@ -531,9 +530,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
         rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
       }
       // Re-register
-      esp_avrc_ct_send_register_notification_cmd(2,
-                                                 ESP_AVRC_RN_PLAY_STATUS_CHANGE,
-                                                 0);
+      esp_avrc_ct_send_register_notification_cmd(
+          2, ESP_AVRC_RN_PLAY_STATUS_CHANGE, 0);
     } else if (rc->change_ntf.event_id == ESP_AVRC_RN_PLAY_POS_CHANGED) {
       uint32_t pos_ms = rc->change_ntf.event_parameter.play_pos;
       ESP_LOGD(TAG, "Play position: %lums", (unsigned long)pos_ms);
@@ -543,9 +541,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
         rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
       }
       // Re-register
-      esp_avrc_ct_send_register_notification_cmd(3,
-                                                 ESP_AVRC_RN_PLAY_POS_CHANGED,
-                                                 10);
+      esp_avrc_ct_send_register_notification_cmd(
+          3, ESP_AVRC_RN_PLAY_POS_CHANGED, 10);
     }
     break;
 
@@ -792,9 +789,9 @@ esp_err_t bt_a2dp_sink_init(const char *device_name,
     return ESP_ERR_NO_MEM;
   }
 
-  BaseType_t ret = task_create_spiram(bt_app_task, "bt_app", BT_TASK_STACK,
-                                      NULL, BT_TASK_PRIO, &s_bt_task_handle,
-                                      NULL);
+  BaseType_t ret =
+      task_create_spiram(bt_app_task, "bt_app", BT_TASK_STACK, NULL,
+                         BT_TASK_PRIO, &s_bt_task_handle, NULL);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create BT app task");
     return ESP_ERR_NO_MEM;
@@ -832,11 +829,9 @@ static void send_passthrough(uint8_t key_code) {
   if (!s_connected) {
     return;
   }
-  esp_avrc_ct_send_passthrough_cmd(0, key_code,
-                                   ESP_AVRC_PT_CMD_STATE_PRESSED);
+  esp_avrc_ct_send_passthrough_cmd(0, key_code, ESP_AVRC_PT_CMD_STATE_PRESSED);
   vTaskDelay(pdMS_TO_TICKS(50));
-  esp_avrc_ct_send_passthrough_cmd(0, key_code,
-                                   ESP_AVRC_PT_CMD_STATE_RELEASED);
+  esp_avrc_ct_send_passthrough_cmd(0, key_code, ESP_AVRC_PT_CMD_STATE_RELEASED);
 }
 
 void bt_a2dp_send_playpause(void) {

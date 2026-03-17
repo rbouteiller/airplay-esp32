@@ -89,11 +89,12 @@ esp_err_t audio_receiver_init(void) {
 
   receiver.decrypt_buffer_size = DECRYPT_BUFFER_SIZE;
 #ifdef CONFIG_SPIRAM
-  receiver.decrypt_buffer = heap_caps_malloc(receiver.decrypt_buffer_size,
-                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  receiver.decrypt_buffer = heap_caps_malloc(
+      receiver.decrypt_buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #endif
-  if (!receiver.decrypt_buffer)
+  if (!receiver.decrypt_buffer) {
     receiver.decrypt_buffer = malloc(receiver.decrypt_buffer_size);
+  }
   if (!receiver.decrypt_buffer) {
     ESP_LOGE(TAG, "Failed to allocate decrypt buffer");
     audio_buffer_deinit(&receiver.buffer);

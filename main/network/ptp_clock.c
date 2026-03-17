@@ -331,7 +331,7 @@ static void ptp_task(void *pvParameters) {
 
     if (ret < 0) {
       if (!ptp.running) {
-        break;  // Sockets closed during shutdown
+        break; // Sockets closed during shutdown
       }
       if (errno != EINTR) {
         ESP_LOGE(TAG, "select error: %d", errno);
@@ -399,9 +399,8 @@ esp_err_t ptp_clock_init(void) {
 
   // Start task
   ptp.running = true;
-  BaseType_t ret =
-      task_create_spiram(ptp_task, "ptp_clock", 4096, NULL, 6,
-                         &ptp.task_handle, &ptp.task_mem);
+  BaseType_t ret = task_create_spiram(ptp_task, "ptp_clock", 4096, NULL, 6,
+                                      &ptp.task_handle, &ptp.task_mem);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create PTP task");
     close(ptp.event_socket);

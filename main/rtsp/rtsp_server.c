@@ -305,7 +305,7 @@ cleanup:
   // When being replaced by a new client (is_old), skip global state changes —
   // the new session's SETUP already manages PTP and the event port task.
   if (!slot->is_old) {
-    ptp_clock_init();  // Restart PTP (stopped during v1 SETUP to free sockets)
+    ptp_clock_init(); // Restart PTP (stopped during v1 SETUP to free sockets)
     rtsp_stop_event_port_task();
   }
 

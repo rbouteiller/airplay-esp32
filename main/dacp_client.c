@@ -36,7 +36,7 @@ static bool s_initialized;
 static char s_dacp_id[DACP_ID_MAX];
 static char s_active_remote[ACTIVE_REMOTE_MAX];
 static uint32_t s_client_ip;
-static uint16_t s_dacp_port;   // Discovered via mDNS
+static uint16_t s_dacp_port; // Discovered via mDNS
 static bool s_session_valid;
 
 // Discover the DACP port via mDNS. Called WITHOUT the mutex held since
@@ -164,8 +164,7 @@ static void send_dacp_request(const char *path) {
 
   esp_err_t err = esp_http_client_perform(client);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "DACP request failed: %s (%s)", path,
-             esp_err_to_name(err));
+    ESP_LOGW(TAG, "DACP request failed: %s (%s)", path, esp_err_to_name(err));
     // Connection failed — invalidate port so next command re-discovers
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_dacp_port = 0;
@@ -227,11 +226,17 @@ void dacp_clear_session(void) {
   ESP_LOGD(TAG, "DACP session cleared");
 }
 
-void dacp_send_playpause(void) { send_dacp_request("playpause"); }
+void dacp_send_playpause(void) {
+  send_dacp_request("playpause");
+}
 
-void dacp_send_next(void) { send_dacp_request("nextitem"); }
+void dacp_send_next(void) {
+  send_dacp_request("nextitem");
+}
 
-void dacp_send_prev(void) { send_dacp_request("previtem"); }
+void dacp_send_prev(void) {
+  send_dacp_request("previtem");
+}
 
 void dacp_send_volume_up(void) {
   send_dacp_request("volumeup");
@@ -242,14 +247,15 @@ void dacp_send_volume_down(void) {
 }
 
 void dacp_send_volume(float volume_percent) {
-  if (volume_percent < 0.0f)
+  if (volume_percent < 0.0f) {
     volume_percent = 0.0f;
-  if (volume_percent > 100.0f)
+  }
+  if (volume_percent > 100.0f) {
     volume_percent = 100.0f;
+  }
 
   char path[64];
-  snprintf(path, sizeof(path), "setproperty?dmcp.volume=%.0f",
-           volume_percent);
+  snprintf(path, sizeof(path), "setproperty?dmcp.volume=%.0f", volume_percent);
   send_dacp_request(path);
 }
 

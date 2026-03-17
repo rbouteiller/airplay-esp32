@@ -343,8 +343,7 @@ static esp_err_t fs_upload_handler(httpd_req_t *req) {
   }
 
   if (req->content_len == 0 || req->content_len > 64 * 1024) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "Body required (max 64KB)");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body required (max 64KB)");
     return ESP_FAIL;
   }
 
@@ -427,8 +426,7 @@ static esp_err_t fs_list_handler(httpd_req_t *req) {
     httpd_query_key_value(query, "dir", dir_path, sizeof(dir_path));
   }
 
-  if (!is_path_allowed(dir_path) &&
-      strcmp(dir_path, "/spiffs") != 0) {
+  if (!is_path_allowed(dir_path) && strcmp(dir_path, "/spiffs") != 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Path not allowed");
     return ESP_FAIL;
   }
@@ -568,7 +566,7 @@ esp_err_t web_server_start(uint16_t port) {
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
-  config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
+  config.max_open_sockets = 3;  // Limit to save lwIP socket slots for AirPlay
   config.max_uri_handlers = 20; // Room for captive portal + EQ handlers
   config.max_resp_headers = 8;
   config.stack_size = 8192;
@@ -629,9 +627,8 @@ esp_err_t web_server_start(uint16_t port) {
                                .handler = fs_delete_handler};
   httpd_register_uri_handler(s_server, &fs_delete_uri);
 
-  httpd_uri_t fs_list_uri = {.uri = "/api/fs/list",
-                             .method = HTTP_GET,
-                             .handler = fs_list_handler};
+  httpd_uri_t fs_list_uri = {
+      .uri = "/api/fs/list", .method = HTTP_GET, .handler = fs_list_handler};
   httpd_register_uri_handler(s_server, &fs_list_uri);
 
   // Captive portal detection endpoints

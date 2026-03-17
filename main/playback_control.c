@@ -32,7 +32,7 @@
 static const char *TAG = "playback_ctrl";
 
 #define VOLUME_STEP_DB 3.0f
-#define VOLUME_MIN_DB  -30.0f
+#define VOLUME_MIN_DB  (-30.0f)
 #define VOLUME_MAX_DB  0.0f
 
 static playback_source_t s_source = PLAYBACK_SOURCE_NONE;
@@ -51,26 +51,32 @@ void playback_control_set_source(playback_source_t source) {
   ESP_LOGI(TAG, "Source set to %d", source);
 }
 
-playback_source_t playback_control_get_source(void) { return s_source; }
+playback_source_t playback_control_get_source(void) {
+  return s_source;
+}
 
 // ============================================================================
 // AirPlay local volume helpers
 // ============================================================================
 
 static float clamp_volume(float db) {
-  if (db < VOLUME_MIN_DB)
+  if (db < VOLUME_MIN_DB) {
     return VOLUME_MIN_DB;
-  if (db > VOLUME_MAX_DB)
+  }
+  if (db > VOLUME_MAX_DB) {
     return VOLUME_MAX_DB;
+  }
   return db;
 }
 
 // Convert AirPlay dB (-30..0) to DACP percent (0..100)
 static float db_to_dacp_percent(float db) {
-  if (db <= VOLUME_MIN_DB)
+  if (db <= VOLUME_MIN_DB) {
     return 0.0f;
-  if (db >= VOLUME_MAX_DB)
+  }
+  if (db >= VOLUME_MAX_DB) {
     return 100.0f;
+  }
   return ((db - VOLUME_MIN_DB) / (VOLUME_MAX_DB - VOLUME_MIN_DB)) * 100.0f;
 }
 

@@ -24,10 +24,10 @@
 #define LOG_RING_SIZE 8192
 #define LOG_RING_MASK (LOG_RING_SIZE - 1)
 
-#define MAX_WS_CLIENTS   3
-#define BROADCAST_TASK_STACK 4096
+#define MAX_WS_CLIENTS        3
+#define BROADCAST_TASK_STACK  4096
 #define BROADCAST_INTERVAL_MS 100
-#define MAX_SEND_CHUNK 1024
+#define MAX_SEND_CHUNK        1024
 
 static char *s_ring;
 static volatile size_t s_head; /* next write position  */
@@ -62,7 +62,9 @@ static void ring_write(const char *data, size_t len) {
 
 static size_t ring_read(char *buf, size_t max) {
   size_t avail = ring_used();
-  if (avail > max) avail = max;
+  if (avail > max) {
+    avail = max;
+  }
   for (size_t i = 0; i < avail; i++) {
     buf[i] = s_ring[s_tail & LOG_RING_MASK];
     s_tail = (s_tail + 1) & LOG_RING_MASK;
@@ -86,12 +88,15 @@ static int log_vprintf_hook(const char *fmt, va_list args) {
   va_end(copy);
 
   if (len > 0) {
-    if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+    if ((size_t)len >= sizeof(buf)) {
+      len = sizeof(buf) - 1;
+    }
     if (xSemaphoreTake(s_mutex, 0) == pdTRUE) {
       ring_write(buf, (size_t)len);
       xSemaphoreGive(s_mutex);
     }
-    /* If the mutex is held we silently drop — better than blocking a log call. */
+    /* If the mutex is held we silently drop — better than blocking a log call.
+     */
   }
   return ret;
 }
@@ -146,14 +151,18 @@ static void broadcast_task(void *arg) {
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(BROADCAST_INTERVAL_MS));
 
-    if (s_client_count == 0) continue;
+    if (s_client_count == 0) {
+      continue;
+    }
 
     size_t len = 0;
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       len = ring_read(buf, sizeof(buf));
       xSemaphoreGive(s_mutex);
     }
-    if (len == 0) continue;
+    if (len == 0) {
+      continue;
+    }
 
     httpd_ws_frame_t frame = {
         .type = HTTPD_WS_TYPE_TEXT,
@@ -182,20 +191,27 @@ static void broadcast_task(void *arg) {
 
 esp_err_t log_stream_init(void) {
   s_mutex = xSemaphoreCreateMutex();
-  if (!s_mutex) return ESP_ERR_NO_MEM;
+  if (!s_mutex) {
+    return ESP_ERR_NO_MEM;
+  }
 
 #ifdef CONFIG_SPIRAM
   s_ring = heap_caps_malloc(LOG_RING_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #endif
-  if (!s_ring) s_ring = malloc(LOG_RING_SIZE);
-  if (!s_ring) return ESP_ERR_NO_MEM;
+  if (!s_ring) {
+    s_ring = malloc(LOG_RING_SIZE);
+  }
+  if (!s_ring) {
+    return ESP_ERR_NO_MEM;
+  }
 
   s_head = s_tail = 0;
   s_client_count = 0;
 
   s_client_mutex = xSemaphoreCreateMutex();
-  if (!s_client_mutex)
+  if (!s_client_mutex) {
     return ESP_ERR_NO_MEM;
+  }
 
   /* Hook into esp_log — keep the original so UART output continues. */
   s_orig_vprintf = esp_log_set_vprintf(log_vprintf_hook);
@@ -219,7 +235,8 @@ esp_err_t log_stream_register(httpd_handle_t server) {
     return err;
   }
 
-  task_create_spiram(broadcast_task, "log_ws", BROADCAST_TASK_STACK, NULL, 3, NULL, NULL);
+  task_create_spiram(broadcast_task, "log_ws", BROADCAST_TASK_STACK, NULL, 3,
+                     NULL, NULL);
   ESP_LOGI("log_stream", "Log streaming on /ws/logs");
   return ESP_OK;
 }
