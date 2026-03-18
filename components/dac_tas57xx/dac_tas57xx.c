@@ -234,6 +234,8 @@ static void tas57xx_set_power_mode(dac_power_mode_t mode) {
     write_cmd(TAS57XX_MUTE);
     write_cmd(TAS57XX_STANDBY);
     if (s_power_state == DAC_POWER_OFF) {
+      // Wait for standby state to settle before writing miniDSP config
+      vTaskDelay(pdMS_TO_TICKS(50));
       tas57xx_restore_config();
     }
     break;
