@@ -184,7 +184,7 @@ menu "Airplay ESP Configuration"
 
     menu "Display Configuration"
         config DISPLAY_ENABLED
-            bool "Enable OLED display"
+            bool "Enable display"
             default n
             help
                 Enable an I2C or SPI OLED display for showing track metadata,
@@ -195,21 +195,24 @@ menu "Airplay ESP Configuration"
                 prompt "Display driver"
                 default DISPLAY_DRIVER_SSD1306
                 help
-                    Select the OLED display controller IC.
+                    Select the display controller IC.
 
                 config DISPLAY_DRIVER_SSD1306
-                    bool "SSD1306 (128x64)"
+                    bool "SSD1306 (128x64) OLED"
                 config DISPLAY_DRIVER_SH1106
-                    bool "SH1106 (128x64)"
+                    bool "SH1106 (128x64) OLED"
                 config DISPLAY_DRIVER_SSD1309
-                    bool "SSD1309 (128x64)"
+                    bool "SSD1309 (128x64) OLED"
                 config DISPLAY_DRIVER_SH1107
-                    bool "SH1107 (128x128)"
+                    bool "SH1107 (128x128) OLED"
+                config DISPLAY_DRIVER_ST7789
+                    bool "ST7789 TFT (320x170 landscape)"
             endchoice
 
             choice DISPLAY_HEIGHT
                 prompt "Display height"
                 default DISPLAY_HEIGHT_64
+                depends on !DISPLAY_DRIVER_ST7789
                 help
                     Select the display pixel height. 128x32 displays use
                     a compact two-line layout with scrolling text.
@@ -224,6 +227,7 @@ menu "Airplay ESP Configuration"
             choice DISPLAY_BUS
                 prompt "Display bus"
                 default DISPLAY_BUS_I2C
+                depends on !DISPLAY_DRIVER_ST7789
                 help
                     Select the communication bus for the display.
 
@@ -254,7 +258,7 @@ menu "Airplay ESP Configuration"
                         Common values: 0x3C or 0x3D.
             endif
 
-            if DISPLAY_BUS_SPI
+            if DISPLAY_BUS_SPI || DISPLAY_DRIVER_ST7789
                 config DISPLAY_SPI_CLK
                     int "Display SPI CLK GPIO"
                     default 18
@@ -285,6 +289,14 @@ menu "Airplay ESP Configuration"
                     help
                         GPIO pin for the display reset line.
                         Set to -1 if not connected.
+
+                config DISPLAY_BL_GPIO
+                    int "Display backlight GPIO"
+                    default -1
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        GPIO pin for the display backlight.
+                        Set to -1 if not used or always on.
             endif
 
             config DISPLAY_FLIP
