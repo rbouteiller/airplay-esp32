@@ -643,6 +643,18 @@ pio run -e <env> -t menuconfig
 
 ---
 
+## ST7789 TFT Display (Optional)
+
+A 320×170 colour TFT display can be connected to show track metadata with a progress bar on a full-colour background. Uses [LVGL 9](https://lvgl.io/) + `esp_lvgl_port` for rendering. The display is **disabled by default** and must be explicitly enabled.
+
+<div align="center">
+<img src="docs/display_st7789.png" alt="ST7789 display showing track metadata" width="500">
+</div>
+
+> For wiring, enabling instructions, background image customisation, and implementation notes see the [Display Component README](components/display/README.md).
+
+---
+
 ## Features
 
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
@@ -655,6 +667,7 @@ pio run -e <env> -t menuconfig
 - **48 kHz output** — optional sample rate conversion (44.1 kHz → 48 kHz) via ART sinc resampler for DACs and S/PDIF receivers that need it
 - **LED indicator** — visual feedback for playback status
 - **OLED display** — optional screen showing track metadata, progress bar, and playback time
+- **ST7789 TFT display** — optional colour TFT showing track metadata on a full-colour background (ESP32-S3)
 - **Hardware buttons** — optional physical buttons for play/pause, volume, and track skip with auto-repeat
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
 - **Esparagus Audio Brick support** — ESP32 + TAS5825M DAC/amp with on-chip DSP and 15-band EQ
@@ -769,7 +782,7 @@ MCLK is not used for PCM5102A as generates it internally. It is, however, connec
 | **Web Server**      | `main/network/`       | Configuration interface                   |
 | **DAC Abstraction** | `components/dac/`     | Abstract DAC API (Kconfig-selected)       |
 | **Board Support**   | `components/boards/`  | Per-board HAL (GPIOs, SPI bus, init)      |
-| **Display**         | `components/display/` | OLED display driver (u8g2-based)          |
+| **Display**         | `components/display/` | OLED (u8g2) or ST7789 TFT (LVGL 9) driver (optional) |
 | **SPIFFS Storage**  | `components/spiffs_storage/` | SPIFFS mount and filesystem init   |
 | **Buttons**         | `main/buttons.c`       | Hardware button input with debounce       |
 
@@ -788,7 +801,10 @@ components/
 ├── dac/            # Abstract DAC API (dispatch layer)
 ├── dac_tas57xx/    # TI TAS57xx DAC driver (SqueezeAMP)
 ├── dac_tas58xx/    # TI TAS58xx DAC driver (Esparagus Audio Brick)
-├── display/        # OLED display driver (u8g2-based, optional)
+├── display/        # Display driver (OLED u8g2 or ST7789 LVGL 9, optional)
+│   ├── README.md       # Wiring, enabling, background image, implementation notes
+│   ├── background.c    # ST7789 background image pixel data (replaceable)
+│   └── background.h    # Declares background_img — see header for swap instructions
 ├── spiffs_storage/ # SPIFFS filesystem mount
 ├── u8g2/           # u8g2 graphics library (git submodule)
 ├── u8g2-hal-esp-idf/ # ESP-IDF HAL for u8g2 (git submodule)
