@@ -289,24 +289,32 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
             break;
 
         case RTSP_EVENT_METADATA:
-            if (data) {
-                if (data->metadata.title[0])
-                    memcpy(s_display.title,  data->metadata.title,
-                           METADATA_STRING_MAX);
-                if (data->metadata.artist[0])
-                    memcpy(s_display.artist, data->metadata.artist,
-                           METADATA_STRING_MAX);
-                if (data->metadata.album[0])
-                    memcpy(s_display.album,  data->metadata.album,
-                           METADATA_STRING_MAX);
-                if (data->metadata.duration_secs)
-                    s_display.duration_secs = data->metadata.duration_secs;
-                if (data->metadata.position_secs || s_display.position_secs == 0)
-                    s_display.position_secs = data->metadata.position_secs;
-                s_display.sync_time_us  = esp_timer_get_time();
-                s_display.dirty = true;
-            }
-            break;
+        if (data) {
+            // Detect track change before updating title
+            bool track_changed = data->metadata.title[0] &&
+                                strcmp(data->metadata.title, s_display.title) != 0;
+
+            if (data->metadata.title[0])
+                memcpy(s_display.title,  data->metadata.title,
+                    METADATA_STRING_MAX);
+            if (data->metadata.artist[0])
+                memcpy(s_display.artist, data->metadata.artist,
+                    METADATA_STRING_MAX);
+            if (data->metadata.album[0])
+                memcpy(s_display.album,  data->metadata.album,
+                    METADATA_STRING_MAX);
+            if (data->metadata.duration_secs)
+                s_display.duration_secs = data->metadata.duration_secs;
+
+            // Reset position on track change, ignore spurious zeros mid-song
+            if (track_changed || data->metadata.position_secs ||
+                    s_display.position_secs == 0)
+                s_display.position_secs = data->metadata.position_secs;
+
+            s_display.sync_time_us  = esp_timer_get_time();
+            s_display.dirty = true;
+        }
+        break;
     }
 }
 
@@ -331,13 +339,16 @@ static void display_task(void *pvParameters)
             ui_update();
         }
 
-        // Update progress/time every second while playing
-        if (s_display.state == DISPLAY_STATE_PLAYING) {
+        // Update progress every second while playing
+        static TickType_t last_progress_update = 0;
+        TickType_t now = xTaskGetTickCount();
+        if (s_display.state == DISPLAY_STATE_PLAYING &&
+            (now - last_progress_update) >= pdMS_TO_TICKS(1000)) {
+            last_progress_update = now;
             ui_update();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(30));
         }
+
+vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
 
@@ -460,7 +471,7 @@ void display_init(void)
     rtsp_events_register(on_rtsp_event, NULL);
 
     // ---- Start display task -------------------------------------------------
-    xTaskCreate(display_task, "display", 8192, NULL, 3, NULL);
+    xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
 
     ESP_LOGI(TAG, "ST7789 display initialized");
 }
