@@ -24,6 +24,10 @@ menu "Board Configuration"
             bool "Esparagus Audio Brick (ESP32, TAS58xx)"
             depends on IDF_TARGET_ESP32
 
+        config BOARD_ESPARAGUS_AUDIO_BRICK_S3
+            bool "Esparagus Audio Brick (ESP32-S3, TAS58xx)"
+            depends on IDF_TARGET_ESP32S3
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -33,6 +37,7 @@ menu "Board Configuration"
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
         default "esp32-generic" if BOARD_ESP32_GENERIC
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK
+        default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_S3
 
     config BOARD_SQUEEZEAMP_COMMON
         bool
