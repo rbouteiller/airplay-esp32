@@ -1,6 +1,6 @@
 /**
  * @file display_st7789.c
- * @brief ST7789 TFT display driver using esp_lcd + LVGL 8.3
+ * @brief ST7789 TFT display driver using esp_lcd + LVGL 9 (esp_lvgl_port)
  *
  * Implements the display_init() API for ST7789-based TFT displays.
  * Display: 320x170 pixels, landscape orientation, SPI interface.
@@ -20,6 +20,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lvgl_port.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
@@ -27,7 +28,6 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "lvgl.h"
 
 #include <stdio.h>
@@ -43,7 +43,12 @@ static const char *TAG = "display_st7789";
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
-#define DRAW_BUF_LINES       20     // Lines per flush buffer — tune if needed
+
+// Draw buffer: full-screen in PSRAM, small DMA-capable trans buffer in SRAM.
+// This avoids the SPI DMA internal RAM allocation failures seen with large
+// SRAM draw buffers competing with audio and WiFi.
+#define DRAW_BUF_LINES       20
+#define TRANS_BUF_LINES      2
 
 // ============================================================================
 // Display state
@@ -71,38 +76,13 @@ static struct {
 // LVGL handles and widgets
 // ============================================================================
 
-static SemaphoreHandle_t s_lvgl_mutex = NULL;
+static lv_display_t  *s_lvgl_disp  = NULL;
 
 static lv_obj_t *s_label_title   = NULL;
 static lv_obj_t *s_label_artist  = NULL;
 static lv_obj_t *s_label_status  = NULL;
 static lv_obj_t *s_bar_progress  = NULL;
 static lv_obj_t *s_label_time    = NULL;
-
-// ============================================================================
-// LVGL flush callback
-// ============================================================================
-
-static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
-                          lv_color_t *color_map)
-{
-    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
-    esp_lcd_panel_draw_bitmap(panel,
-                              area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1,
-                              color_map);
-    lv_disp_flush_ready(drv);
-}
-
-// ============================================================================
-// LVGL tick — incremented every 1ms by esp_timer
-// ============================================================================
-
-static void lvgl_tick_cb(void *arg)
-{
-    (void)arg;
-    lv_tick_inc(1);
-}
 
 // ============================================================================
 // Helpers
@@ -128,12 +108,12 @@ static void format_time(uint32_t secs, char *buf, size_t len)
 }
 
 // ============================================================================
-// UI creation — called once after LVGL init
+// UI creation — called once after LVGL init, with lock held
 // ============================================================================
 
 static void ui_create(void)
 {
-    lv_obj_t *scr = lv_scr_act();
+    lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
@@ -188,8 +168,8 @@ static void ui_create(void)
 
 static void ui_update(void)
 {
-    if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ESP_LOGW(TAG, "ui_update: mutex timeout");
+    if (!lvgl_port_lock(100)) {
+        ESP_LOGW(TAG, "ui_update: lock timeout");
         return;
     }
 
@@ -240,7 +220,7 @@ static void ui_update(void)
         }
     }
 
-    xSemaphoreGive(s_lvgl_mutex);
+    lvgl_port_unlock();
 }
 
 // ============================================================================
@@ -289,37 +269,37 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
             break;
 
         case RTSP_EVENT_METADATA:
-        if (data) {
-            // Detect track change before updating title
-            bool track_changed = data->metadata.title[0] &&
-                                strcmp(data->metadata.title, s_display.title) != 0;
+            if (data) {
+                // Detect track change before updating title
+                bool track_changed = data->metadata.title[0] &&
+                                     strcmp(data->metadata.title, s_display.title) != 0;
 
-            if (data->metadata.title[0])
-                memcpy(s_display.title,  data->metadata.title,
-                    METADATA_STRING_MAX);
-            if (data->metadata.artist[0])
-                memcpy(s_display.artist, data->metadata.artist,
-                    METADATA_STRING_MAX);
-            if (data->metadata.album[0])
-                memcpy(s_display.album,  data->metadata.album,
-                    METADATA_STRING_MAX);
-            if (data->metadata.duration_secs)
-                s_display.duration_secs = data->metadata.duration_secs;
+                if (data->metadata.title[0])
+                    memcpy(s_display.title,  data->metadata.title,
+                           METADATA_STRING_MAX);
+                if (data->metadata.artist[0])
+                    memcpy(s_display.artist, data->metadata.artist,
+                           METADATA_STRING_MAX);
+                if (data->metadata.album[0])
+                    memcpy(s_display.album,  data->metadata.album,
+                           METADATA_STRING_MAX);
+                if (data->metadata.duration_secs)
+                    s_display.duration_secs = data->metadata.duration_secs;
 
-            // Reset position on track change, ignore spurious zeros mid-song
-            if (track_changed || data->metadata.position_secs ||
-                    s_display.position_secs == 0)
-                s_display.position_secs = data->metadata.position_secs;
+                // Reset position on track change, ignore spurious zeros mid-song
+                if (track_changed || data->metadata.position_secs ||
+                        s_display.position_secs == 0)
+                    s_display.position_secs = data->metadata.position_secs;
 
-            s_display.sync_time_us  = esp_timer_get_time();
-            s_display.dirty = true;
-        }
-        break;
+                s_display.sync_time_us  = esp_timer_get_time();
+                s_display.dirty = true;
+            }
+            break;
     }
 }
 
 // ============================================================================
-// Display task — drives lv_timer_handler and periodic UI updates
+// Display task — periodic UI updates (LVGL rendering handled by esp_lvgl_port)
 // ============================================================================
 
 static void display_task(void *pvParameters)
@@ -327,12 +307,6 @@ static void display_task(void *pvParameters)
     (void)pvParameters;
 
     while (1) {
-        // Drive LVGL (animations, scrolling, redraws)
-        if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            lv_timer_handler();
-            xSemaphoreGive(s_lvgl_mutex);
-        }
-
         // Apply pending state changes
         if (s_display.dirty) {
             s_display.dirty = false;
@@ -348,7 +322,7 @@ static void display_task(void *pvParameters)
             ui_update();
         }
 
-vTaskDelay(pdMS_TO_TICKS(30));
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
 
@@ -381,7 +355,7 @@ void display_init(void)
         .sclk_io_num     = CONFIG_DISPLAY_SPI_CLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = DISPLAY_WIDTH * DRAW_BUF_LINES * sizeof(uint16_t),
+        .max_transfer_sz = DISPLAY_WIDTH * TRANS_BUF_LINES * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -419,46 +393,36 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
-
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-    // ---- LVGL init ----------------------------------------------------------
-    lv_init();
+    // ---- esp_lvgl_port init -------------------------------------------------
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // Draw buffers — allocate from PSRAM (S3 has 8MB available)
-    size_t buf_size = DISPLAY_WIDTH * DRAW_BUF_LINES * sizeof(lv_color_t);
-    lv_color_t *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-    lv_color_t *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-    assert(buf1 != NULL && buf2 != NULL);
-
-    static lv_disp_draw_buf_t draw_buf;
-    lv_disp_draw_buf_init(&draw_buf, buf1, buf2,
-                          DISPLAY_WIDTH * DRAW_BUF_LINES);
-
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res   = DISPLAY_WIDTH;
-    disp_drv.ver_res   = DISPLAY_HEIGHT;
-    disp_drv.flush_cb  = lvgl_flush_cb;
-    disp_drv.draw_buf  = &draw_buf;
-    disp_drv.user_data = panel_handle;
-    lv_disp_drv_register(&disp_drv);
-
-    // ---- LVGL tick timer (1ms) ----------------------------------------------
-    const esp_timer_create_args_t tick_args = {
-        .callback = lvgl_tick_cb,
-        .name     = "lvgl_tick",
+    // ---- Add display to esp_lvgl_port ---------------------------------------
+    // Draw buffer in PSRAM, small DMA-capable trans_buffer in SRAM.
+    // This pattern avoids SPI DMA internal RAM allocation failures.
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle     = io_handle,
+        .panel_handle  = panel_handle,
+        .buffer_size   = DISPLAY_WIDTH * DRAW_BUF_LINES,
+        .double_buffer = true,
+        .trans_size    = DISPLAY_WIDTH * TRANS_BUF_LINES,
+        .hres          = DISPLAY_WIDTH,
+        .vres          = DISPLAY_HEIGHT,
+        .monochrome    = false,
+        .flags = {
+            .buff_spiram = true,
+            .swap_bytes  = true,    // ST7789 needs byte-swapped RGB565
+        },
     };
-    esp_timer_handle_t tick_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&tick_args, &tick_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 1000));
-
-    // ---- Mutex for LVGL thread safety ---------------------------------------
-    s_lvgl_mutex = xSemaphoreCreateMutex();
-    assert(s_lvgl_mutex != NULL);
+    s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
+    assert(s_lvgl_disp != NULL);
 
     // ---- Build initial UI ---------------------------------------------------
+    lvgl_port_lock(0);
     ui_create();
+    lvgl_port_unlock();
 
     // ---- Backlight ON -------------------------------------------------------
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 1);
@@ -470,8 +434,9 @@ void display_init(void)
     // ---- Register for RTSP events -------------------------------------------
     rtsp_events_register(on_rtsp_event, NULL);
 
-    // ---- Start display task -------------------------------------------------
-    xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
+    // ---- Start display task (state updates, progress tick) ------------------
+    // Pinned to Core 0; audio runs on Core 1.
+    xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
-    ESP_LOGI(TAG, "ST7789 display initialized");
+    ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
 }

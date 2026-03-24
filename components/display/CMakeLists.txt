@@ -1,7 +1,7 @@
 # Display component
 # Supports:
 #   - OLED displays (SSD1306, SH1106, SSD1309, SH1107) via u8g2
-#   - ST7789 TFT via esp_lcd + LVGL 8.3
+#   - ST7789 TFT via esp_lcd + LVGL 9 (esp_lvgl_port)
 #
 # When disabled, only the stub is compiled.
 
@@ -18,7 +18,7 @@ if(CONFIG_DISPLAY_ENABLED)
             idf::esp_lcd
             idf::driver
             idf::esp_timer
-            idf::lvgl__lvgl)
+            idf::esp_lvgl_port)
     else()
         target_sources(${COMPONENT_LIB} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/display.c")
