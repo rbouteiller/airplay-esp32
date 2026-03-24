@@ -39,8 +39,15 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-// Landscape 320x170. Hardware rotation applied via panel calls AFTER
-// lvgl_port_add_disp to ensure esp_lvgl_port does not reset rotation state.
+// Landscape 320x170. Hardware rotation (swap_xy + mirror_x) is applied via
+// esp_lcd panel calls AFTER lvgl_port_add_disp().
+//
+// Important: esp_lvgl_port internally calls panel operations during
+// lvgl_port_add_disp() that reset the ST7789 MADCTL register (which controls
+// pixel addressing direction), wiping any rotation set before that call.
+// Applying swap_xy/mirror/set_gap after lvgl_port_add_disp() ensures the
+// correct landscape orientation is preserved. This is an ST7789 + esp_lvgl_port
+// interaction and applies regardless of ESP32 variant.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
@@ -366,8 +373,8 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-    // NOTE: swap_xy, mirror and gap applied AFTER lvgl_port_add_disp
-    // to prevent esp_lvgl_port from resetting panel rotation state.
+    // NOTE: swap_xy, mirror and set_gap applied AFTER lvgl_port_add_disp.
+    // See comment at top of file for explanation.
 
     // ---- esp_lvgl_port init -------------------------------------------------
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
@@ -391,9 +398,8 @@ void display_init(void)
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
     assert(s_lvgl_disp != NULL);
 
-    // ---- Apply hardware rotation AFTER port init ----------------------------
-    // Applied here to prevent esp_lvgl_port from resetting rotation state
-    // during display registration.
+    // ---- Apply hardware rotation AFTER lvgl_port_add_disp ------------------
+    // See comment at top of file for explanation.
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
@@ -414,6 +420,7 @@ void display_init(void)
     rtsp_events_register(on_rtsp_event, NULL);
 
     // ---- Start display task (state updates, progress tick) ------------------
+    // Pinned to Core 0; audio runs on Core 1.
     xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
     ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
