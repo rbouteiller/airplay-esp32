@@ -197,10 +197,10 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
     }
   }
 
-  state->buffered_task_handle = xTaskCreateStatic(
-      buffered_audio_task, "buff_audio",
-      AUDIO_BUFFERED_STACK_SIZE / sizeof(StackType_t), stream, 5,
-      s_buffered_stack, &s_buffered_tcb);
+  state->buffered_task_handle =
+      xTaskCreateStatic(buffered_audio_task, "buff_audio",
+                        AUDIO_BUFFERED_STACK_SIZE / sizeof(StackType_t), stream,
+                        5, s_buffered_stack, &s_buffered_tcb);
   if (!state->buffered_task_handle) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
