@@ -56,6 +56,16 @@ static const char *TAG = "display_st7789";
 #define TRANS_BUF_LINES      2
 
 // ============================================================================
+// Layout constants — adjust these to tune vertical spacing
+// ============================================================================
+#define Y_TITLE       8
+#define Y_ARTIST      38
+#define Y_ALBUM       64
+#define Y_PROGRESS    104
+#define Y_TIME        122
+#define BAR_HEIGHT    12
+
+// ============================================================================
 // Display state
 // ============================================================================
 
@@ -83,11 +93,13 @@ static struct {
 
 static lv_display_t  *s_lvgl_disp  = NULL;
 
-static lv_obj_t *s_label_title   = NULL;
-static lv_obj_t *s_label_artist  = NULL;
-static lv_obj_t *s_label_status  = NULL;
-static lv_obj_t *s_bar_progress  = NULL;
-static lv_obj_t *s_label_time    = NULL;
+static lv_obj_t *s_label_title          = NULL;
+static lv_obj_t *s_label_artist         = NULL;
+static lv_obj_t *s_label_album          = NULL;
+static lv_obj_t *s_label_status         = NULL;
+static lv_obj_t *s_bar_progress         = NULL;
+static lv_obj_t *s_label_time_elapsed   = NULL;
+static lv_obj_t *s_label_time_remaining = NULL;
 
 // ============================================================================
 // Helpers
@@ -112,6 +124,11 @@ static void format_time(uint32_t secs, char *buf, size_t len)
     snprintf(buf, len, "%lu:%02lu", secs / 60, secs % 60);
 }
 
+static void format_remaining(uint32_t remaining_secs, char *buf, size_t len)
+{
+    snprintf(buf, len, "-%lu:%02lu", remaining_secs / 60, remaining_secs % 60);
+}
+
 // ============================================================================
 // UI creation - called once after LVGL init, with lock held
 // ============================================================================
@@ -119,44 +136,72 @@ static void format_time(uint32_t secs, char *buf, size_t len)
 static void ui_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+    // Gradient background: dark blue-black at top fading to black at bottom
+    lv_obj_set_style_bg_color(scr, lv_color_make(10, 10, 30), 0);
+    lv_obj_set_style_bg_grad_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
+    // Title — largest font, white, scrolling
     s_label_title = lv_label_create(scr);
     lv_obj_set_width(s_label_title, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_label_title, lv_color_white(), 0);
-    lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 5, 8);
+    lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 5, Y_TITLE);
     lv_label_set_text(s_label_title, "AirPlay Ready");
 
+    // Artist — medium font, light grey, scrolling
     s_label_artist = lv_label_create(scr);
     lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_font(s_label_artist, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_label_artist, lv_color_make(180, 180, 180), 0);
-    lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, 5, 42);
+    lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, 5, Y_ARTIST);
     lv_label_set_text(s_label_artist, "");
 
-    s_bar_progress = lv_bar_create(scr);
-    lv_obj_set_size(s_bar_progress, DISPLAY_WIDTH - 10, 6);
-    lv_obj_align(s_bar_progress, LV_ALIGN_TOP_LEFT, 5, 118);
-    lv_bar_set_range(s_bar_progress, 0, 100);
-    lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(60, 60, 60), 0);
-    lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(30, 144, 255), LV_PART_INDICATOR);
+    // Album — small font, dimmer grey, scrolling
+    // Width leaves room on the right for the paused indicator
+    s_label_album = lv_label_create(scr);
+    lv_obj_set_width(s_label_album, DISPLAY_WIDTH - 80);
+    lv_label_set_long_mode(s_label_album, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_font(s_label_album, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_label_album, lv_color_make(110, 110, 110), 0);
+    lv_obj_align(s_label_album, LV_ALIGN_TOP_LEFT, 5, Y_ALBUM);
+    lv_label_set_text(s_label_album, "");
 
-    s_label_time = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_label_time, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_label_time, lv_color_make(150, 150, 150), 0);
-    lv_obj_align(s_label_time, LV_ALIGN_TOP_LEFT, 5, 140);
-    lv_label_set_text(s_label_time, "");
-
+    // Paused status indicator — right side at album row, amber
     s_label_status = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_label_status, lv_color_make(255, 200, 0), 0);
-    lv_obj_align(s_label_status, LV_ALIGN_TOP_RIGHT, -5, 8);
+    lv_obj_align(s_label_status, LV_ALIGN_TOP_RIGHT, -5, Y_ALBUM);
     lv_label_set_text(s_label_status, "");
+
+    // Progress bar — full width minus margins, rounded
+    s_bar_progress = lv_bar_create(scr);
+    lv_obj_set_size(s_bar_progress, DISPLAY_WIDTH - 10, BAR_HEIGHT);
+    lv_obj_align(s_bar_progress, LV_ALIGN_TOP_LEFT, 5, Y_PROGRESS);
+    lv_bar_set_range(s_bar_progress, 0, 100);
+    lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(50, 50, 50), 0);
+    lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(30, 144, 255), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_bar_progress, 3, 0);
+    lv_obj_set_style_radius(s_bar_progress, 3, LV_PART_INDICATOR);
+
+    // Elapsed time — below bar, left aligned
+    s_label_time_elapsed = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_label_time_elapsed, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_label_time_elapsed, lv_color_make(150, 150, 150), 0);
+    lv_obj_align(s_label_time_elapsed, LV_ALIGN_TOP_LEFT, 5, Y_TIME);
+    lv_label_set_text(s_label_time_elapsed, "");
+
+    // Remaining time — below bar, right aligned, with leading minus sign
+    s_label_time_remaining = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_label_time_remaining, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_label_time_remaining, lv_color_make(150, 150, 150), 0);
+    lv_obj_align(s_label_time_remaining, LV_ALIGN_TOP_RIGHT, -5, Y_TIME);
+    lv_label_set_text(s_label_time_remaining, "");
 }
 
 // ============================================================================
@@ -172,44 +217,58 @@ static void ui_update(void)
 
     switch (s_display.state) {
         case DISPLAY_STATE_STANDBY:
-            lv_label_set_text(s_label_title, "AirPlay Ready");
-            lv_label_set_text(s_label_artist, "");
-            lv_label_set_text(s_label_status, "");
-            lv_label_set_text(s_label_time, "");
+            lv_label_set_text(s_label_title,          "AirPlay Ready");
+            lv_label_set_text(s_label_artist,          "");
+            lv_label_set_text(s_label_album,           "");
+            lv_label_set_text(s_label_status,          "");
+            lv_label_set_text(s_label_time_elapsed,    "");
+            lv_label_set_text(s_label_time_remaining,  "");
             lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
             break;
 
         case DISPLAY_STATE_CONNECTED:
-            lv_label_set_text(s_label_title, "Connected");
-            lv_label_set_text(s_label_artist, "");
-            lv_label_set_text(s_label_status, "");
-            lv_label_set_text(s_label_time, "");
+            lv_label_set_text(s_label_title,          "Connected");
+            lv_label_set_text(s_label_artist,          "");
+            lv_label_set_text(s_label_album,           "");
+            lv_label_set_text(s_label_status,          "");
+            lv_label_set_text(s_label_time_elapsed,    "");
+            lv_label_set_text(s_label_time_remaining,  "");
             lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
             break;
 
         case DISPLAY_STATE_PLAYING:
         case DISPLAY_STATE_PAUSED: {
             lv_label_set_text(s_label_title,
-                s_display.title[0] ? s_display.title : "---");
+                s_display.title[0]  ? s_display.title  : "---");
             lv_label_set_text(s_label_artist,
                 s_display.artist[0] ? s_display.artist : "");
+            lv_label_set_text(s_label_album,
+                s_display.album[0]  ? s_display.album  : "");
             lv_label_set_text(s_label_status,
-                s_display.state == DISPLAY_STATE_PAUSED ? "|| PAUSED" : "");
+                s_display.state == DISPLAY_STATE_PAUSED ? "|| " : "");
 
             uint32_t pos = get_estimated_position();
-            if (s_display.duration_secs > 0) {
-                int pct = (int)((uint64_t)pos * 100 / s_display.duration_secs);
-                lv_bar_set_value(s_bar_progress, pct, LV_ANIM_OFF);
-            }
 
             if (s_display.duration_secs > 0) {
-                char pos_str[12], dur_str[12], time_buf[32];
-                format_time(pos, pos_str, sizeof(pos_str));
-                format_time(s_display.duration_secs, dur_str, sizeof(dur_str));
-                snprintf(time_buf, sizeof(time_buf), "%s / %s", pos_str, dur_str);
-                lv_label_set_text(s_label_time, time_buf);
+                // Progress bar
+                int pct = (int)((uint64_t)pos * 100 / s_display.duration_secs);
+                lv_bar_set_value(s_bar_progress, pct, LV_ANIM_OFF);
+
+                // Elapsed time (left)
+                char elapsed_str[12];
+                format_time(pos, elapsed_str, sizeof(elapsed_str));
+                lv_label_set_text(s_label_time_elapsed, elapsed_str);
+
+                // Remaining time (right) with leading minus sign
+                uint32_t remaining = (pos <= s_display.duration_secs)
+                                     ? s_display.duration_secs - pos : 0;
+                char remaining_str[14];
+                format_remaining(remaining, remaining_str, sizeof(remaining_str));
+                lv_label_set_text(s_label_time_remaining, remaining_str);
             } else {
-                lv_label_set_text(s_label_time, "");
+                lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+                lv_label_set_text(s_label_time_elapsed,   "");
+                lv_label_set_text(s_label_time_remaining, "");
             }
             break;
         }
@@ -377,7 +436,17 @@ void display_init(void)
     // See comment at top of file for explanation.
 
     // ---- esp_lvgl_port init -------------------------------------------------
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    // Pin the LVGL task to Core 0 (same as our display task).
+    // The default task_affinity = -1 (no affinity) allows the LVGL task to
+    // migrate to Core 1, where it interferes with the audio playback task
+    // (priority 7). Pinning to Core 0 keeps Core 1 clean for audio.
+    const lvgl_port_cfg_t lvgl_cfg = {
+        .task_priority     = 4,
+        .task_stack        = 6144,
+        .task_affinity     = 0,   // Core 0 — keep Core 1 free for audio
+        .task_max_sleep_ms = 500,
+        .timer_period_ms   = 5,
+    };
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ---- Add display to esp_lvgl_port ---------------------------------------
@@ -420,7 +489,8 @@ void display_init(void)
     rtsp_events_register(on_rtsp_event, NULL);
 
     // ---- Start display task (state updates, progress tick) ------------------
-    // Pinned to Core 0; audio runs on Core 1.
+    // Pinned to Core 0; audio runs on Core 1. Both the LVGL port task above
+    // and this task are on Core 0, keeping Core 1 entirely free for audio.
     xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
     ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
