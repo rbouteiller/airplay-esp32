@@ -9,8 +9,22 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.1
+  espressif/esp_lvgl_port:
+    component_hash: 8c57ca912f5c52ed29cd0fb5c9709f1ed65a91ec4c02f947d90e524bd9358433
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    - name: lvgl/lvgl
+      registry_url: https://components.espressif.com
+      require: public
+      version: '>=8,<10'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.3.3
   espressif/led_strip:
-    component_hash: f0d1b7f93eb3ee57bcfd220656176b0b5616e1947f89ed44364555cf910c4840
+    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
     dependencies:
     - name: idf
       require: private
@@ -18,9 +32,9 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 3.0.2
+    version: 3.0.3
   espressif/libsodium:
-    component_hash: 6ee084dee7a4d664498274870aa65391c9ec9d38dcdb34d2ad2b8518726f8b5e
+    component_hash: ec52dce5da4af52b1908a0e23e2cf8f492edea090450e51f0d1fbe1108b6d58e
     dependencies:
     - name: idf
       require: private
@@ -28,9 +42,9 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.20~3
+    version: 1.0.20~4
   espressif/mdns:
-    component_hash: 29e47564b1a7ee778135e17fbbf2a2773f71c97ebabfe626c8eda7c958a7ad16
+    component_hash: 7c0fa01a1cd0e72a87ec1928c3b661c0a3a9034a6d3a69dcf4850db8c6f272db
     dependencies:
     - name: idf
       require: private
@@ -38,16 +52,24 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.9.1
+    version: 1.10.1
   idf:
     source:
       type: idf
-    version: 5.5.2
+    version: 5.5.3
+  lvgl/lvgl:
+    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 9.5.0
 direct_dependencies:
 - espressif/esp_audio_codec
+- espressif/esp_lvgl_port
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
-manifest_hash: 3733e6904685126a0a0f5c544c32bf5b37baab5418ce5c1609ffa1bfb47bbb80
-target: esp32
+manifest_hash: 48921eca510dabcf34d7bc24f9fa337abd1ea7ef5e6776c146b26be29b4216ef
+target: esp32s3
 version: 2.0.0
