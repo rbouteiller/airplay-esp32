@@ -229,3 +229,14 @@ sudo dscacheutil -flushcache
 
 This rules out macOS holding stale state before assuming the issue is
 firmware-side. After stabilising the firmware, connections become near-instant.
+
+---
+
+## Built With Claude
+
+This component was developed collaboratively with [Claude](https://claude.ai) (Anthropic). Claude contributed to the driver implementation, LVGL 9 migration, debugging of the non-obvious integration issues documented above, background image tooling, and this documentation.
+
+All commits made directly by Claude include the following co-author tag:
+```
+Co-authored-by: Claude (Anthropic) <claude@anthropic.com>
+```
