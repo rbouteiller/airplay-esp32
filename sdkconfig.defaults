@@ -45,3 +45,9 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # HTTP server — limit open sockets to avoid LWIP socket exhaustion.
 # Default is 7; with RTSP + audio + NTP + PTP + WiFi the budget is tight.
 CONFIG_HTTPD_WS_SUPPORT=y
+
+# Memory Tweaks
+# Push allocations > 1024 bytes to SPIRAM, keeping internal DRAM free for
+# semaphores, DMA descriptors and WiFi management structures that *must*
+# live in internal DRAM.  Default is 16384 — far too aggressive
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024

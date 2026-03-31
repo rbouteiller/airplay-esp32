@@ -36,6 +36,7 @@ static esp_timer_handle_t s_retry_timer = NULL;
 static wifi_config_t s_ap_config;
 
 static void wifi_select_best_ap(const char *ssid);
+static void scan_and_connect_task(void *arg);
 
 static void retry_timer_callback(void *arg) {
   if (!s_sta_connected) {
@@ -74,13 +75,9 @@ static void enable_ap_mode(void) {
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-    // Scan for best AP before first connection
-    wifi_config_t cfg;
-    if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
-        strlen((char *)cfg.sta.ssid) > 0) {
-      wifi_select_best_ap((char *)cfg.sta.ssid);
-    }
-    esp_wifi_connect();
+    // Defer scan+connect to a separate task — the blocking scan uses too
+    // much stack to run inside the sys_evt event loop (2–4 KB).
+    xTaskCreate(scan_and_connect_task, "wifi_scan", 4096, NULL, 3, NULL);
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     s_sta_connected = false;
@@ -123,6 +120,18 @@ static void event_handler(void *arg, esp_event_base_t event_base,
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
     ESP_LOGI(TAG, "AP started");
   }
+}
+
+// One-shot task: scan for best AP then connect — runs outside the event loop
+// to avoid overflowing the sys_evt stack.
+static void scan_and_connect_task(void *arg) {
+  wifi_config_t cfg;
+  if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
+      strlen((char *)cfg.sta.ssid) > 0) {
+    wifi_select_best_ap((char *)cfg.sta.ssid);
+  }
+  esp_wifi_connect();
+  vTaskDelete(NULL);
 }
 
 // Scan for the best AP matching our SSID and set its BSSID in the STA config
