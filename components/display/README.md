@@ -103,21 +103,40 @@ CONFIG_DISPLAY_BL_GPIO=38
 
 ## Background Image
 
-The ST7789 driver renders a full-screen background image stored as a C array in `background.c`. All UI widgets (text, progress bar) are drawn on top of it.
+The ST7789 driver loads a full-screen background image from SPIFFS at startup
+(`/spiffs/bg/background.bin`) and renders it into PSRAM. All UI widgets (text,
+progress bar) are drawn on top of it. If no file is present, the screen
+defaults to solid black — all widgets still render correctly.
 
 ### Replacing the Background
 
-1. Design your image and export as exactly **320×170px PNG**
+1. Design your image and export as a PNG (any size — it will be resized)
 2. Run the conversion script from the project root:
    ```bash
    python3 components/display/make_background.py <source.png> [brightness]
    ```
    Brightness range: `0.4`–`0.6`. Start at `0.5` — the ST7789 backlight renders
    significantly brighter than a monitor. Adjust to taste.
-3. Rebuild — no other files need to change:
-   ```bash
-   idf.py build && idf.py flash
-   ```
+3. The script writes `data/bg/background.bin`. Flash it to the device using
+   one of the two methods below.
+
+### Flashing the Background
+
+**Option A — Full SPIFFS flash (serial, first time or after firmware update):**
+```bash
+idf.py flash   # flashes firmware + SPIFFS image in one step
+```
+
+**Option B — OTA upload (WiFi, no USB needed after first flash):**
+```bash
+curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/bg/background.bin" \
+     --data-binary @data/bg/background.bin
+```
+Then reboot the device — the new background loads on next boot.
+
+> **Note:** There is no web UI for background uploads. The device's web
+> interface is for WiFi setup and device configuration only. Background
+> updates are done via the `curl` command above.
 
 ### Colour Depth Limitation
 
