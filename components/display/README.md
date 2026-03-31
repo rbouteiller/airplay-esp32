@@ -11,6 +11,30 @@ When the display is disabled (`CONFIG_DISPLAY_ENABLED=n`), only `display_stub.c`
 
 ---
 
+## Hardware Requirements
+
+### OLED (u8g2)
+
+Compatible with all supported targets — ESP32, ESP32-S3, WROOM, Wrover, SqueezeAMP, Esparagus Audio Brick. No special memory requirements.
+
+### ST7789 TFT (LVGL 9)
+
+**Requires ESP32-S3 with PSRAM.** This driver is not viable on ESP32 (original) for the following reasons:
+
+| Constraint | ESP32 (WROOM/Wrover) | ESP32-S3 N16R8 |
+|---|---|---|
+| Internal SRAM | 520 KB (shared with WiFi + audio) | 512 KB + 8 MB PSRAM |
+| PSRAM | None (WROOM) / 4 MB (Wrover) | 8 MB |
+| Flash | 4 MB | 16 MB |
+
+LVGL 9 + the AirPlay audio pipeline + WiFi together exceed the internal SRAM budget on ESP32. Even with PSRAM, a Wrover's 4 MB flash is too constrained once the audio stack, SPIFFS partition, and LVGL assets are accounted for.
+
+The `idf_component.yml` enforces this — LVGL and `esp_lvgl_port` are only declared as dependencies when `target == esp32s3`. Non-S3 builds are completely unaffected: the managed components are not downloaded, not compiled, and the OLED driver continues to work unchanged.
+
+**Tested on:** ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM) with IDF 5.5.3.
+
+---
+
 ## OLED Display (u8g2)
 
 Shows track title, artist, album, progress bar and playback time. Auto-scrolls long text. Compact two-line layout for 128×32 panels.
