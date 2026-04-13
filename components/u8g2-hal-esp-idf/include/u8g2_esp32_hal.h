@@ -60,12 +60,14 @@ typedef struct {
 /**
  * Construct a default HAL configuration with all fields undefined.
  */
+// clang-format off
 #define U8G2_ESP32_HAL_DEFAULT                       \
   {.bus = {.spi = {.clk = U8G2_ESP32_HAL_UNDEFINED,  \
                    .mosi = U8G2_ESP32_HAL_UNDEFINED, \
                    .cs = U8G2_ESP32_HAL_UNDEFINED}}, \
    .reset = U8G2_ESP32_HAL_UNDEFINED,                \
    .dc = U8G2_ESP32_HAL_UNDEFINED}
+// clang-format on
 
 /**
  * Initialize the HAL with the given configuration.
