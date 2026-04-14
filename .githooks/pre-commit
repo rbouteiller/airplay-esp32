@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run clang-format and clang-tidy on staged C/H files.
+
+set -e
+
+# ── Find clang-format ────────────────────────────────────────────────
+CLANG_FORMAT=""
+for cmd in clang-format clang-format-14 clang-format-15 clang-format-16; do
+  if command -v "$cmd" &>/dev/null; then
+    CLANG_FORMAT="$cmd"
+    break
+  fi
+done
+if [ -z "$CLANG_FORMAT" ]; then
+  for path in /opt/homebrew/bin/clang-format /usr/local/bin/clang-format; do
+    if [ -x "$path" ]; then
+      CLANG_FORMAT="$path"
+      break
+    fi
+  done
+fi
+if [ -z "$CLANG_FORMAT" ]; then
+  echo "pre-commit: clang-format not found — skipping format check"
+  echo "  Install: brew install clang-format"
+  exit 0
+fi
+
+# ── Collect staged C/H files ────────────────────────────────────────
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h')
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+# ── Format check ────────────────────────────────────────────────────
+UNFORMATTED=""
+for file in $STAGED; do
+  if ! "$CLANG_FORMAT" --dry-run --Werror "$file" &>/dev/null; then
+    UNFORMATTED="$UNFORMATTED $file"
+  fi
+done
+
+if [ -n "$UNFORMATTED" ]; then
+  echo "pre-commit: formatting issues found — fixing automatically"
+  for file in $UNFORMATTED; do
+    "$CLANG_FORMAT" -i "$file"
+    git add "$file"
+  done
+  echo "pre-commit: formatted and re-staged:$UNFORMATTED"
+fi
+
+# ── Lint (clang-tidy) ───────────────────────────────────────────────
+# Only run if compile_commands.json exists (requires a prior build).
+if [ ! -f build/compile_commands.json ]; then
+  echo "pre-commit: build/compile_commands.json not found — skipping lint"
+  exit 0
+fi
+
+# Prefer brew llvm if available (macOS)
+if command -v brew &>/dev/null; then
+  LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null)" || true
+  [ -n "$LLVM_PREFIX" ] && export PATH="$LLVM_PREFIX/bin:$PATH"
+fi
+
+if ! command -v clang-tidy &>/dev/null; then
+  echo "pre-commit: clang-tidy not found — skipping lint"
+  exit 0
+fi
+
+echo "pre-commit: running clang-tidy on staged files..."
+WARNINGS=0
+for file in $STAGED; do
+  OUTPUT=$(clang-tidy -p build "$file" 2>&1 || true)
+  FILTERED=$(echo "$OUTPUT" | grep -v "file not found \[clang-diagnostic" || true)
+  if echo "$FILTERED" | grep -q ": warning:"; then
+    echo "$FILTERED" | grep -E "(: warning:|: note:)"
+    WARNINGS=1
+  fi
+done
+
+if [ "$WARNINGS" -ne 0 ]; then
+  echo ""
+  echo "pre-commit: clang-tidy found issues — commit aborted"
+  exit 1
+fi

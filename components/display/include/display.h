@@ -15,12 +15,19 @@
 
 /**
  * Initialize the OLED display and register for RTSP events.
+ *
+ * @param bus  Pre-initialised bus handle to share with the board:
+ *             - I2C mode: pass an i2c_master_bus_handle_t
+ *             - SPI mode: pass (void*)(intptr_t)spi_host_device_t
+ *             Pass NULL to let the display component initialise its own bus
+ *             (uses the GPIO pins from Kconfig).
  */
-void display_init(void);
+void display_init(void *bus);
 
 #else
 
-static inline void display_init(void) {
+static inline void display_init(void *bus) {
+  (void)bus;
 }
 
 #endif

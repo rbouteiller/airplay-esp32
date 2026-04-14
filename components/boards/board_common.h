@@ -9,9 +9,10 @@ typedef void *board_res_handle_t;
 
 typedef enum {
   NULL_RESOURCE = 0,
-  BOARD_I2C0_ID,
-  BOARD_SPI2_ID,
-  BOARD_DAC_ID,
+  BOARD_I2C_DAC_ID,  ///< I2C master bus used by the DAC
+  BOARD_I2C_DISP_ID, ///< I2C master bus used by the display
+  BOARD_SPI_ETH_ID,  ///< SPI host used by the Ethernet controller
+  BOARD_SPI_DISP_ID, ///< SPI host used by the display
 } board_res_id_t;
 
 /**

@@ -202,14 +202,22 @@ void app_main(void) {
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();
-  display_init();
 
-  // Initialize board-specific hardware (includes SPI bus for ethernet)
+  // Initialize board-specific hardware (includes I2C/SPI bus for display and
+  // DAC)
   ESP_LOGI(TAG, "Board: %s", iot_board_get_info());
   esp_err_t err = iot_board_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Board init failed: %s", esp_err_to_name(err));
   }
+
+  // Pass the board-owned bus to the display so it reuses it rather than
+  // creating a duplicate bus on the same pins.
+#if defined(CONFIG_DISPLAY_BUS_SPI)
+  display_init(iot_board_get_handle(BOARD_SPI_DISP_ID));
+#else
+  display_init(iot_board_get_handle(BOARD_I2C_DISP_ID));
+#endif
 
   // Pre-allocate audio task stacks while internal heap is still unfragmented.
   // WiFi/TCP/TLS allocations fragment the heap, making large contiguous

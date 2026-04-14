@@ -36,7 +36,7 @@ if [ -z "$CLANG_FORMAT" ]; then
 fi
 
 # Submodule paths to exclude
-SUBMODULES="components/u8g2 components/u8g2-hal-esp-idf"
+SUBMODULES="components/u8g2"
 
 EXCLUDE_ARGS=()
 for sm in $SUBMODULES; do
