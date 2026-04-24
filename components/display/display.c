@@ -319,6 +319,12 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
   case RTSP_EVENT_METADATA:
     if (data) {
+      // Detect a real track change so we know when position=0 is legitimate
+      // (start of a new track) vs. a spurious mid-song reset from AirPlay.
+      bool track_changed = data->metadata.title[0] &&
+                           strncmp(s_display.title, data->metadata.title,
+                                   METADATA_STRING_MAX) != 0;
+
       // Only overwrite text fields when the event actually carries them;
       // progress-only updates arrive with zeroed strings.
       if (data->metadata.title[0]) {
@@ -333,8 +339,14 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       if (data->metadata.duration_secs) {
         s_display.duration_secs = data->metadata.duration_secs;
       }
-      s_display.position_secs = data->metadata.position_secs;
-      s_display.sync_time_us = esp_timer_get_time();
+      // AirPlay occasionally emits position_secs=0 mid-song without a track
+      // change, which would reset the progress bar. Only accept 0 on an
+      // actual track change; otherwise ignore it and keep the current
+      // interpolated position.
+      if (data->metadata.position_secs != 0 || track_changed) {
+        s_display.position_secs = data->metadata.position_secs;
+        s_display.sync_time_us = esp_timer_get_time();
+      }
       s_display.dirty = true;
       scroll_restart();
     }
