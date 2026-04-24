@@ -88,18 +88,13 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.0
+    version: 5.5.2
 direct_dependencies:
 - espressif/esp_audio_codec
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
-<<<<<<< feat/usb-audio-uac
 - espressif/usb_device_uac
 manifest_hash: 0d776e99e455c30063084b7dd3d4741393da1373cf2e505438a8cd53bae0dcea
 target: esp32s3
-=======
-manifest_hash: 3733e6904685126a0a0f5c544c32bf5b37baab5418ce5c1609ffa1bfb47bbb80
-target: esp32
->>>>>>> main
 version: 2.0.0
