@@ -137,7 +137,9 @@ menu "Airplay ESP Configuration"
                 The ESP32 appears as a USB audio source to the connected host
                 (e.g. a USB amplifier or a PC for testing with Audacity).
                 Requires a chip with USB OTG support.
-                Output is fixed at 44100 Hz (native AirPlay rate, no resampling).
+                The USB stream defaults to 48 kHz and must match the UAC
+                sample-rate setting. AirPlay audio is resampled automatically
+                when needed.
     endchoice
 
     choice OUTPUT_SAMPLE_RATE
@@ -156,6 +158,7 @@ menu "Airplay ESP Configuration"
 
     config OUTPUT_SAMPLE_RATE_HZ
         int
+        default 48000 if AUDIO_OUTPUT_USB
         default 48000 if OUTPUT_SAMPLE_RATE_48000
         default 44100
 

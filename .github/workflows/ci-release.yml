@@ -93,11 +93,8 @@ jobs:
           target: ${{ matrix.target }}
           command: >
             idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build &&
-            SPIFFS_OFFSET=$(python $IDF_PATH/components/partition_table/parttool.py -q --partition-table-file build/partition_table/partition-table.bin get_partition_info --partition-name storage --info offset) &&
-            SPIFFS_SIZE=$(python $IDF_PATH/components/partition_table/parttool.py -q --partition-table-file build/partition_table/partition-table.bin get_partition_info --partition-name storage --info size) &&
-            python $IDF_PATH/components/spiffs/spiffsgen.py $SPIFFS_SIZE data build/spiffs.bin &&
             cd build &&
-            esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) $SPIFFS_OFFSET spiffs.bin &&
+            esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
             cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin
 
       - name: Upload firmware artifact
