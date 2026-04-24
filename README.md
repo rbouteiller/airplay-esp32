@@ -152,7 +152,7 @@ cd airplay-esp32
 # 3. Activate ESP-IDF environment
 source /path/to/esp-idf/export.sh
 
-# 4. Build and flash
+# 4. Build and flash incl. SPIFFS "storage" partition from data/
 idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/ttyUSB0 flash
@@ -276,8 +276,12 @@ data/
 **First time (serial only):** The partition table changes, so the first flash after upgrading must be done over serial — OTA won't work because the old partition layout doesn't include the storage partition.
 
 ```bash
-# Flash firmware + partition table + SPIFFS image
-pio run -e squeezeamp-bt -t upload && pio run -e squeezeamp-bt -t uploadfs
+# PlatformIO: flash firmware first, then the SPIFFS image from data/
+pio run -e squeezeamp-bt -t upload
+pio run -e squeezeamp-bt -t uploadfs
+
+# ESP-IDF: flash firmware + partition table + SPIFFS image in one step
+idf.py -p /dev/ttyUSB0 flash
 ```
 
 **Subsequent updates:** After the partition table is in place, you can update individual files over WiFi using the file management API (see below), or re-flash the full SPIFFS image over serial.
@@ -341,6 +345,8 @@ idf.py set-target esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash
 ```
+
+`idf.py flash` also writes the SPIFFS `storage` partition populated from `data/`, so the captive-portal pages are available after first boot.
 
 The SqueezeAMP build selects the TAS57xx DAC driver automatically via Kconfig (`CONFIG_DAC_TAS57XX`) and configures the correct I2S/I2C pins. Buffer sizes are automatically reduced (2500 frames vs 5000) to fit the ESP32's more limited PSRAM access.
 

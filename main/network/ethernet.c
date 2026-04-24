@@ -70,7 +70,7 @@ esp_err_t ethernet_init(void) {
   }
 
   // Verify SPI bus is ready (board.c must have initialized it)
-  if (iot_board_get_handle(BOARD_SPI2_ID) == NULL) {
+  if (iot_board_get_handle(BOARD_SPI_ETH_ID) == NULL) {
     ESP_LOGE(TAG, "SPI bus not initialized — cannot init W5500");
     return ESP_ERR_INVALID_STATE;
   }

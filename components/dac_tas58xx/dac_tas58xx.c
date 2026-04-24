@@ -23,6 +23,12 @@
 #define TAS5825M_ADDR_4K7 0x4E // ADR pin = 4.7 kΩ to GND
 #define TAS5825M_ADDR_15K 0x4F // ADR pin = 15 kΩ to GND
 
+/* ---------- TAS5805M I2C addresses (7-bit) ---------- */
+#define TAS5805M_ADDR_4K7  0x2C // ADR pin = 4.7 kΩ to DVDD
+#define TAS5805M_ADDR_15K  0x2D // ADR pin = 15 kΩ to DVDD
+#define TAS5805M_ADDR_47K  0x2E // ADR pin = 47 kΩ to DVDD
+#define TAS5805M_ADDR_120K 0x2F // ADR pin = 120 kΩ to DVDD
+
 /* ---------- Register addresses (Book 0, Page 0) ---------- */
 #define REG_PAGE_SEL 0x00
 #define REG_BOOK_SEL 0x7F
@@ -33,6 +39,8 @@
 
 #define REG_SIG_CH_CTRL    0x28
 #define REG_CLOCK_DET_CTRL 0x29
+
+#define REG_SDOUT_SEL 0x30
 
 #define REG_SAP_CTRL1 0x33 // I2S format + word length
 #define REG_SAP_CTRL2 0x34 // Data offset
@@ -47,6 +55,19 @@
 #define REG_AUTO_MUTE_TIME 0x51
 #define REG_ANA_CTRL       0x53
 #define REG_AGAIN          0x54 // Analog gain
+
+#define REG_GPIO_CTL 0x60
+#define REG_GPIO0    0x61
+#define REG_GPIO1    0x62
+#define REG_GPIO2    0x63
+
+#define REG_DSP_MISC 0x66
+
+#define REG_GPIO_OFF     0x00
+#define REG_GPIO_WARN    0b1000
+#define REG_GPIO_FAULT   0b1011
+#define REG_GPIO_SDOUT   0b1001
+#define REG_GPIO_CTL_OUT 0b0111
 
 #define REG_DIE_ID      0x67 // Expected: 0x95
 #define REG_POWER_STATE 0x68
@@ -83,9 +104,16 @@
 #define I2C_TIMEOUT    100    // ms
 #define I2C_LINE_SPEED 400000 // TAS5825M supports fast-mode 400 kHz
 
+#define TAS5805M_DIE_ID 0x0
 #define TAS5825M_DIE_ID 0x95
 
 static const char TAG[] = "TAS58xx DAC";
+
+typedef enum {
+  TAS58XX_MODEL_UNKNOWN = 0,
+  TAS58XX_MODEL_TAS5805M = 1,
+  TAS58XX_MODEL_TAS5825M = 2,
+} tas58xx_model_t;
 
 /* ---------- Init sequence ---------- */
 struct tas58xx_cmd_s {
@@ -111,7 +139,7 @@ struct tas58xx_cmd_s {
  * device will stay stuck in HiZ.  The transition to Play happens
  * later via dac_set_power_mode(DAC_POWER_ON) once I2S is active.
  */
-static const struct tas58xx_cmd_s tas58xx_init_seq[] = {
+static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
     {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
     {REG_BOOK_SEL, 0x00},        // Select Book 0
     {REG_PAGE_SEL, 0x00},        // Confirm Page 0
@@ -136,6 +164,55 @@ static const struct tas58xx_cmd_s tas58xx_init_seq[] = {
     // Clear any pending faults
     {REG_FAULT_CLEAR, 0x80},
 
+    // Set SDOUT source to Pre-DSP
+    {REG_SDOUT_SEL, 0x01},
+
+    // GPIO config - WARN/FLT LEDs and SDOUT pin
+    {REG_GPIO0, REG_GPIO_WARN},
+    {REG_GPIO1, REG_GPIO_FAULT},
+    {REG_GPIO2, REG_GPIO_SDOUT},
+    {REG_GPIO_CTL, REG_GPIO_CTL_OUT},
+
+    // Set digital volume to 0 dB initially
+    {REG_DIG_VOL, DIG_VOL_0DB},
+
+    // Analog gain: 0 dB
+    {REG_AGAIN, 0x00},
+
+    {0xFF, 0xFF} // End of table sentinel
+};
+
+/* TAS5805M is slightly simpler configuration, namely
+   - lack of GPIO configuration
+   - no process flow select register
+   - DSP_MISC register to configure BQ coefficients per channel */
+static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
+    {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
+    {REG_BOOK_SEL, 0x00},        // Select Book 0
+    {REG_PAGE_SEL, 0x00},        // Confirm Page 0
+    {REG_RESET_CTRL, RESET_REG}, // Reset control port registers
+    {REG_DEVICE_CTRL2, CTRL2_HIZ},
+
+    // I2S format: standard I2S, 16-bit word length
+    {REG_SAP_CTRL1, 0x00}, // DATA_FORMAT=I2S(00), WORD_LENGTH=16bit(00)
+    {REG_CLOCK_DET_CTRL, 0x00},
+
+    // Volume ramp: smooth transitions
+    {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
+
+    // Auto-mute: enable for both channels
+    {REG_AUTO_MUTE_CTRL, 0x03},
+    {REG_AUTO_MUTE_TIME, 0x00},
+
+    // Clear any pending faults
+    {REG_FAULT_CLEAR, 0x80},
+
+    // Set SDOUT source to Pre-DSP
+    {REG_SDOUT_SEL, 0x01},
+
+    // Set BQ coefficients to be unique per channel
+    {REG_DSP_MISC, 0x08},
+
     // Set digital volume to 0 dB initially
     {REG_DIG_VOL, DIG_VOL_0DB},
 
@@ -147,6 +224,7 @@ static const struct tas58xx_cmd_s tas58xx_init_seq[] = {
 
 /* ---------- State ---------- */
 static uint8_t tas58xx_addr;
+static tas58xx_model_t tas58xx_model = TAS58XX_MODEL_UNKNOWN;
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 static i2c_master_dev_handle_t tas58xx_device_handle;
 static bool s_dsp_defaults_written = false;
@@ -175,18 +253,32 @@ static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value);
 /* ---------- Detect ---------- */
 
 static uint8_t tas58xx_detect(i2c_master_bus_handle_t bus) {
-  static const uint8_t addrs[] = {TAS5825M_ADDR_GND, TAS5825M_ADDR_1K,
-                                  TAS5825M_ADDR_4K7, TAS5825M_ADDR_15K};
+  static const struct {
+    uint8_t addr;
+    tas58xx_model_t model;
+    const char *name;
+  } candidates[] = {
+      {TAS5825M_ADDR_GND, TAS58XX_MODEL_TAS5825M, "TAS5825M"},
+      {TAS5825M_ADDR_1K, TAS58XX_MODEL_TAS5825M, "TAS5825M"},
+      {TAS5825M_ADDR_4K7, TAS58XX_MODEL_TAS5825M, "TAS5825M"},
+      {TAS5825M_ADDR_15K, TAS58XX_MODEL_TAS5825M, "TAS5825M"},
+      {TAS5805M_ADDR_4K7, TAS58XX_MODEL_TAS5805M, "TAS5805M"},
+      {TAS5805M_ADDR_15K, TAS58XX_MODEL_TAS5805M, "TAS5805M"},
+      {TAS5805M_ADDR_47K, TAS58XX_MODEL_TAS5805M, "TAS5805M"},
+      {TAS5805M_ADDR_120K, TAS58XX_MODEL_TAS5805M, "TAS5805M"},
+  };
 
   if (!bus) {
     ESP_LOGE(TAG, "Invalid I2C handle");
     return 0;
   }
 
-  for (int i = 0; i < sizeof(addrs) / sizeof(addrs[0]); i++) {
-    if (ESP_OK == i2c_master_probe(bus, addrs[i], I2C_TIMEOUT)) {
-      ESP_LOGI(TAG, "Detected TAS5825M at @0x%02X", addrs[i]);
-      return addrs[i];
+  for (int i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+    if (ESP_OK == i2c_master_probe(bus, candidates[i].addr, I2C_TIMEOUT)) {
+      ESP_LOGI(TAG, "Detected %s at @0x%02X", candidates[i].name,
+               candidates[i].addr);
+      tas58xx_model = candidates[i].model;
+      return candidates[i].addr;
     }
   }
   return 0;
@@ -284,15 +376,84 @@ static void tas58xx_dump_status(const char *context) {
     ESP_LOGD(TAG, "  AUTO_MUTE_CTRL=0x%02X", val);
   }
 
-  uint8_t chan_fault = 0, global1 = 0, global2 = 0, warning = 0;
+  uint8_t chan_fault = 0, global1 = 0, global2 = 0, ot_warning = 0;
   tas58xx_read_reg(REG_CHAN_FAULT, &chan_fault);
   tas58xx_read_reg(REG_GLOBAL_FAULT1, &global1);
   tas58xx_read_reg(REG_GLOBAL_FAULT2, &global2);
-  tas58xx_read_reg(REG_WARNING, &warning);
-  if (chan_fault || global1 || global2 || warning) {
-    ESP_LOGW(TAG,
-             "  FAULTS: chan=0x%02X global1=0x%02X global2=0x%02X warn=0x%02X",
-             chan_fault, global1, global2, warning);
+  tas58xx_read_reg(REG_WARNING, &ot_warning);
+
+  if (chan_fault || global1 || global2 || ot_warning) {
+    if (chan_fault) {
+      if (chan_fault & BIT(0))
+        ESP_LOGW(TAG, "Right channel over current fault");
+
+      if (chan_fault & BIT(1))
+        ESP_LOGW(TAG, "Left channel over current fault");
+
+      if (chan_fault & BIT(2))
+        ESP_LOGW(TAG, "Right channel DC fault");
+
+      if (chan_fault & BIT(3))
+        ESP_LOGW(TAG, "Left channel DC fault");
+    }
+
+    if (global1) {
+      if (global1 & BIT(0))
+        ESP_LOGW(TAG, "PVDD UV fault");
+
+      if (global1 & BIT(1))
+        ESP_LOGW(TAG, "PVDD OV fault");
+
+      // This fault is often triggered by lack of I2S clock, which is expected
+      // during longer pauses (when mute state is triggeered).
+      if (global1 & BIT(2))
+        ESP_LOGW(TAG, "Clock fault");
+
+      // Bits 3-4 are reserved
+
+      // Bit 5 applies only to tas5825m
+      if (global1 & BIT(5))
+        ESP_LOGW(TAG, "EEPROM boot load error");
+
+      if (global1 & BIT(6))
+        ESP_LOGW(TAG, "The recent BQ write failed");
+
+      if (global1 & BIT(7))
+        ESP_LOGW(TAG, "OTP CRC check error");
+    }
+
+    if (global2) {
+      if (global2 & BIT(0))
+        ESP_LOGW(TAG, "Over temperature shut down fault");
+
+      // Bits 1-2 only apply to tas5825m
+      if (global2 & BIT(1))
+        ESP_LOGW(TAG, "Left channel cycle by cycle over current fault");
+
+      if (global2 & BIT(2))
+        ESP_LOGW(TAG, "Right channel cycle by cycle over current fault");
+    }
+
+    if (ot_warning) {
+      if (ot_warning & BIT(0))
+        ESP_LOGW(TAG, "Over temperature warning level 1, 112C");
+
+      if (ot_warning & BIT(1))
+        ESP_LOGW(TAG, "Over temperature warning level 2, 122C");
+
+      if (ot_warning & BIT(2))
+        ESP_LOGW(TAG, "Over temperature warning level 3, 134C");
+
+      if (ot_warning & BIT(3))
+        ESP_LOGW(TAG, "Over temperature warning level 4, 146C");
+
+      // Bits 4-5 apply to tas5825m only
+      if (ot_warning & BIT(4))
+        ESP_LOGW(TAG, "Right channel cycle by cycle over current warning");
+
+      if (ot_warning & BIT(5))
+        ESP_LOGW(TAG, "Left channel cycle by cycle over current warning");
+    }
   } else {
     ESP_LOGD(TAG, "  FAULTS: none");
   }
@@ -310,7 +471,7 @@ static void tas58xx_dump_status(const char *context) {
 static esp_err_t tas58xx_init(void *i2c_bus) {
   esp_err_t err;
 
-  ESP_LOGI(TAG, "Initializing TAS5825M");
+  ESP_LOGI(TAG, "Initializing TAS58XX");
 
   /* Create the register-access mutex (once) */
   if (s_reg_mutex == NULL) {
@@ -327,9 +488,10 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   }
 
   // Detect device
+  tas58xx_model = TAS58XX_MODEL_UNKNOWN;
   tas58xx_addr = tas58xx_detect(s_bus_handle);
   if (!tas58xx_addr) {
-    ESP_LOGE(TAG, "No TAS5825M detected on I2C bus!");
+    ESP_LOGE(TAG, "No TAS5825M/TAS5805M detected on I2C bus!");
     return ESP_ERR_NOT_FOUND;
   }
 
@@ -345,12 +507,23 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   err = tas58xx_read_reg(REG_DIE_ID, &die_id);
   if (err == ESP_OK) {
     ESP_LOGI(TAG, "Die ID: 0x%02X %s", die_id,
-             (die_id == TAS5825M_DIE_ID) ? "(OK)" : "(UNEXPECTED!)");
+             (die_id == TAS5825M_DIE_ID)   ? "(TAS5825M)"
+             : (die_id == TAS5805M_DIE_ID) ? "(TAS5805M)"
+                                           : "(UNEXPECTED!)");
   } else {
     ESP_LOGE(TAG, "Failed to read die ID: %s", esp_err_to_name(err));
   }
 
+  if (tas58xx_model == TAS58XX_MODEL_UNKNOWN) {
+    ESP_LOGE(TAG, "Unknown TAS58XX model detected — aborting init");
+    return ESP_ERR_NOT_FOUND;
+  }
+
   // Run init sequence
+  const struct tas58xx_cmd_s *tas58xx_init_seq =
+      (tas58xx_model == TAS58XX_MODEL_TAS5825M) ? tas5825m_init_seq
+                                                : tas5805m_init_seq;
+
   ESP_LOGI(TAG, "Running init sequence...");
   for (int i = 0; tas58xx_init_seq[i].reg != 0xFF; i++) {
     err = tas58xx_write_reg(tas58xx_init_seq[i].reg, tas58xx_init_seq[i].value);
@@ -383,7 +556,9 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   // Dump full status after init
   tas58xx_dump_status("post-init");
 
-  ESP_LOGI(TAG, "TAS5825M initialized at I2C addr 0x%02X", tas58xx_addr);
+  ESP_LOGI(TAG, "%s initialized at I2C addr 0x%02X",
+           tas58xx_model == TAS58XX_MODEL_TAS5805M ? "TAS5805M" : "TAS5825M",
+           tas58xx_addr);
   return ESP_OK;
 }
 
@@ -516,7 +691,7 @@ static void tas58xx_enable_speaker(bool enable) {
 
 static void tas58xx_enable_line_out(bool enable) {
   (void)enable;
-  ESP_LOGW(TAG, "Line out not supported on TAS5825M");
+  ESP_LOGW(TAG, "Line out not supported on TAS58XX");
 }
 
 static void tas58xx_set_volume(float volume_airplay_db) {
@@ -716,198 +891,245 @@ static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
  * Book 0x8C
  */
 static esp_err_t write_dsp_signal_path_defaults(void) {
-  esp_err_t err;
+  esp_err_t err = ESP_OK;
 
-  ESP_LOGD(TAG, "DSP: writing signal-path defaults (Books 0x8C + 0xAA)");
+  switch (tas58xx_model) {
+  case TAS58XX_MODEL_TAS5805M: {
+    ESP_LOGD(TAG, "DSP: writing signal-path defaults (Books 0x8C + 0xAA)");
 
-  /*
-   * ── Book 0x8C: control coefficients ──
-   * All values from SLAA786A Table 9 (Process Flow 1).
-   */
-  err = select_book_page(0x8C, 0x00);
-  if (err != ESP_OK) {
-    return err;
+    /*
+     * ── Book 0xAA: ALL biquad coefficient RAM ──
+     *
+     * We must initialize EVERY BQ slot in Book 0xAA:
+     *   - 30 EQ BQs (15 L + 15 R) — from tas58xx_eq_left_addr /
+     * tas58xx_eq_right_addr
+     */
+    err = select_book_page(0xAA, 0x00);
+    if (err != ESP_OK) {
+      select_default_page();
+      return err;
+    }
+
+    /* Unity BQ: B0=1.0 (5.27), B1=B2=A1=A2=0 */
+    static const int32_t unity_bq[5] = {FP_ONE, 0, 0, 0, 0};
+
+    /*
+     * ── EQ BQs (30 total, Pages 0x01-0x06) ──
+     */
+    for (int bq = 0; bq < TAS58XX_EQ_BANDS; bq++) {
+      write_biquad_coeff(tas5805m_eq_left_addr[bq].page,
+                         tas5805m_eq_left_addr[bq].sub_addr, unity_bq);
+      write_biquad_coeff(tas5805m_eq_right_addr[bq].page,
+                         tas5805m_eq_right_addr[bq].sub_addr, unity_bq);
+    }
+
+    err = select_default_page();
+
+    s_dsp_defaults_written = true;
+    ESP_LOGD(TAG, "DSP: signal-path defaults written (Book 0x8C + 0xAA)");
+  } break;
+
+  case TAS58XX_MODEL_TAS5825M: {
+    ESP_LOGD(TAG, "DSP: writing signal-path defaults (Books 0x8C + 0xAA)");
+
+    /*
+     * ── Book 0x8C: control coefficients ──
+     * All values from SLAA786A Table 9 (Process Flow 1).
+     */
+    err = select_book_page(0x8C, 0x00);
+    if (err != ESP_OK) {
+      return err;
+    }
+
+    /* Volume softening filter alpha (Page 0x01 Reg 0x2C) */
+    write_dsp_coeff32(0x01, 0x2C, 0x00E2C46B);
+
+    /*
+     * DRC — 3-band Dynamic Range Compression (Pages 0x06–0x07)
+     */
+    write_dsp_coeff32(0x06, 0x58, 0x00800000); /* DRC1 mixer gain (unity) */
+    write_dsp_coeff32(0x06, 0x5C, 0x00800000); /* DRC2 mixer gain (unity) */
+    write_dsp_coeff32(0x06, 0x60, 0x00800000); /* DRC3 mixer gain (unity) */
+    /* DRC1 time constants */
+    write_dsp_coeff32(0x06, 0x64, 0x7FFFFFFF); /* DRC1 Energy  */
+    write_dsp_coeff32(0x06, 0x68, 0x7FFFFFFF); /* DRC1 Attack  */
+    write_dsp_coeff32(0x06, 0x6C, 0x7FFFFFFF); /* DRC1 Decay   */
+    /* DRC1 slopes and thresholds */
+    write_dsp_coeff32(0x06, 0x70, 0x00000000); /* K0_1 (no compression) */
+    write_dsp_coeff32(0x06, 0x74, 0x00000000); /* K1_1 */
+    write_dsp_coeff32(0x06, 0x78, 0x00000000); /* K2_1 */
+    write_dsp_coeff32(0x06, 0x7C, (int32_t)0xE7000000); /* T1_1 threshold */
+    write_dsp_coeff32(0x07, 0x08, (int32_t)0xFE800000); /* T2_1 threshold */
+    write_dsp_coeff32(0x07, 0x0C, 0x00000000);          /* off1_1 */
+    write_dsp_coeff32(0x07, 0x10, 0x00000000);          /* off2_1 */
+    /* DRC2 time constants */
+    write_dsp_coeff32(0x07, 0x14, 0x7FFFFFFF); /* DRC2 Energy  */
+    write_dsp_coeff32(0x07, 0x18, 0x7FFFFFFF); /* DRC2 Attack  */
+    write_dsp_coeff32(0x07, 0x1C, 0x7FFFFFFF); /* DRC2 Decay   */
+    /* DRC2 slopes and thresholds */
+    write_dsp_coeff32(0x07, 0x20, 0x00000000);          /* k0_2 */
+    write_dsp_coeff32(0x07, 0x24, 0x00000000);          /* k1_2 */
+    write_dsp_coeff32(0x07, 0x28, 0x00000000);          /* k2_2 */
+    write_dsp_coeff32(0x07, 0x2C, (int32_t)0xE7000000); /* t1_2 */
+    write_dsp_coeff32(0x07, 0x30, (int32_t)0xFE800000); /* t2_2 */
+    write_dsp_coeff32(0x07, 0x34, 0x00000000);          /* off1_2 */
+    write_dsp_coeff32(0x07, 0x38, 0x00000000);          /* off2_2 */
+    /* DRC3 time constants */
+    write_dsp_coeff32(0x07, 0x3C, 0x7FFFFFFF); /* DRC3 Energy  */
+    write_dsp_coeff32(0x07, 0x40, 0x7FFFFFFF); /* DRC3 Attack  */
+    write_dsp_coeff32(0x07, 0x44, 0x7FFFFFFF); /* DRC3 Decay   */
+    /* DRC3 slopes and thresholds */
+    write_dsp_coeff32(0x07, 0x48, 0x00000000);          /* k0_3 */
+    write_dsp_coeff32(0x07, 0x4C, 0x00000000);          /* k1_3 */
+    write_dsp_coeff32(0x07, 0x50, 0x00000000);          /* k2_3 */
+    write_dsp_coeff32(0x07, 0x54, (int32_t)0xE7000000); /* t1_3 */
+    write_dsp_coeff32(0x07, 0x58, (int32_t)0xFE800000); /* t2_3 */
+    write_dsp_coeff32(0x07, 0x5C, 0x00000000);          /* off1_3 */
+    write_dsp_coeff32(0x07, 0x60, 0x00000000);          /* off2_3 */
+
+    /* FS Clipper (Page 0x07) */
+    write_dsp_coeff32(0x07, 0x64, 0x00800000); /* THD Boost (unity) */
+    write_dsp_coeff32(0x07, 0x6C, 0x3FFFFFFF); /* CH-L Fine Volume  */
+    write_dsp_coeff32(0x07, 0x70, 0x3FFFFFFF); /* CH-R Fine Volume  */
+
+    /* DPEQ Control (Page 0x09) */
+    write_dsp_coeff32(0x09, 0x28, 0x02DEAD00); /* DPEQ sense energy alpha */
+    write_dsp_coeff32(0x09, 0x2C, 0x74013901); /* DPEQ threshold gain */
+    write_dsp_coeff32(0x09, 0x30, 0x0020C49B); /* DPEQ threshold offset */
+
+    /* Spatializer (Page 0x0A) */
+    write_dsp_coeff32(0x0A, 0x38, 0x00000000); /* Spatializer level (off) */
+
+    /* Output Crossbar (Page 0x0A) — default: straight stereo */
+    write_dsp_coeff32(0x0A, 0x64, 0x00800000); /* Dig L ← L  (unity) */
+    write_dsp_coeff32(0x0A, 0x68, 0x00000000); /* Dig L ← R  (zero)  */
+    write_dsp_coeff32(0x0A, 0x6C, 0x00000000); /* Dig R ← L  (zero)  */
+    write_dsp_coeff32(0x0A, 0x70, 0x00800000); /* Dig R ← R  (unity) */
+    write_dsp_coeff32(0x0A, 0x74, 0x00800000); /* Ana L ← L  (unity) */
+    write_dsp_coeff32(0x0A, 0x78, 0x00000000); /* Ana L ← R  (zero)  */
+    write_dsp_coeff32(0x0A, 0x7C, 0x00000000); /* Ana R ← L  (zero)  */
+    write_dsp_coeff32(0x0B, 0x08, 0x00800000); /* Ana R ← R  (unity) */
+
+    /* Volume Control (Page 0x0B) */
+    write_dsp_coeff32(0x0B, 0x0C, 0x00800000); /* CH-L Volume (unity) */
+    write_dsp_coeff32(0x0B, 0x10, 0x00800000); /* CH-R Volume (unity) */
+
+    /* Input Mixer (Page 0x0B) */
+    write_dsp_coeff32(0x0B, 0x14, 0x00800000); /* L → L (unity) */
+    write_dsp_coeff32(0x0B, 0x18, 0x00000000); /* R → L (zero)  */
+    write_dsp_coeff32(0x0B, 0x1C, 0x00000000); /* L → R (zero)  */
+    write_dsp_coeff32(0x0B, 0x20, 0x00800000); /* R → R (unity) */
+
+    /* Bypass DC Block (Page 0x0B) */
+    write_dsp_coeff32(0x0B, 0x24, 0x00000000);
+
+    /* EQ Control (Page 0x0B) */
+    write_dsp_coeff32(0x0B, 0x28, 0x00000000); /* GangEQ = 0 */
+    write_dsp_coeff32(0x0B, 0x2C, 0x00000000); /* BypassEQ = 0 */
+
+    /* Level Meter (Page 0x0B) */
+    write_dsp_coeff32(0x0B, 0x30, 0x00A7264A); /* Softening filter alpha */
+    write_dsp_coeff32(0x0B, 0x34, 0x00000000); /* Level meter input mux */
+
+    /* Bank Switch (Page 0x0C) */
+    write_dsp_coeff32(0x0C, 0x20, 0x00000000);
+
+    /*
+     * ── Book 0xAA: ALL biquad coefficient RAM ──
+     *
+     * We must initialize EVERY BQ slot in Book 0xAA:
+     *   - 30 EQ BQs (15 L + 15 R) — from tas58xx_eq_left_addr /
+     * tas58xx_eq_right_addr
+     *   - 8 DRC crossover BQs — linear layout from Page 0x07:0x78
+     *   - 3 DPEQ BQs — Pages 0x09-0x0A
+     *   - 2 Spatializer BQs — Page 0x0A
+     */
+    err = select_book_page(0xAA, 0x00);
+    if (err != ESP_OK) {
+      select_default_page();
+      return err;
+    }
+
+    /* Unity BQ: B0=1.0 (5.27), B1=B2=A1=A2=0 */
+    static const int32_t unity_bq[5] = {FP_ONE, 0, 0, 0, 0};
+
+    /*
+     * ── DRC crossover BQs (8 total, Pages 0x07-0x09) ──
+     * Linear from Page 0x07 Reg 0x78.
+     */
+
+    /* DRC low BQ1: 0x07:0x78 → crosses to 0x08 (use individual writes) */
+    write_dsp_coeff32(0x07, 0x78, FP_ONE);
+    write_dsp_coeff32(0x07, 0x7C, 0x00000000);
+    write_dsp_coeff32(0x08, 0x08, 0x00000000);
+    write_dsp_coeff32(0x08, 0x0C, 0x00000000);
+    write_dsp_coeff32(0x08, 0x10, 0x00000000);
+
+    /* DRC low BQ2: 0x08:0x14 (fits on page) */
+    write_biquad_coeff(0x08, 0x14, unity_bq);
+
+    /* DRC high BQ1: 0x08:0x28 (fits on page) */
+    write_biquad_coeff(0x08, 0x28, unity_bq);
+
+    /* DRC high BQ2: 0x08:0x3C (fits on page) */
+    write_biquad_coeff(0x08, 0x3C, unity_bq);
+
+    /* DRC mid BQ1: 0x08:0x50 (fits on page) */
+    write_biquad_coeff(0x08, 0x50, unity_bq);
+
+    /* DRC mid BQ2: 0x08:0x64 (fits: 0x64+19=0x77) */
+    write_biquad_coeff(0x08, 0x64, unity_bq);
+
+    /* DRC mid BQ3: 0x08:0x78 → crosses to 0x09 (use individual writes) */
+    write_dsp_coeff32(0x08, 0x78, FP_ONE);
+    write_dsp_coeff32(0x08, 0x7C, 0x00000000);
+    write_dsp_coeff32(0x09, 0x08, 0x00000000);
+    write_dsp_coeff32(0x09, 0x0C, 0x00000000);
+    write_dsp_coeff32(0x09, 0x10, 0x00000000);
+
+    /* DRC mid BQ4: 0x09:0x14 (fits on page) */
+    write_biquad_coeff(0x09, 0x14, unity_bq);
+
+    /*
+     * ── DPEQ BQs (3 total, Pages 0x09-0x0A) ──
+     */
+    write_biquad_coeff(0x09, 0x34, unity_bq); /* DPEQ sense BQ */
+    write_biquad_coeff(0x09, 0x5C, unity_bq); /* DPEQ low-level path BQ */
+    write_biquad_coeff(0x0A, 0x0C, unity_bq); /* DPEQ high-level path BQ */
+
+    /*
+     * ── Spatializer BQs (2 total, Page 0x0A) ──
+     */
+    write_biquad_coeff(0x0A, 0x3C, unity_bq); /* Spatializer BQ1 */
+    write_biquad_coeff(0x0A, 0x50, unity_bq); /* Spatializer BQ2 */
+
+    /*
+     * ── EQ BQs (30 total, Pages 0x01-0x06) ──
+     */
+    for (int bq = 0; bq < TAS58XX_EQ_BANDS; bq++) {
+      write_biquad_coeff(tas5825m_eq_left_addr[bq].page,
+                         tas5825m_eq_left_addr[bq].sub_addr, unity_bq);
+      write_biquad_coeff(tas5825m_eq_right_addr[bq].page,
+                         tas5825m_eq_right_addr[bq].sub_addr, unity_bq);
+    }
+
+    err = select_default_page();
+
+    s_dsp_defaults_written = true;
+    ESP_LOGD(TAG, "DSP: signal-path defaults written (Book 0x8C + 0xAA)");
+  } break;
+
+  default:
+    ESP_LOGE(TAG, "Unknown TAS58XX model %d in write_dsp_signal_path_defaults",
+             tas58xx_model);
+    return ESP_ERR_INVALID_STATE;
   }
 
-  /* Volume softening filter alpha (Page 0x01 Reg 0x2C) */
-  write_dsp_coeff32(0x01, 0x2C, 0x00E2C46B);
-
-  /*
-   * DRC — 3-band Dynamic Range Compression (Pages 0x06–0x07)
-   */
-  write_dsp_coeff32(0x06, 0x58, 0x00800000); /* DRC1 mixer gain (unity) */
-  write_dsp_coeff32(0x06, 0x5C, 0x00800000); /* DRC2 mixer gain (unity) */
-  write_dsp_coeff32(0x06, 0x60, 0x00800000); /* DRC3 mixer gain (unity) */
-  /* DRC1 time constants */
-  write_dsp_coeff32(0x06, 0x64, 0x7FFFFFFF); /* DRC1 Energy  */
-  write_dsp_coeff32(0x06, 0x68, 0x7FFFFFFF); /* DRC1 Attack  */
-  write_dsp_coeff32(0x06, 0x6C, 0x7FFFFFFF); /* DRC1 Decay   */
-  /* DRC1 slopes and thresholds */
-  write_dsp_coeff32(0x06, 0x70, 0x00000000); /* K0_1 (no compression) */
-  write_dsp_coeff32(0x06, 0x74, 0x00000000); /* K1_1 */
-  write_dsp_coeff32(0x06, 0x78, 0x00000000); /* K2_1 */
-  write_dsp_coeff32(0x06, 0x7C, (int32_t)0xE7000000); /* T1_1 threshold */
-  write_dsp_coeff32(0x07, 0x08, (int32_t)0xFE800000); /* T2_1 threshold */
-  write_dsp_coeff32(0x07, 0x0C, 0x00000000);          /* off1_1 */
-  write_dsp_coeff32(0x07, 0x10, 0x00000000);          /* off2_1 */
-  /* DRC2 time constants */
-  write_dsp_coeff32(0x07, 0x14, 0x7FFFFFFF); /* DRC2 Energy  */
-  write_dsp_coeff32(0x07, 0x18, 0x7FFFFFFF); /* DRC2 Attack  */
-  write_dsp_coeff32(0x07, 0x1C, 0x7FFFFFFF); /* DRC2 Decay   */
-  /* DRC2 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x20, 0x00000000);          /* k0_2 */
-  write_dsp_coeff32(0x07, 0x24, 0x00000000);          /* k1_2 */
-  write_dsp_coeff32(0x07, 0x28, 0x00000000);          /* k2_2 */
-  write_dsp_coeff32(0x07, 0x2C, (int32_t)0xE7000000); /* t1_2 */
-  write_dsp_coeff32(0x07, 0x30, (int32_t)0xFE800000); /* t2_2 */
-  write_dsp_coeff32(0x07, 0x34, 0x00000000);          /* off1_2 */
-  write_dsp_coeff32(0x07, 0x38, 0x00000000);          /* off2_2 */
-  /* DRC3 time constants */
-  write_dsp_coeff32(0x07, 0x3C, 0x7FFFFFFF); /* DRC3 Energy  */
-  write_dsp_coeff32(0x07, 0x40, 0x7FFFFFFF); /* DRC3 Attack  */
-  write_dsp_coeff32(0x07, 0x44, 0x7FFFFFFF); /* DRC3 Decay   */
-  /* DRC3 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x48, 0x00000000);          /* k0_3 */
-  write_dsp_coeff32(0x07, 0x4C, 0x00000000);          /* k1_3 */
-  write_dsp_coeff32(0x07, 0x50, 0x00000000);          /* k2_3 */
-  write_dsp_coeff32(0x07, 0x54, (int32_t)0xE7000000); /* t1_3 */
-  write_dsp_coeff32(0x07, 0x58, (int32_t)0xFE800000); /* t2_3 */
-  write_dsp_coeff32(0x07, 0x5C, 0x00000000);          /* off1_3 */
-  write_dsp_coeff32(0x07, 0x60, 0x00000000);          /* off2_3 */
-
-  /* FS Clipper (Page 0x07) */
-  write_dsp_coeff32(0x07, 0x64, 0x00800000); /* THD Boost (unity) */
-  write_dsp_coeff32(0x07, 0x6C, 0x3FFFFFFF); /* CH-L Fine Volume  */
-  write_dsp_coeff32(0x07, 0x70, 0x3FFFFFFF); /* CH-R Fine Volume  */
-
-  /* DPEQ Control (Page 0x09) */
-  write_dsp_coeff32(0x09, 0x28, 0x02DEAD00); /* DPEQ sense energy alpha */
-  write_dsp_coeff32(0x09, 0x2C, 0x74013901); /* DPEQ threshold gain */
-  write_dsp_coeff32(0x09, 0x30, 0x0020C49B); /* DPEQ threshold offset */
-
-  /* Spatializer (Page 0x0A) */
-  write_dsp_coeff32(0x0A, 0x38, 0x00000000); /* Spatializer level (off) */
-
-  /* Output Crossbar (Page 0x0A) — default: straight stereo */
-  write_dsp_coeff32(0x0A, 0x64, 0x00800000); /* Dig L ← L  (unity) */
-  write_dsp_coeff32(0x0A, 0x68, 0x00000000); /* Dig L ← R  (zero)  */
-  write_dsp_coeff32(0x0A, 0x6C, 0x00000000); /* Dig R ← L  (zero)  */
-  write_dsp_coeff32(0x0A, 0x70, 0x00800000); /* Dig R ← R  (unity) */
-  write_dsp_coeff32(0x0A, 0x74, 0x00800000); /* Ana L ← L  (unity) */
-  write_dsp_coeff32(0x0A, 0x78, 0x00000000); /* Ana L ← R  (zero)  */
-  write_dsp_coeff32(0x0A, 0x7C, 0x00000000); /* Ana R ← L  (zero)  */
-  write_dsp_coeff32(0x0B, 0x08, 0x00800000); /* Ana R ← R  (unity) */
-
-  /* Volume Control (Page 0x0B) */
-  write_dsp_coeff32(0x0B, 0x0C, 0x00800000); /* CH-L Volume (unity) */
-  write_dsp_coeff32(0x0B, 0x10, 0x00800000); /* CH-R Volume (unity) */
-
-  /* Input Mixer (Page 0x0B) */
-  write_dsp_coeff32(0x0B, 0x14, 0x00800000); /* L → L (unity) */
-  write_dsp_coeff32(0x0B, 0x18, 0x00000000); /* R → L (zero)  */
-  write_dsp_coeff32(0x0B, 0x1C, 0x00000000); /* L → R (zero)  */
-  write_dsp_coeff32(0x0B, 0x20, 0x00800000); /* R → R (unity) */
-
-  /* Bypass DC Block (Page 0x0B) */
-  write_dsp_coeff32(0x0B, 0x24, 0x00000000);
-
-  /* EQ Control (Page 0x0B) */
-  write_dsp_coeff32(0x0B, 0x28, 0x00000000); /* GangEQ = 0 */
-  write_dsp_coeff32(0x0B, 0x2C, 0x00000000); /* BypassEQ = 0 */
-
-  /* Level Meter (Page 0x0B) */
-  write_dsp_coeff32(0x0B, 0x30, 0x00A7264A); /* Softening filter alpha */
-  write_dsp_coeff32(0x0B, 0x34, 0x00000000); /* Level meter input mux */
-
-  /* Bank Switch (Page 0x0C) */
-  write_dsp_coeff32(0x0C, 0x20, 0x00000000);
-
-  /*
-   * ── Book 0xAA: ALL biquad coefficient RAM ──
-   *
-   * We must initialize EVERY BQ slot in Book 0xAA:
-   *   - 30 EQ BQs (15 L + 15 R) — from eq_left_addr / eq_right_addr
-   *   - 8 DRC crossover BQs — linear layout from Page 0x07:0x78
-   *   - 3 DPEQ BQs — Pages 0x09-0x0A
-   *   - 2 Spatializer BQs — Page 0x0A
-   */
-  err = select_book_page(0xAA, 0x00);
-  if (err != ESP_OK) {
-    select_default_page();
-    return err;
-  }
-
-  /* Unity BQ: B0=1.0 (5.27), B1=B2=A1=A2=0 */
-  static const int32_t unity_bq[5] = {FP_ONE, 0, 0, 0, 0};
-
-  /*
-   * ── DRC crossover BQs (8 total, Pages 0x07-0x09) ──
-   * Linear from Page 0x07 Reg 0x78.
-   */
-
-  /* DRC low BQ1: 0x07:0x78 → crosses to 0x08 (use individual writes) */
-  write_dsp_coeff32(0x07, 0x78, FP_ONE);
-  write_dsp_coeff32(0x07, 0x7C, 0x00000000);
-  write_dsp_coeff32(0x08, 0x08, 0x00000000);
-  write_dsp_coeff32(0x08, 0x0C, 0x00000000);
-  write_dsp_coeff32(0x08, 0x10, 0x00000000);
-
-  /* DRC low BQ2: 0x08:0x14 (fits on page) */
-  write_biquad_coeff(0x08, 0x14, unity_bq);
-
-  /* DRC high BQ1: 0x08:0x28 (fits on page) */
-  write_biquad_coeff(0x08, 0x28, unity_bq);
-
-  /* DRC high BQ2: 0x08:0x3C (fits on page) */
-  write_biquad_coeff(0x08, 0x3C, unity_bq);
-
-  /* DRC mid BQ1: 0x08:0x50 (fits on page) */
-  write_biquad_coeff(0x08, 0x50, unity_bq);
-
-  /* DRC mid BQ2: 0x08:0x64 (fits: 0x64+19=0x77) */
-  write_biquad_coeff(0x08, 0x64, unity_bq);
-
-  /* DRC mid BQ3: 0x08:0x78 → crosses to 0x09 (use individual writes) */
-  write_dsp_coeff32(0x08, 0x78, FP_ONE);
-  write_dsp_coeff32(0x08, 0x7C, 0x00000000);
-  write_dsp_coeff32(0x09, 0x08, 0x00000000);
-  write_dsp_coeff32(0x09, 0x0C, 0x00000000);
-  write_dsp_coeff32(0x09, 0x10, 0x00000000);
-
-  /* DRC mid BQ4: 0x09:0x14 (fits on page) */
-  write_biquad_coeff(0x09, 0x14, unity_bq);
-
-  /*
-   * ── DPEQ BQs (3 total, Pages 0x09-0x0A) ──
-   */
-  write_biquad_coeff(0x09, 0x34, unity_bq); /* DPEQ sense BQ */
-  write_biquad_coeff(0x09, 0x5C, unity_bq); /* DPEQ low-level path BQ */
-  write_biquad_coeff(0x0A, 0x0C, unity_bq); /* DPEQ high-level path BQ */
-
-  /*
-   * ── Spatializer BQs (2 total, Page 0x0A) ──
-   */
-  write_biquad_coeff(0x0A, 0x3C, unity_bq); /* Spatializer BQ1 */
-  write_biquad_coeff(0x0A, 0x50, unity_bq); /* Spatializer BQ2 */
-
-  /*
-   * ── EQ BQs (30 total, Pages 0x01-0x06) ──
-   */
-  for (int bq = 0; bq < TAS58XX_EQ_BANDS; bq++) {
-    write_biquad_coeff(eq_left_addr[bq].page, eq_left_addr[bq].sub_addr,
-                       unity_bq);
-    write_biquad_coeff(eq_right_addr[bq].page, eq_right_addr[bq].sub_addr,
-                       unity_bq);
-  }
-
-  err = select_default_page();
-
-  s_dsp_defaults_written = true;
-  ESP_LOGD(TAG, "DSP: signal-path defaults written (Book 0x8C + 0xAA)");
   return err;
 }
 
 static esp_err_t ensure_custom_coeffs_mode(void) {
+  // Only applicable to TAS5825M
   uint8_t dsp_ctrl;
   esp_err_t err = tas58xx_read_reg(REG_DSP_CTRL, &dsp_ctrl);
   if (err != ESP_OK) {
@@ -979,10 +1201,13 @@ static esp_err_t program_biquad_raw(int bq,
                                     const uint8_t data[EQ_COEFF_BYTES]) {
   esp_err_t err;
 
-  /* Ensure DSP has all signal-path defaults before using custom coefficients */
-  err = ensure_custom_coeffs_mode();
-  if (err != ESP_OK) {
-    return err;
+  if (tas58xx_model == TAS58XX_MODEL_TAS5825M) {
+    /* Ensure DSP has all signal-path defaults before using custom coefficients
+     */
+    err = ensure_custom_coeffs_mode();
+    if (err != ESP_OK) {
+      return err;
+    }
   }
 
   /* Enter coefficient book */
@@ -990,6 +1215,13 @@ static esp_err_t program_biquad_raw(int bq,
   if (err != ESP_OK) {
     goto out;
   }
+
+  const eq_bq_addr_t *eq_left_addr = (tas58xx_model == TAS58XX_MODEL_TAS5805M)
+                                         ? tas5805m_eq_left_addr
+                                         : tas5825m_eq_left_addr;
+  const eq_bq_addr_t *eq_right_addr = (tas58xx_model == TAS58XX_MODEL_TAS5805M)
+                                          ? tas5805m_eq_right_addr
+                                          : tas5825m_eq_right_addr;
 
   /* Channel 1 (Left) */
   err =
@@ -1022,25 +1254,46 @@ out:
 static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
 
-  err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
-  if (err != ESP_OK) {
-    return err;
+  switch (tas58xx_model) {
+  case TAS58XX_MODEL_TAS5805M: {
+    select_default_page();
+
+    uint8_t value = enable ? 0x08 : 0x09; /* bit0 = BYPASS_EQ */
+    err = tas58xx_write_reg(REG_DSP_MISC, value);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "EQ: mode write failed: %s", esp_err_to_name(err));
+    } else {
+      ESP_LOGD(TAG, "EQ: %s", enable ? "ENABLED" : "BYPASSED");
+    }
+  } break;
+
+  case TAS58XX_MODEL_TAS5825M: {
+    err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
+    if (err != ESP_OK) {
+      return err;
+    }
+
+    uint8_t mode_data[EQ_MODE_SIZE] = {
+        0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
+        0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
+    };
+
+    err = board_i2c_write(tas58xx_device_handle, EQ_MODE_REG, mode_data,
+                          EQ_MODE_SIZE);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "EQ: mode write failed: %s", esp_err_to_name(err));
+    } else {
+      ESP_LOGD(TAG, "EQ: %s", enable ? "ENABLED" : "BYPASSED");
+    }
+
+    select_default_page();
+  } break;
+
+  default:
+    ESP_LOGE(TAG, "Unknown TAS58XX model %d in write_eq_mode", tas58xx_model);
+    return ESP_ERR_INVALID_STATE;
   }
 
-  uint8_t mode_data[EQ_MODE_SIZE] = {
-      0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
-      0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
-  };
-
-  err = board_i2c_write(tas58xx_device_handle, EQ_MODE_REG, mode_data,
-                        EQ_MODE_SIZE);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "EQ: mode write failed: %s", esp_err_to_name(err));
-  } else {
-    ESP_LOGD(TAG, "EQ: %s", enable ? "ENABLED" : "BYPASSED");
-  }
-
-  select_default_page();
   return err;
 }
 
@@ -1048,12 +1301,15 @@ static esp_err_t write_eq_mode(bool enable) {
 
 esp_err_t tas58xx_eq_enable(bool enable) {
   REG_LOCK();
+  esp_err_t err;
 
-  /* Ensure DSP defaults are written before touching EQ mode */
-  esp_err_t err = ensure_custom_coeffs_mode();
-  if (err != ESP_OK) {
-    REG_UNLOCK();
-    return err;
+  if (tas58xx_model == TAS58XX_MODEL_TAS5825M) {
+    /* Ensure DSP defaults are written before touching EQ mode */
+    err = ensure_custom_coeffs_mode();
+    if (err != ESP_OK) {
+      REG_UNLOCK();
+      return err;
+    }
   }
 
   err = write_eq_mode(enable);

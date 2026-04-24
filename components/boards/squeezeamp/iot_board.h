@@ -7,9 +7,11 @@
 #define BOARD_DESCRIPTION "SqueezeAMP with TAS5756 DAC"
 
 // I2C configuration
-#define BOARD_I2C_PORT     0
+#define BOARD_I2C_PORT     0 ///< I2C port for the DAC
 #define BOARD_I2C_SDA_GPIO CONFIG_DAC_I2C_SDA
 #define BOARD_I2C_SCL_GPIO CONFIG_DAC_I2C_SCL
+#define BOARD_I2C_DISP_PORT \
+  1 ///< I2C port for the display (may differ from DAC)
 
 // I2S configuration
 #define BOARD_I2S_SCK_GPIO CONFIG_I2S_SCK_IO

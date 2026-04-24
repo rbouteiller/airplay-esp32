@@ -24,7 +24,7 @@
 #include "rtsp_events.h"
 #include "settings.h"
 
-#ifdef CONFIG_ETH_W5500_ENABLED
+#if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
 #include "driver/spi_master.h"
 #endif
 
@@ -42,7 +42,7 @@ static TaskHandle_t gpio_task_handle = NULL;
 static volatile bool speaker_fault_active = false;
 static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
 
-#ifdef CONFIG_ETH_W5500_ENABLED
+#if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
 static bool s_spi_bus_initialized = false;
 #endif
 
@@ -63,12 +63,17 @@ bool iot_board_is_init(void) {
 
 board_res_handle_t iot_board_get_handle(int id) {
   switch (id) {
-  case BOARD_I2C0_ID:
+  case BOARD_I2C_DAC_ID:
+  case BOARD_I2C_DISP_ID:
     return (board_res_handle_t)s_i2c_bus_handle;
-#ifdef CONFIG_ETH_W5500_ENABLED
-  case BOARD_SPI2_ID:
+  case BOARD_SPI_ETH_ID:
+  case BOARD_SPI_DISP_ID:
+    // Display and Ethernet share the same SPI bus on this board
+#if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
     return s_spi_bus_initialized ? (board_res_handle_t)(intptr_t)BOARD_SPI_HOST
                                  : NULL;
+#else
+    return NULL;
 #endif
   default:
     return NULL;
@@ -148,8 +153,8 @@ esp_err_t iot_board_init(void) {
   ESP_LOGI(TAG, "I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
            BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
 
-#ifdef CONFIG_ETH_W5500_ENABLED
-  // Initialize SPI bus (shared between W5500 and future display)
+#if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
+  // Initialize SPI bus (shared between W5500 and display)
   spi_bus_config_t spi_bus_cfg = {
       .mosi_io_num = BOARD_SPI_MOSI_GPIO,
       .miso_io_num = BOARD_SPI_MISO_GPIO,
@@ -223,7 +228,7 @@ esp_err_t iot_board_deinit(void) {
     s_i2c_bus_handle = NULL;
   }
 
-#ifdef CONFIG_ETH_W5500_ENABLED
+#if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
   if (s_spi_bus_initialized) {
     spi_bus_free(BOARD_SPI_HOST);
     s_spi_bus_initialized = false;

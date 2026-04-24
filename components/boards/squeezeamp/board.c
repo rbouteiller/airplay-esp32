@@ -66,7 +66,8 @@ static bool s_board_initialized = false;
 static TaskHandle_t gpio_task_handle = NULL;
 static volatile bool speaker_fault_active = false;
 static volatile bool headphone_inserted = false;
-static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
+static i2c_master_bus_handle_t s_i2c_dac_bus_handle = NULL;
+static i2c_master_bus_handle_t s_i2c_disp_bus_handle = NULL;
 
 static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
@@ -191,8 +192,10 @@ bool iot_board_is_init(void) {
 
 board_res_handle_t iot_board_get_handle(int id) {
   switch (id) {
-  case BOARD_I2C0_ID:
-    return (board_res_handle_t)s_i2c_bus_handle;
+  case BOARD_I2C_DAC_ID:
+    return (board_res_handle_t)s_i2c_dac_bus_handle;
+  case BOARD_I2C_DISP_ID:
+    return (board_res_handle_t)s_i2c_disp_bus_handle;
   default:
     return NULL;
   }
@@ -206,7 +209,7 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
-  // Initialize I2C bus (board owns the bus lifetime)
+  // Initialize DAC I2C bus
   i2c_master_bus_config_t i2c_cfg = {
       .i2c_port = BOARD_I2C_PORT,
       .sda_io_num = BOARD_I2C_SDA_GPIO,
@@ -215,16 +218,46 @@ esp_err_t iot_board_init(void) {
       .glitch_ignore_cnt = 7,
       .flags.enable_internal_pullup = true,
   };
-  err = i2c_new_master_bus(&i2c_cfg, &s_i2c_bus_handle);
+  err = i2c_new_master_bus(&i2c_cfg, &s_i2c_dac_bus_handle);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to initialize I2C bus: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to initialize DAC I2C bus: %s", esp_err_to_name(err));
     return err;
   }
+  ESP_LOGI(TAG, "DAC I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
+           BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
+
+#if defined(CONFIG_DISPLAY_ENABLED) && defined(CONFIG_DISPLAY_BUS_I2C)
+  // Initialize display I2C bus — share with DAC bus if pins are identical,
+  // otherwise bring up a second controller on BOARD_I2C_DISP_PORT.
+  if (CONFIG_DISPLAY_I2C_SDA == BOARD_I2C_SDA_GPIO &&
+      CONFIG_DISPLAY_I2C_SCL == BOARD_I2C_SCL_GPIO) {
+    s_i2c_disp_bus_handle = s_i2c_dac_bus_handle;
+    ESP_LOGI(TAG, "Display sharing DAC I2C bus");
+  } else {
+    i2c_master_bus_config_t disp_i2c_cfg = {
+        .i2c_port = BOARD_I2C_DISP_PORT,
+        .sda_io_num = CONFIG_DISPLAY_I2C_SDA,
+        .scl_io_num = CONFIG_DISPLAY_I2C_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    err = i2c_new_master_bus(&disp_i2c_cfg, &s_i2c_disp_bus_handle);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to initialize display I2C bus: %s",
+               esp_err_to_name(err));
+      return err;
+    }
+    ESP_LOGI(TAG, "Display I2C bus %d initialized: sda=%d, scl=%d",
+             BOARD_I2C_DISP_PORT, CONFIG_DISPLAY_I2C_SDA,
+             CONFIG_DISPLAY_I2C_SCL);
+  }
+#endif
 
   // Register and initialize DAC
   dac_register(&dac_tas57xx_ops);
 
-  err = dac_init(s_i2c_bus_handle);
+  err = dac_init(s_i2c_dac_bus_handle);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize DAC: %s", esp_err_to_name(err));
     return err;
@@ -297,10 +330,16 @@ esp_err_t iot_board_deinit(void) {
   dac_set_power_mode(DAC_POWER_OFF);
   dac_deinit();
 
-  // Tear down I2C bus (after DAC is deinitialized)
-  if (s_i2c_bus_handle != NULL) {
-    i2c_del_master_bus(s_i2c_bus_handle);
-    s_i2c_bus_handle = NULL;
+  // Tear down I2C buses (after DAC is deinitialized)
+  // Free display bus first — only if it is not shared with the DAC bus
+  if (s_i2c_disp_bus_handle != NULL &&
+      s_i2c_disp_bus_handle != s_i2c_dac_bus_handle) {
+    i2c_del_master_bus(s_i2c_disp_bus_handle);
+  }
+  s_i2c_disp_bus_handle = NULL;
+  if (s_i2c_dac_bus_handle != NULL) {
+    i2c_del_master_bus(s_i2c_dac_bus_handle);
+    s_i2c_dac_bus_handle = NULL;
   }
 
   s_board_initialized = false;

@@ -4,6 +4,13 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_SPIRAM_MODE_OCT=y
 
+# USB Audio Class defaults for the current usb_device_uac integration.
+# Keep both streams stereo at 44.1 kHz; source-only (speaker=0) is not
+# reliably supported by the managed component in practice.
+CONFIG_UAC_SPEAKER_CHANNEL_NUM=2
+CONFIG_UAC_MIC_CHANNEL_NUM=2
+CONFIG_UAC_SAMPLE_RATE=44100
+
 # GPIO defaults
 CONFIG_BAT_CHANNEL=7
 CONFIG_LED_RGB_GPIO=48

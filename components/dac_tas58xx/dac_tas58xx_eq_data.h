@@ -47,7 +47,43 @@ typedef struct {
   uint8_t sub_addr;
 } eq_bq_addr_t;
 
-static const eq_bq_addr_t eq_left_addr[15] = {
+static const eq_bq_addr_t tas5805m_eq_left_addr[15] = {
+    {0x24, 0x18}, // BQ1 Left  - 20 Hz
+    {0x24, 0x2c}, // BQ2 Left  - 31.5 Hz
+    {0x24, 0x40}, // BQ3 Left  - 50 Hz
+    {0x24, 0x54}, // BQ4 Left  - 80 Hz
+    {0x24, 0x68}, // BQ5 Left  - 125 Hz
+    {0x24, 0x7c}, // BQ6 Left  - 200 Hz
+    {0x25, 0x18}, // BQ7 Left  - 315 Hz
+    {0x25, 0x2c}, // BQ8 Left  - 500 Hz
+    {0x25, 0x40}, // BQ9 Left  - 800 Hz
+    {0x25, 0x54}, // BQ10 Left - 1250 Hz
+    {0x25, 0x68}, // BQ11 Left - 2000 Hz
+    {0x25, 0x7c}, // BQ12 Left - 3150 Hz
+    {0x26, 0x18}, // BQ13 Left - 5000 Hz
+    {0x26, 0x2c}, // BQ14 Left - 8000 Hz
+    {0x26, 0x40}, // BQ15 Left - 16000 Hz
+};
+
+static const eq_bq_addr_t tas5805m_eq_right_addr[15] = {
+    {0x26, 0x54}, // BQ1 Right  - 20 Hz
+    {0x26, 0x68}, // BQ2 Right  - 31.5 Hz
+    {0x26, 0x7c}, // BQ3 Right  - 50 Hz
+    {0x27, 0x18}, // BQ4 Right  - 80 Hz
+    {0x27, 0x2c}, // BQ5 Right  - 125 Hz
+    {0x27, 0x40}, // BQ6 Right  - 200 Hz
+    {0x27, 0x54}, // BQ7 Right  - 315 Hz
+    {0x27, 0x68}, // BQ8 Right  - 500 Hz
+    {0x27, 0x7c}, // BQ9 Right  - 800 Hz
+    {0x28, 0x18}, // BQ10 Right - 1250 Hz
+    {0x28, 0x2c}, // BQ11 Right - 2000 Hz
+    {0x28, 0x40}, // BQ12 Right - 3150 Hz
+    {0x28, 0x54}, // BQ13 Right - 5000 Hz
+    {0x28, 0x68}, // BQ14 Right - 8000 Hz
+    {0x28, 0x7c}, // BQ15 Right - 16000 Hz
+};
+
+static const eq_bq_addr_t tas5825m_eq_left_addr[15] = {
     {0x01, 0x30}, // BQ1  Left  -  20 Hz
     {0x01, 0x44}, // BQ2  Left  -  31.5 Hz
     {0x01, 0x58}, // BQ3  Left  -  50 Hz
@@ -65,7 +101,7 @@ static const eq_bq_addr_t eq_left_addr[15] = {
     {0x03, 0x58}, // BQ15 Left  - 16000 Hz
 };
 
-static const eq_bq_addr_t eq_right_addr[15] = {
+static const eq_bq_addr_t tas5825m_eq_right_addr[15] = {
     {0x03, 0x6C}, // BQ1  Right -  20 Hz
     {0x04, 0x08}, // BQ2  Right -  31.5 Hz
     {0x04, 0x1C}, // BQ3  Right -  50 Hz
