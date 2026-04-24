@@ -29,6 +29,11 @@
 #define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
 #define FRAME_SAMPLES 352
 
+#if CONFIG_OUTPUT_SAMPLE_RATE_HZ != CONFIG_UAC_SAMPLE_RATE
+#error \
+    "USB audio output requires CONFIG_OUTPUT_SAMPLE_RATE_HZ to match CONFIG_UAC_SAMPLE_RATE"
+#endif
+
 /* Max output frames after resampling one input frame */
 #define MAX_RESAMPLE_FRAMES \
   ((size_t)((FRAME_SAMPLES + 2) * ((double)OUTPUT_RATE / 44100) + 16))
