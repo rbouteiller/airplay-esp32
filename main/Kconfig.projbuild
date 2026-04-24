@@ -117,22 +117,36 @@ menu "Airplay ESP Configuration"
     endmenu
 
     menu "Audio Output"
-    config SPDIF_OUTPUT
-        bool "SPDIF output instead of I2S"
-        default n
+    choice AUDIO_OUTPUT_TYPE
+        prompt "Audio output type"
+        default AUDIO_OUTPUT_I2S
         help
-            Enable SPDIF audio output via I2S bit-banging.
-            When enabled, the SPDIF output driver is compiled instead of the
-            standard I2S output driver. Configure the SPDIF data output GPIO
-            in the board pin configuration.
+            Select the audio output backend.
+
+        config AUDIO_OUTPUT_I2S
+            bool "I2S (standard DAC)"
+
+        config AUDIO_OUTPUT_SPDIF
+            bool "SPDIF (bit-banged via I2S)"
+
+        config AUDIO_OUTPUT_USB
+            bool "USB Audio Class (UAC)"
+            depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+            help
+                Output audio over USB as a UAC device.
+                The ESP32 appears as a USB audio source to the connected host
+                (e.g. a USB amplifier or a PC for testing with Audacity).
+                Requires a chip with USB OTG support.
+                Output is fixed at 44100 Hz (native AirPlay rate, no resampling).
+    endchoice
 
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
         default OUTPUT_SAMPLE_RATE_44100
-        depends on !DAC_TAS57XX && !DAC_TAS58XX
+        depends on !DAC_TAS57XX && !DAC_TAS58XX && !AUDIO_OUTPUT_USB
         help
-            Sample rate for I2S/SPDIF output. If the AirPlay source
-            sends a different rate, the audio is resampled automatically.
+            Sample rate for I2S/SPDIF output. If the AirPlay source sends a
+            different rate, the audio is resampled automatically.
 
         config OUTPUT_SAMPLE_RATE_44100
             bool "44100 Hz (native AirPlay, no resampling)"
@@ -142,7 +156,6 @@ menu "Airplay ESP Configuration"
 
     config OUTPUT_SAMPLE_RATE_HZ
         int
-        default 44100 if OUTPUT_SAMPLE_RATE_44100
         default 48000 if OUTPUT_SAMPLE_RATE_48000
         default 44100
 
