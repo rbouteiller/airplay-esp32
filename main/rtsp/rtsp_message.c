@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 
 #include "esp_log.h"
@@ -63,7 +64,9 @@ void rtsp_parse_transport(const char *request, uint16_t *control_port,
     *timing_port = 0;
   }
 
-  const char *transport = strstr(request, "Transport:");
+  // RTSP header names and Transport-header parameter names are
+  // case-insensitive (RFC 2326), so match accordingly.
+  const char *transport = strcasestr(request, "Transport:");
   if (!transport) {
     return;
   }
@@ -75,13 +78,13 @@ void rtsp_parse_transport(const char *request, uint16_t *control_port,
   }
 
   // Parse control_port
-  const char *cp = strstr(transport, "control_port=");
+  const char *cp = strcasestr(transport, "control_port=");
   if (cp && cp < line_end && control_port) {
     *control_port = (uint16_t)strtoul(cp + 13, NULL, 10);
   }
 
   // Parse timing_port
-  const char *tp = strstr(transport, "timing_port=");
+  const char *tp = strcasestr(transport, "timing_port=");
   if (tp && tp < line_end && timing_port) {
     *timing_port = (uint16_t)strtoul(tp + 12, NULL, 10);
   }
