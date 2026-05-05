@@ -1060,8 +1060,9 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   if (!request_has_streams) {
     // AirPlay v1: SETUP has no bplist body — transport info is in the header.
     // Detected by request shape (Transport: header present); AirPlay 2's
-    // initial SETUP has neither streams nor a Transport header.
-    if (raw && strstr((const char *)raw, "Transport:")) {
+    // initial SETUP has neither streams nor a Transport header. RTSP header
+    // names are case-insensitive (RFC 2326 §12), so use strcasestr.
+    if (raw && strcasestr((const char *)raw, "Transport:")) {
       ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
       conn->protocol_version = 1;
       int64_t stream_type = 96; // RTP
