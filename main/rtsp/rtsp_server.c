@@ -37,13 +37,9 @@ static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
 static bool server_running = false;
 
-// Static task memory for client tasks (one per slot)
-static StaticTask_t s_client_tcb[2];
-static StackType_t s_client_stack[2][CLIENT_STACK_SIZE / sizeof(StackType_t)];
-
-// Static task memory for server task
-static StaticTask_t s_server_tcb;
-static StackType_t s_server_stack[SERVER_STACK_SIZE / sizeof(StackType_t)];
+// RTSP tasks are restartable. Use dynamic TCB allocation so
+// reconnect/start-stop paths cannot reuse static task memory before FreeRTOS
+// idle finishes deletion.
 
 // Client slot for tracking connections
 typedef struct {
@@ -408,6 +404,7 @@ static void server_task(void *pvParameters) {
   server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (server_socket < 0) {
     ESP_LOGE(TAG, "Failed to create socket: %d", errno);
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -425,6 +422,7 @@ static void server_task(void *pvParameters) {
     ESP_LOGE(TAG, "Failed to bind: %d", errno);
     close(server_socket);
     server_socket = -1;
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -433,6 +431,7 @@ static void server_task(void *pvParameters) {
     ESP_LOGE(TAG, "Failed to listen: %d", errno);
     close(server_socket);
     server_socket = -1;
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -481,12 +480,12 @@ static void server_task(void *pvParameters) {
     clients[new_slot].should_stop = false;
     clients[new_slot].is_old = false;
 
-    // Start new client task immediately (static allocation)
-    clients[new_slot].task = xTaskCreateStatic(
-        client_task, "rtsp_client", CLIENT_STACK_SIZE / sizeof(StackType_t),
-        (void *)(intptr_t)new_slot, 5, s_client_stack[new_slot],
-        &s_client_tcb[new_slot]);
-    if (clients[new_slot].task == NULL) {
+    // Start new client task immediately.
+    clients[new_slot].task = NULL;
+    BaseType_t task_ret =
+        xTaskCreate(client_task, "rtsp_client", CLIENT_STACK_SIZE,
+                    (void *)(intptr_t)new_slot, 5, &clients[new_slot].task);
+    if (task_ret != pdPASS || clients[new_slot].task == NULL) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);
       clients[new_slot].socket = -1;
@@ -512,6 +511,7 @@ static void server_task(void *pvParameters) {
     server_socket = -1;
   }
 
+  server_task_handle = NULL;
   vTaskDelete(NULL);
 }
 
@@ -520,10 +520,10 @@ esp_err_t rtsp_server_start(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  server_task_handle = xTaskCreateStatic(
-      server_task, "rtsp_server", SERVER_STACK_SIZE / sizeof(StackType_t), NULL,
-      5, s_server_stack, &s_server_tcb);
-  if (server_task_handle == NULL) {
+  BaseType_t task_ret =
+      xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,
+                  &server_task_handle);
+  if (task_ret != pdPASS || server_task_handle == NULL) {
     return ESP_FAIL;
   }
 
@@ -540,7 +540,11 @@ void rtsp_server_stop(void) {
   }
 
   if (server_task_handle != NULL) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-    server_task_handle = NULL;
+    for (int i = 0; i < 20 && server_task_handle != NULL; i++) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (server_task_handle != NULL) {
+      ESP_LOGW(TAG, "RTSP server task did not exit within timeout");
+    }
   }
 }

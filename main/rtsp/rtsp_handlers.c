@@ -85,8 +85,6 @@ static int event_client_socket = -1;
 static int event_listen_socket = -1;
 static TaskHandle_t event_task_handle = NULL;
 static volatile bool event_task_should_stop = false;
-static StaticTask_t s_event_tcb;
-static StackType_t s_event_stack[EVENT_STACK_SIZE / sizeof(StackType_t)];
 
 void rtsp_get_device_id(char *device_id, size_t len) {
   uint8_t mac[6];
@@ -233,15 +231,26 @@ static void event_port_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
-void rtsp_start_event_port_task(int listen_socket) {
+esp_err_t rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
     rtsp_stop_event_port_task();
+    if (event_task_handle != NULL) {
+      ESP_LOGE(TAG, "Previous event port task did not stop");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
   event_task_should_stop = false;
   event_listen_socket = -1;
-  event_task_handle = xTaskCreateStatic(
-      event_port_task, "event_port", EVENT_STACK_SIZE / sizeof(StackType_t),
-      (void *)(intptr_t)listen_socket, 5, s_event_stack, &s_event_tcb);
+  event_task_handle = NULL;
+  BaseType_t ret =
+      xTaskCreate(event_port_task, "event_port", EVENT_STACK_SIZE,
+                  (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+  if (ret != pdPASS) {
+    event_task_handle = NULL;
+    ESP_LOGE(TAG, "Failed to create event port task");
+    return ESP_FAIL;
+  }
+  return ESP_OK;
 }
 
 int rtsp_event_port_listen_socket(void) {
@@ -270,7 +279,9 @@ void rtsp_stop_event_port_task(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     timeout--;
   }
-  // No need to free — static allocation
+  if (event_task_handle != NULL) {
+    ESP_LOGW(TAG, "Event port task did not exit within timeout");
+  }
 }
 
 // Forward declarations of handlers
@@ -1051,8 +1062,16 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   if (conn->event_port == 0) {
     conn->event_socket = rtsp_create_event_socket(&conn->event_port);
     if (conn->event_socket >= 0) {
-      rtsp_start_event_port_task(conn->event_socket);
-      ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port);
+      if (rtsp_start_event_port_task(conn->event_socket) == ESP_OK) {
+        ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port);
+      } else {
+        close(conn->event_socket);
+        conn->event_socket = -1;
+        conn->event_port = 0;
+        rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                           NULL, 0);
+        return;
+      }
     }
   }
 

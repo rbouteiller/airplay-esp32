@@ -14,7 +14,6 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
-#include "spiram_task.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
 
@@ -40,7 +39,6 @@ typedef struct {
   int buffered_client_socket;
   uint16_t buffered_port;
   TaskHandle_t buffered_task_handle;
-  spiram_task_mem_t buffered_task_mem;
   uint8_t *buffered_recv_buffer;
 
   uint8_t *decrypt_buffer;

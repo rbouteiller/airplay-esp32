@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "esp_err.h"
+
 #include "rtsp_conn.h"
 #include "rtsp_message.h"
 
@@ -84,6 +86,6 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 void rtsp_get_device_id(char *device_id, size_t len);
 
 // Event port task management
-void rtsp_start_event_port_task(int listen_socket);
+esp_err_t rtsp_start_event_port_task(int listen_socket);
 void rtsp_stop_event_port_task(void);
 int rtsp_event_port_listen_socket(void);
