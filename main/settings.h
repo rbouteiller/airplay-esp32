@@ -99,6 +99,18 @@ esp_err_t settings_get_device_name(char *name, size_t len);
  */
 esp_err_t settings_set_device_name(const char *name);
 
+// ---- LED settings ----
+
+/**
+ * Get saved LED brightness (0–255). Returns compile-time default if not set.
+ */
+esp_err_t settings_get_led_brightness(uint8_t *brightness);
+
+/**
+ * Save LED brightness (0–255) to persistent storage.
+ */
+esp_err_t settings_set_led_brightness(uint8_t brightness);
+
 // ---- EQ settings ----
 
 /** Number of EQ bands stored in NVS */
