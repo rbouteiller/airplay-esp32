@@ -11,6 +11,7 @@
 #include <dirent.h>
 
 #include "settings.h"
+#include "led.h"
 #include "wifi.h"
 #include "ethernet.h"
 #include "ota.h"
@@ -218,6 +219,55 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
 
+  return ESP_OK;
+}
+
+static esp_err_t led_brightness_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddNumberToObject(json, "brightness", led_get_brightness());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t led_brightness_post_handler(httpd_req_t *req) {
+  char content[64];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *val = cJSON_GetObjectItem(json, "brightness");
+  if (val && cJSON_IsNumber(val)) {
+    int b = (int)val->valuedouble;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    led_set_brightness((uint8_t)b);
+    cJSON_AddBoolToObject(response, "success", true);
+  } else {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error", "Expected {\"brightness\": 0-255}");
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
   return ESP_OK;
 }
 
@@ -618,6 +668,16 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
   httpd_register_uri_handler(s_server, &device_name_uri);
+
+  httpd_uri_t led_brightness_get_uri = {.uri = "/api/led/brightness",
+                                        .method = HTTP_GET,
+                                        .handler = led_brightness_get_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_get_uri);
+
+  httpd_uri_t led_brightness_post_uri = {.uri = "/api/led/brightness",
+                                         .method = HTTP_POST,
+                                         .handler = led_brightness_post_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_post_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,

@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "rtsp_events.h"
+#include "settings.h"
 
 #if CONFIG_LED_STATUS_GPIO >= 0 || CONFIG_LED_ERROR_GPIO >= 0
 #include "driver/ledc.h"
@@ -13,6 +14,10 @@
 #include <math.h>
 
 static const char *TAG = "led";
+
+// Module-level brightness (0–255), shared across all LED types.
+// Loaded from NVS in led_init(); updated by led_set_brightness().
+static uint8_t s_brightness = CONFIG_LED_STATUS_BRIGHTNESS;
 
 // ============================================================================
 // Configuration helpers - map Kconfig to led_mode_t
@@ -123,6 +128,8 @@ static void status_timer_cb(TimerHandle_t xTimer) {
 }
 
 static void status_led_init(void) {
+  s_status_duty = s_brightness;
+
   ledc_timer_config_t timer_cfg = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
       .timer_num = STATUS_LED_TIMER,
@@ -192,7 +199,7 @@ static void status_led_set_vu(float norm) {
   if (s_status_mode != LED_VU) {
     return;
   }
-  uint8_t duty = (uint8_t)(norm * 255.0f);
+  uint8_t duty = (uint8_t)(norm * (float)s_status_duty);
   status_led_set_duty(duty);
 }
 
@@ -334,12 +341,12 @@ static void rgb_led_set_vu(float norm, float bass_ratio) {
     return;
   }
 
-  if (norm <= 0.0f) {
+  if (norm <= 0.0f || s_brightness == 0) {
     rgb_led_clear();
     return;
   }
 
-  uint8_t val = (uint8_t)(norm * 255.0f);
+  uint8_t val = (uint8_t)(norm * (float)s_brightness);
   if (val < 1) {
     val = 1;
   }
@@ -398,6 +405,10 @@ typedef enum {
 static led_state_t s_prev_state = STATE_STANDBY;
 static led_state_t s_current_state = STATE_STANDBY;
 
+static uint8_t scale_bright(uint8_t v) {
+  return (uint8_t)((uint16_t)v * s_brightness / 255);
+}
+
 static void apply_state(led_state_t state) {
   s_prev_state = s_current_state;
   s_current_state = state;
@@ -415,9 +426,11 @@ static void apply_state(led_state_t state) {
     if (get_rgb_mode_paused() == LED_STEADY) {
 #ifdef CONFIG_LED_RGB_COLOR_PAUSED
       uint32_t c = CONFIG_LED_RGB_COLOR_PAUSED;
-      rgb_led_set_color((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+      rgb_led_set_color(scale_bright((c >> 16) & 0xFF),
+                        scale_bright((c >> 8) & 0xFF),
+                        scale_bright(c & 0xFF));
 #else
-      rgb_led_set_color(0, 0, 0x33);
+      rgb_led_set_color(0, 0, scale_bright(0x33));
 #endif
     }
     error_led_set(false);
@@ -429,9 +442,11 @@ static void apply_state(led_state_t state) {
     if (get_rgb_mode_standby() == LED_STEADY) {
 #ifdef CONFIG_LED_RGB_COLOR_STANDBY
       uint32_t c = CONFIG_LED_RGB_COLOR_STANDBY;
-      rgb_led_set_color((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+      rgb_led_set_color(scale_bright((c >> 16) & 0xFF),
+                        scale_bright((c >> 8) & 0xFF),
+                        scale_bright(c & 0xFF));
 #else
-      rgb_led_set_color(0, 0x11, 0);
+      rgb_led_set_color(0, scale_bright(0x11), 0);
 #endif
     }
     error_led_set(false);
@@ -538,6 +553,11 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
 // ============================================================================
 
 void led_init(void) {
+  uint8_t saved;
+  if (settings_get_led_brightness(&saved) == ESP_OK) {
+    s_brightness = saved;
+  }
+
   status_led_init();
   error_led_init();
   rgb_led_init();
@@ -556,4 +576,22 @@ void led_set_error(bool error) {
   } else {
     apply_state(s_prev_state);
   }
+}
+
+void led_set_brightness(uint8_t brightness) {
+  s_brightness = brightness;
+#if CONFIG_LED_STATUS_GPIO >= 0
+  s_status_duty = brightness;
+  if (s_status_mode == LED_STEADY ||
+      (s_status_mode >= LED_BLINK_SLOW && s_status_on)) {
+    status_led_set_duty(s_status_duty);
+  }
+#endif
+  // Re-apply current RGB state so the new brightness takes effect immediately
+  apply_state(s_current_state);
+  settings_set_led_brightness(brightness);
+}
+
+uint8_t led_get_brightness(void) {
+  return s_brightness;
 }

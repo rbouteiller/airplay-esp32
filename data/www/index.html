@@ -44,6 +44,9 @@ input:focus{outline:none;border-color:#e94560}
 .file-row{display:flex;gap:10px;align-items:center}
 .file-name{flex:1;font-size:13px;color:#888}
 .actions{display:flex;gap:10px;margin-top:10px}
+.slider-row{display:flex;align-items:center;gap:12px}
+.slider-row input[type=range]{flex:1;accent-color:#e94560}
+.slider-row span{font-size:13px;color:#888;min-width:32px;text-align:right}
 </style></head><body>
 <div class='wrap'>
 <div class='header'><h1>AirPlay Receiver</h1><p>ESP32 Configuration Panel</p></div>
@@ -58,7 +61,12 @@ input:focus{outline:none;border-color:#e94560}
 <div class='card'><h2>Device Settings</h2>
 <div class='form-group'><label>AirPlay Device Name</label><input type='text' id='dev-name' placeholder='My Speaker'></div>
 <button class='btn btn-primary' onclick='saveName()'>Save Name</button>
-<div id='name-msg'></div></div>
+<div id='name-msg'></div>
+<div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
+<div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>
+<span id='led-pct'>50%</span></div></div>
+<button class='btn btn-secondary' onclick='saveBrightness()'>Save Brightness</button>
+<div id='brightness-msg'></div></div>
 <div class='card'><h2>Firmware Update</h2>
 <div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
 <button class='btn btn-secondary' onclick='document.getElementById("fw-file").click()'>Choose File</button>
@@ -100,6 +108,16 @@ async function saveWiFi(){
   try{var r=await fetch('/api/wifi/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,password:p})});
     var d=await r.json();if(d.success){msg('wifi-msg','Saved! Restarting...','ok');}else{msg('wifi-msg',d.error,'err');}}
   catch(e){msg('wifi-msg','Error','err');}}
+async function loadBrightness(){
+  try{var r=await fetch('/api/led/brightness');var d=await r.json();
+    if(d.success){var s=document.getElementById('led-brightness');s.value=d.brightness;
+      document.getElementById('led-pct').textContent=Math.round(d.brightness/255*100)+'%';}}
+  catch(e){console.warn('Could not load LED brightness',e);}}
+async function saveBrightness(){
+  var v=Number.parseInt(document.getElementById('led-brightness').value,10);
+  try{var r=await fetch('/api/led/brightness',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brightness:v})});
+    var d=await r.json();if(d.success){msg('brightness-msg','Saved!','ok');}else{msg('brightness-msg',d.error,'err');}}
+  catch(e){msg('brightness-msg','Error','err');console.error('saveBrightness failed',e);}}
 async function saveName(){
   var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
   try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
@@ -130,5 +148,5 @@ window.onload=function(){
   document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
     document.getElementById('fw-name').textContent=f?f.name:'No file selected';
     document.getElementById('ota-btn').disabled=!f;};
-  loadInfo();setInterval(loadInfo,30000);};
+  loadInfo();loadBrightness();setInterval(loadInfo,30000);};
 </script></body></html>
