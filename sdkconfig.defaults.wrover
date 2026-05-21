@@ -4,6 +4,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions-4m.csv"
 
+# Heap poisoning — kept on for the dev board so OOB writes and use-after-
+# free are caught at the point of the bad access.  Costs ~9 bytes per
+# allocation and some CPU; production builds leave it
+# disabled.
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y
+
 # GPIO defaults
 CONFIG_I2S_BCK_IO=33
 CONFIG_I2S_WS_IO=25

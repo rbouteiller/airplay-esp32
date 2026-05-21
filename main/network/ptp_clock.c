@@ -34,12 +34,23 @@ static const char *TAG = "ptp_clock";
 #define PTP_TIMESTAMP_SIZE   10
 
 // Synchronization parameters
-#define LOCK_THRESHOLD_NS    40000000LL // 40ms - tight threshold for lock
-#define MIN_SAMPLES_FOR_LOCK 8
-#define LOCK_STABLE_TIME_MS  1000 // 1s of stable readings to declare lock
+//
+// WiFi-side timestamping jitter on ESP32 is ~20–30 ms in practice, so a tight
+// 40 ms lock threshold can take 10+ seconds to satisfy.  Loosen the lock
+// criteria to converge in <1 s while still rejecting genuine outliers via
+// the median filter:
+//   • LOCK_THRESHOLD_NS:    50 ms  — accept normal WiFi jitter
+//   • OUTLIER_THRESHOLD_NS: 75 ms  — keep the threshold strictly larger than
+//                                   LOCK_THRESHOLD_NS so a borderline sample
+//                                   isn't both kept and counted against lock
+//   • MIN_SAMPLES_FOR_LOCK: 4      — ~500 ms at 8 Hz SYNC rate
+//   • LOCK_STABLE_TIME_MS:  250    — confirm stability without long wait
+#define LOCK_THRESHOLD_NS    50000000LL // 50ms - tolerant of WiFi jitter
+#define MIN_SAMPLES_FOR_LOCK 4
+#define LOCK_STABLE_TIME_MS  250 // 250ms of stable readings to declare lock
 #define LOCK_TIMEOUT_MS      5000
 #define SAMPLE_BUFFER_SIZE   16         // Ring buffer for median filtering
-#define OUTLIER_THRESHOLD_NS 50000000LL // 50ms - reject samples beyond this
+#define OUTLIER_THRESHOLD_NS 75000000LL // 75ms - reject samples beyond this
 
 // PTP state
 static struct {
@@ -70,7 +81,23 @@ static struct {
   // Statistics
   uint32_t sync_count;
   uint32_t followup_count;
+  uint32_t announce_count;
+  uint32_t rejected_master_count; // SYNC/FOLLOW_UP from a non-matching master
+  uint32_t outlier_count;         // samples rejected by 50ms threshold
+
+  // Master clock filter (0 = accept any master)
+  uint64_t expected_clock_id;
 } ptp = {0};
+
+// Parse 8-byte clockIdentity (big-endian) from PTP sourcePortIdentity
+// (header bytes 20-27).
+static uint64_t parse_ptp_clock_id(const uint8_t *data) {
+  uint64_t id = 0;
+  for (int i = 0; i < 8; i++) {
+    id = (id << 8) | data[20 + i];
+  }
+  return id;
+}
 
 // Parse 48-bit seconds + 32-bit nanoseconds from PTP timestamp
 static uint64_t parse_ptp_timestamp_ns(const uint8_t *data) {
@@ -131,6 +158,7 @@ static void update_offset(int64_t new_offset_ns) {
       diff = -diff;
     }
     if (diff > OUTLIER_THRESHOLD_NS) {
+      ptp.outlier_count++;
       return;
     }
   }
@@ -168,6 +196,12 @@ static void update_offset(int64_t new_offset_ns) {
           ptp.locked = true;
           ptp.lock_start_ms = now_ms;
           ptp.lock_candidate_start_ms = 0;
+          ESP_LOGI(TAG,
+                   "LOCKED: offset=%+lldns max_dev=%lldns samples=%d "
+                   "sync=%lu followup=%lu",
+                   (long long)ptp.filtered_offset_ns, (long long)max_dev,
+                   ptp.sample_fill, (unsigned long)ptp.sync_count,
+                   (unsigned long)ptp.followup_count);
         }
       }
     } else {
@@ -175,6 +209,8 @@ static void update_offset(int64_t new_offset_ns) {
       if (ptp.locked && max_dev > LOCK_THRESHOLD_NS * 4) {
         ptp.locked = false;
         ptp.lock_start_ms = 0;
+        ESP_LOGW(TAG, "LOST LOCK: max_dev=%lldns (threshold=%lldns)",
+                 (long long)max_dev, (long long)(LOCK_THRESHOLD_NS * 4));
       }
     }
   }
@@ -234,6 +270,18 @@ static void process_ptp_message(const uint8_t *data, size_t len,
   uint8_t msg_type = data[0] & 0x0F;
   uint16_t seq = ((uint16_t)data[30] << 8) | data[31];
 
+  // If a master filter is set, reject messages from other clocks.
+  // This applies only to messages that contribute to offset estimation
+  // (SYNC / FOLLOW_UP); ANNOUNCE and others are ignored anyway.
+  if (ptp.expected_clock_id != 0 &&
+      (msg_type == PTP_MSG_SYNC || msg_type == PTP_MSG_FOLLOW_UP)) {
+    uint64_t src_clock_id = parse_ptp_clock_id(data);
+    if (src_clock_id != ptp.expected_clock_id) {
+      ptp.rejected_master_count++;
+      return;
+    }
+  }
+
   switch (msg_type) {
   case PTP_MSG_SYNC:
     if (is_event_port) {
@@ -248,6 +296,7 @@ static void process_ptp_message(const uint8_t *data, size_t len,
     break;
 
   case PTP_MSG_ANNOUNCE:
+    ptp.announce_count++;
     // Could track master identity here if needed
     break;
 
@@ -341,22 +390,21 @@ static void ptp_task(void *pvParameters) {
 
     if (ret == 0) {
       // Timeout - check if we lost lock due to no messages
-      continue;
-    }
-
-    // Check event port (SYNC messages)
-    if (ptp.event_socket >= 0 && FD_ISSET(ptp.event_socket, &read_fds)) {
-      ssize_t len = recv(ptp.event_socket, buffer, sizeof(buffer), 0);
-      if (len > 0) {
-        process_ptp_message(buffer, (size_t)len, true);
+    } else {
+      // Check event port (SYNC messages)
+      if (ptp.event_socket >= 0 && FD_ISSET(ptp.event_socket, &read_fds)) {
+        ssize_t len = recv(ptp.event_socket, buffer, sizeof(buffer), 0);
+        if (len > 0) {
+          process_ptp_message(buffer, (size_t)len, true);
+        }
       }
-    }
 
-    // Check general port (FOLLOW_UP messages)
-    if (ptp.general_socket >= 0 && FD_ISSET(ptp.general_socket, &read_fds)) {
-      ssize_t len = recv(ptp.general_socket, buffer, sizeof(buffer), 0);
-      if (len > 0) {
-        process_ptp_message(buffer, (size_t)len, false);
+      // Check general port (FOLLOW_UP messages)
+      if (ptp.general_socket >= 0 && FD_ISSET(ptp.general_socket, &read_fds)) {
+        ssize_t len = recv(ptp.general_socket, buffer, sizeof(buffer), 0);
+        if (len > 0) {
+          process_ptp_message(buffer, (size_t)len, false);
+        }
       }
     }
   }
@@ -457,6 +505,10 @@ void ptp_clock_clear(void) {
 
   ptp.sync_count = 0;
   ptp.followup_count = 0;
+
+  // Drop the master filter so the next session can lock to whatever master
+  // its anchor packet names (which may differ from the previous session).
+  ptp.expected_clock_id = 0;
 }
 
 bool ptp_clock_is_locked(void) {
@@ -479,6 +531,30 @@ uint64_t ptp_clock_get_time_ns(void) {
 
 int64_t ptp_clock_get_offset_ns(void) {
   return ptp.filtered_offset_ns;
+}
+
+void ptp_clock_set_master_clock_id(uint64_t clock_id) {
+  if (clock_id == ptp.expected_clock_id) {
+    return;
+  }
+
+  ESP_LOGI(TAG, "PTP master clock_id %s: %016llx", clock_id ? "set" : "cleared",
+           (unsigned long long)clock_id);
+  ptp.expected_clock_id = clock_id;
+
+  // Drop accumulated samples / lock state — they may have come from a
+  // different (wrong) master.
+  ptp.locked = false;
+  ptp.lock_start_ms = 0;
+  ptp.lock_candidate_start_ms = 0;
+  ptp.filtered_offset_ns = 0;
+  ptp.sample_index = 0;
+  ptp.sample_fill = 0;
+  ptp.awaiting_followup = false;
+}
+
+uint64_t ptp_clock_get_master_clock_id(void) {
+  return ptp.expected_clock_id;
 }
 
 void ptp_clock_get_stats(ptp_stats_t *stats) {

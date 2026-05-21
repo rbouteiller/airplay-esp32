@@ -72,12 +72,20 @@ input:focus{outline:none;border-color:#e94560}
 <div class='info-item'><label>Device Name</label><span id='info-name'>-</span></div>
 <div class='info-item'><label>Free Memory</label><span id='info-heap'>-</span></div>
 <div class='info-item'><label>Firmware</label><span id='info-fw'>-</span></div>
+<div class='info-item'><label>WiFi SSID</label><span id='info-ssid'>-</span></div>
+<div class='info-item'><label>WiFi RSSI</label><span id='info-rssi'>-</span></div>
+<div class='info-item'><label>WiFi Channel</label><span id='info-chan'>-</span></div>
+<div class='info-item'><label>WiFi PHY</label><span id='info-phy'>-</span></div>
+<div class='info-item' style='grid-column:1/-1'><label>WiFi BSSID</label><span id='info-bssid'>-</span></div>
 </div>
 <div class='actions'><button class='btn btn-danger' onclick='restart()'>Restart Device</button></div>
 </div>
 <div class='card'><h2>System Logs</h2>
 <p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log output via WebSocket</p>
 <a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>
+<div class='card'><h2>WiFi Speedtest</h2>
+<p style='color:#888;font-size:13px;margin-bottom:12px'>Measure latency and throughput to this device</p>
+<a href='/speedtest' class='btn btn-primary'>Open Speedtest</a></div>
 <div class='card' id='eq-card' style='display:none'><h2>Equalizer</h2>
 <p style='color:#888;font-size:13px;margin-bottom:12px'>15-band parametric EQ for DAC tuning</p>
 <a href='/eq' class='btn btn-primary'>Open Equalizer</a></div>
@@ -124,6 +132,12 @@ async function loadInfo(){
       document.getElementById('info-name').textContent=i.device_name||'-';
       document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
       document.getElementById('info-fw').textContent=i.firmware_version||'-';
+      function rssiLabel(r){if(r==null)return '-';var q='';if(r>=-55)q=' (excellent)';else if(r>=-65)q=' (good)';else if(r>=-75)q=' (fair)';else q=' (poor)';return r+' dBm'+q;}
+      document.getElementById('info-ssid').textContent=i.wifi_ssid||'-';
+      document.getElementById('info-rssi').textContent=rssiLabel(i.wifi_rssi);
+      document.getElementById('info-chan').textContent=i.wifi_channel||'-';
+      document.getElementById('info-phy').textContent=i.wifi_phy||'-';
+      document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported){document.getElementById('eq-card').style.display='';}
       document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
 window.onload=function(){

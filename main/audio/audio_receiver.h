@@ -161,6 +161,14 @@ uint32_t audio_receiver_get_output_latency_us(void);
 uint32_t audio_receiver_get_hardware_latency_us(void);
 
 /**
+ * Get total advertised latency in microseconds.  Includes the jitter-buffer
+ * target depth, hardware DMA delay, and fixed decrypt/decode/network
+ * pipeline constant.  Report this in outputLatencyMicros so the phone
+ * schedules sends to match our actual end-to-end depth.
+ */
+uint32_t audio_receiver_get_advertised_latency_us(void);
+
+/**
  * Provide anchor timing information from SETRATEANCHORTIME.
  * @param clock_id PTP clock ID (networkTimeTimelineID)
  * @param network_time_ns Anchor time in nanoseconds (PTP timeline)

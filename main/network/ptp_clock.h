@@ -58,3 +58,24 @@ typedef struct {
 } ptp_stats_t;
 
 void ptp_clock_get_stats(ptp_stats_t *stats);
+
+/**
+ * Restrict the PTP clock to a single master identified by its 8-byte
+ * clockIdentity (the value carried in the AirPlay 2 0xD7 anchor packet at
+ * offset +20, and in the PTP common-header sourcePortIdentity field at
+ * bytes 20-27).
+ *
+ * Pass 0 to clear the filter (accept any master — the default at startup).
+ *
+ * When the expected clock_id changes, the filter resets samples and lock
+ * state so a stale offset to a previous (possibly wrong) master is not
+ * carried over.  On a network with multiple PTP-speaking Apple devices
+ * (HomePods, AppleTVs, other receivers), this is what prevents us from
+ * locking to the wrong master and computing nonsense early/late deltas.
+ */
+void ptp_clock_set_master_clock_id(uint64_t clock_id);
+
+/**
+ * Read the current expected master clock_id (0 if none / filter cleared).
+ */
+uint64_t ptp_clock_get_master_clock_id(void);

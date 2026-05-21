@@ -558,17 +558,26 @@ static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event,
   esp_avrc_ct_cb_param_t local = *param;
 
   // Deep-copy attr_text for metadata responses — the BT stack frees the
-  // original buffer after this callback returns, so the shallow copy done
-  // by bt_app_work_dispatch would leave a dangling pointer.
-  if (event == ESP_AVRC_CT_METADATA_RSP_EVT && param->meta_rsp.attr_text &&
-      param->meta_rsp.attr_length > 0) {
-    uint8_t *copy = malloc((size_t)param->meta_rsp.attr_length + 1);
-    if (copy) {
-      memcpy(copy, param->meta_rsp.attr_text,
-             (size_t)param->meta_rsp.attr_length);
-      copy[param->meta_rsp.attr_length] = '\0';
-      local.meta_rsp.attr_text = copy;
+  // original buffer when this callback returns, so the shallow copy made
+  // by bt_app_work_dispatch would leave a dangling pointer that the
+  // handler later free()s, corrupting the heap.
+  //
+  // Always overwrite local.meta_rsp.attr_text so the stack-owned pointer
+  // never escapes this function: on success it points at our malloc'd
+  // copy, on failure (zero-length, malloc returns NULL, or any non-
+  // metadata event that happens to alias the union) it is NULL.  The
+  // handler does free(text) unconditionally, and free(NULL) is a no-op.
+  if (event == ESP_AVRC_CT_METADATA_RSP_EVT) {
+    uint8_t *copy = NULL;
+    if (param->meta_rsp.attr_text && param->meta_rsp.attr_length > 0) {
+      copy = malloc((size_t)param->meta_rsp.attr_length + 1);
+      if (copy) {
+        memcpy(copy, param->meta_rsp.attr_text,
+               (size_t)param->meta_rsp.attr_length);
+        copy[param->meta_rsp.attr_length] = '\0';
+      }
     }
+    local.meta_rsp.attr_text = copy;
   }
 
   bt_app_work_dispatch(bt_avrc_ct_evt_handler, (uint16_t)event, &local,

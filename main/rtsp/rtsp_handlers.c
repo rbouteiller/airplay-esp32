@@ -515,8 +515,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_int(&p, "audioType", 0x64);
     plist_dict_int(&p, "inputLatencyMicros", 0);
     plist_dict_int(&p, "outputLatencyMicros",
-                   audio_receiver_get_output_latency_us() +
-                       audio_receiver_get_hardware_latency_us());
+                   audio_receiver_get_advertised_latency_us());
     plist_dict_end(&p);
     plist_array_end(&p);
 
@@ -1622,6 +1621,11 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
            stream_count);
   audio_receiver_stop();
   audio_output_flush();
+  // Drop PTP lock + offset history.  AirPlay group rejoins reuse the same
+  // PTP master clock_id; without this, ptp_clock_set_master_clock_id() on
+  // the next session early-returns and reuses stale samples accumulated
+  // (or missed) while we were detached from the group.
+  ptp_clock_clear();
   conn->stream_active = false;
   conn->stream_paused =
       has_streams; // Keep session ready if only streams torn down

@@ -48,6 +48,11 @@ typedef struct {
   // mutex (write flush_until_ts first, arm bool second; read bool first).
   bool deferred_flush_pending;
   uint32_t flush_until_ts;
+  // Closed-loop fill-depth controller state.  Counts how many audio_timing_read
+  // calls have played a real frame since the last drop/pad correction.  Used
+  // to rate-limit corrections so the effective sample-rate skew stays below
+  // the threshold of audibility.
+  uint32_t frames_since_correction;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);
@@ -59,6 +64,11 @@ void audio_timing_set_output_latency(audio_timing_t *timing,
                                      uint32_t latency_us);
 uint32_t audio_timing_get_output_latency(const audio_timing_t *timing);
 uint32_t audio_timing_get_hardware_latency(void);
+// Total advertised latency (output + HW + fixed pipeline processing).
+// Use this for outputLatencyMicros, NOT (output + HW) alone — otherwise the
+// phone schedules sends 15 ms tight and the fill controller will pad
+// silence to compensate for the missing decode/decrypt/net delay.
+uint32_t audio_timing_get_advertised_latency(const audio_timing_t *timing);
 void audio_timing_set_anchor(audio_timing_t *timing,
                              const audio_format_t *format, uint64_t clock_id,
                              uint64_t network_time_ns, uint32_t rtp_time);
