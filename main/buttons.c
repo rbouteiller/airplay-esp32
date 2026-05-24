@@ -17,6 +17,7 @@
 #include "buttons.h"
 #include "playback_control.h"
 #include "spiram_task.h"
+#include "settings.h"
 
 #include "board_common.h"
 #include "driver/gpio.h"
@@ -190,18 +191,21 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
 }
 
 esp_err_t buttons_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+
   // Ensure the shared GPIO ISR service is installed (idempotent)
   esp_err_t err = board_gpio_isr_init();
   if (err != ESP_OK) {
     return err;
   }
 
-  // Configure each button from Kconfig (adds ISR handlers)
-  configure_button(BTN_PLAY_PAUSE, CONFIG_BTN_PLAY_PAUSE_GPIO, false);
-  configure_button(BTN_VOLUME_UP, CONFIG_BTN_VOLUME_UP_GPIO, true);
-  configure_button(BTN_VOLUME_DOWN, CONFIG_BTN_VOLUME_DOWN_GPIO, true);
-  configure_button(BTN_NEXT, CONFIG_BTN_NEXT_GPIO, false);
-  configure_button(BTN_PREV, CONFIG_BTN_PREV_GPIO, false);
+  // Configure each button from runtime GPIO overrides (adds ISR handlers)
+  configure_button(BTN_PLAY_PAUSE, gpio_cfg.btn_play_pause, false);
+  configure_button(BTN_VOLUME_UP, gpio_cfg.btn_volume_up, true);
+  configure_button(BTN_VOLUME_DOWN, gpio_cfg.btn_volume_down, true);
+  configure_button(BTN_NEXT, gpio_cfg.btn_next, false);
+  configure_button(BTN_PREV, gpio_cfg.btn_prev, false);
 
   bool any_configured = false;
   for (int i = 0; i < BTN_COUNT; i++) {

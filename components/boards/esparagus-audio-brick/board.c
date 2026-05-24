@@ -41,6 +41,10 @@ static bool s_board_initialized = false;
 static TaskHandle_t gpio_task_handle = NULL;
 static volatile bool speaker_fault_active = false;
 static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
+static settings_gpio_config_t s_gpio_cfg;
+static int s_dac_i2c_sda = -1;
+static int s_dac_i2c_scl = -1;
+static int s_spkfault_gpio = -1;
 
 #if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
 static bool s_spi_bus_initialized = false;
@@ -85,7 +89,7 @@ static void IRAM_ATTR spkfault_isr_handler(void *arg) {
   (void)arg;
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
+  int level = gpio_get_level(s_spkfault_gpio);
   uint32_t notify_bit =
       (level == 0) ? SPKFAULT_NOTIFY_FAULT : SPKFAULT_NOTIFY_CLEAR;
 
@@ -133,14 +137,24 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
+  settings_get_gpio_config(&s_gpio_cfg);
+  s_dac_i2c_sda = s_gpio_cfg.dac_i2c_sda;
+  s_dac_i2c_scl = s_gpio_cfg.dac_i2c_scl;
+  s_spkfault_gpio = s_gpio_cfg.spkfault;
+
+  if (s_dac_i2c_sda < 0 || s_dac_i2c_scl < 0) {
+    ESP_LOGE(TAG, "DAC I2C pins are not configured");
+    return ESP_ERR_INVALID_ARG;
+  }
+
   // Register and initialize DAC
   dac_register(&dac_tas58xx_ops);
 
   // Initialize I2C bus (board owns the bus lifetime)
   i2c_master_bus_config_t i2c_cfg = {
       .i2c_port = BOARD_I2C_PORT,
-      .sda_io_num = BOARD_I2C_SDA_GPIO,
-      .scl_io_num = BOARD_I2C_SCL_GPIO,
+      .sda_io_num = s_dac_i2c_sda,
+      .scl_io_num = s_dac_i2c_scl,
       .clk_source = I2C_CLK_SRC_DEFAULT,
       .glitch_ignore_cnt = 7,
       .flags.enable_internal_pullup = true,
@@ -151,7 +165,7 @@ esp_err_t iot_board_init(void) {
     return err;
   }
   ESP_LOGI(TAG, "I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
-           BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
+           s_dac_i2c_sda, s_dac_i2c_scl);
 
 #if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
   // Initialize SPI bus (shared between W5500 and display)
@@ -209,9 +223,9 @@ esp_err_t iot_board_deinit(void) {
     return ESP_OK;
   }
 
-#if BOARD_SPKFAULT_GPIO >= 0
-  gpio_isr_handler_remove(BOARD_SPKFAULT_GPIO);
-#endif
+  if (s_spkfault_gpio >= 0) {
+    gpio_isr_handler_remove(s_spkfault_gpio);
+  }
   if (gpio_task_handle != NULL) {
     vTaskDelete(gpio_task_handle);
     gpio_task_handle = NULL;
@@ -262,7 +276,10 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 }
 
 static esp_err_t init_spkfault_gpio(void) {
-#if BOARD_SPKFAULT_GPIO >= 0
+  if (s_spkfault_gpio < 0) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
   esp_err_t err = board_gpio_isr_init();
   if (err != ESP_OK) {
     return err;
@@ -280,7 +297,7 @@ static esp_err_t init_spkfault_gpio(void) {
   // GPIO 34-39 on ESP32 are input-only with no internal pull-up;
   // an external pull-up is required on the speaker fault pin.
   gpio_config_t spkfault_cfg = {
-      .pin_bit_mask = (1ULL << BOARD_SPKFAULT_GPIO),
+      .pin_bit_mask = (1ULL << s_spkfault_gpio),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -289,22 +306,18 @@ static esp_err_t init_spkfault_gpio(void) {
   err = gpio_config(&spkfault_cfg);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure speaker fault GPIO");
 
-  err = gpio_isr_handler_add(BOARD_SPKFAULT_GPIO, spkfault_isr_handler, NULL);
+  err = gpio_isr_handler_add(s_spkfault_gpio, spkfault_isr_handler, NULL);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to add speaker fault ISR handler");
 
   // Check initial state
-  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
+  int level = gpio_get_level(s_spkfault_gpio);
   if (level == 0) {
     ESP_LOGW(TAG, "Speaker fault already active at startup");
     xTaskNotify(gpio_task_handle, SPKFAULT_NOTIFY_FAULT, eSetBits);
   }
 
-  ESP_LOGI(TAG, "Speaker fault detection enabled on GPIO %d",
-           BOARD_SPKFAULT_GPIO);
+  ESP_LOGI(TAG, "Speaker fault detection enabled on GPIO %d", s_spkfault_gpio);
   return ESP_OK;
-#else
-  return ESP_ERR_NOT_FOUND;
-#endif
 }
 
 /* ------------------------------------------------------------------ */

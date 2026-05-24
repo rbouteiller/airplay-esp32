@@ -3,6 +3,8 @@
 #include "dac.h"
 #include "esp_log.h"
 #include "nvs.h"
+#include "soc/soc_caps.h"
+#include "sdkconfig.h"
 #include <string.h>
 
 static const char *TAG = "settings";
@@ -16,6 +18,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_WIFI_PASSWORD "wifi_pass"
 #define NVS_KEY_DEVICE_NAME   "device_name"
 #define NVS_KEY_EQ_GAINS      "eq_gains"
+#define NVS_KEY_GPIO_CFG      "gpio_cfg"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -32,8 +35,67 @@ static bool g_bt_volume_loaded = false;
 
 static float g_eq_gains[SETTINGS_EQ_BANDS];
 static bool g_eq_loaded = false;
+static settings_gpio_config_t g_gpio_config;
+static bool g_gpio_loaded = false;
+
+void settings_get_default_gpio_config(settings_gpio_config_t *config) {
+  if (!config) {
+    return;
+  }
+
+  *config = (settings_gpio_config_t){
+      .i2s_sck = CONFIG_I2S_SCK_IO,
+      .i2s_bck = CONFIG_I2S_BCK_IO,
+      .i2s_ws = CONFIG_I2S_WS_IO,
+      .i2s_do = CONFIG_I2S_DO_IO,
+      .i2s_gnd = CONFIG_I2S_GND_IO,
+      .i2s_vcc = CONFIG_I2S_VCC_IO,
+      .dac_i2c_sda = CONFIG_DAC_I2C_SDA,
+      .dac_i2c_scl = CONFIG_DAC_I2C_SCL,
+      .jack = CONFIG_JACK_GPIO,
+      .spkfault = CONFIG_SPKFAULT_GPIO,
+      .mute = CONFIG_MUTE_GPIO,
+      .led_status = CONFIG_LED_STATUS_GPIO,
+      .led_error = CONFIG_LED_ERROR_GPIO,
+      .led_rgb = CONFIG_LED_RGB_GPIO,
+      .btn_play_pause = CONFIG_BTN_PLAY_PAUSE_GPIO,
+      .btn_volume_up = CONFIG_BTN_VOLUME_UP_GPIO,
+      .btn_volume_down = CONFIG_BTN_VOLUME_DOWN_GPIO,
+      .btn_next = CONFIG_BTN_NEXT_GPIO,
+      .btn_prev = CONFIG_BTN_PREV_GPIO,
+  };
+}
+
+bool settings_is_valid_gpio(int gpio) {
+  return gpio == -1 || (gpio >= 0 && gpio < SOC_GPIO_PIN_COUNT);
+}
+
+static bool settings_gpio_config_valid(const settings_gpio_config_t *config) {
+  return config && settings_is_valid_gpio(config->i2s_sck) &&
+         settings_is_valid_gpio(config->i2s_bck) &&
+         settings_is_valid_gpio(config->i2s_ws) &&
+         settings_is_valid_gpio(config->i2s_do) &&
+         settings_is_valid_gpio(config->i2s_gnd) &&
+         settings_is_valid_gpio(config->i2s_vcc) &&
+         settings_is_valid_gpio(config->dac_i2c_sda) &&
+         settings_is_valid_gpio(config->dac_i2c_scl) &&
+         settings_is_valid_gpio(config->jack) &&
+         settings_is_valid_gpio(config->spkfault) &&
+         settings_is_valid_gpio(config->mute) &&
+         settings_is_valid_gpio(config->led_status) &&
+         settings_is_valid_gpio(config->led_error) &&
+         settings_is_valid_gpio(config->led_rgb) &&
+         settings_is_valid_gpio(config->btn_play_pause) &&
+         settings_is_valid_gpio(config->btn_volume_up) &&
+         settings_is_valid_gpio(config->btn_volume_down) &&
+         settings_is_valid_gpio(config->btn_next) &&
+         settings_is_valid_gpio(config->btn_prev);
+}
 
 esp_err_t settings_init(void) {
+  settings_get_default_gpio_config(&g_gpio_config);
+  g_gpio_loaded = true;
+
   // Load volume on init
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
@@ -52,6 +114,18 @@ esp_err_t settings_init(void) {
     if (err == ESP_OK && eq_size == sizeof(g_eq_gains)) {
       g_eq_loaded = true;
       ESP_LOGI(TAG, "Loaded EQ gains (%d bands)", SETTINGS_EQ_BANDS);
+    }
+
+    size_t gpio_size = sizeof(g_gpio_config);
+    err = nvs_get_blob(nvs, NVS_KEY_GPIO_CFG, &g_gpio_config, &gpio_size);
+    if (err == ESP_OK && gpio_size == sizeof(g_gpio_config) &&
+        settings_gpio_config_valid(&g_gpio_config)) {
+      ESP_LOGI(TAG, "Loaded GPIO overrides from NVS");
+    } else {
+      settings_get_default_gpio_config(&g_gpio_config);
+      if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "GPIO override blob missing or invalid, using defaults");
+      }
     }
 
     nvs_close(nvs);
@@ -304,6 +378,50 @@ esp_err_t settings_set_device_name(const char *name) {
     ESP_LOGI(TAG, "Saved device name: %s", name);
   } else {
     ESP_LOGE(TAG, "Failed to save device name: %s", esp_err_to_name(err));
+  }
+
+  return err;
+}
+
+esp_err_t settings_get_gpio_config(settings_gpio_config_t *config) {
+  if (!config) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (!g_gpio_loaded) {
+    settings_get_default_gpio_config(&g_gpio_config);
+    g_gpio_loaded = true;
+  }
+
+  *config = g_gpio_config;
+  return ESP_OK;
+}
+
+esp_err_t settings_set_gpio_config(const settings_gpio_config_t *config) {
+  if (!settings_gpio_config_valid(config)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_GPIO_CFG, config, sizeof(*config));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    g_gpio_config = *config;
+    g_gpio_loaded = true;
+    ESP_LOGI(TAG, "Saved GPIO overrides");
+  } else {
+    ESP_LOGE(TAG, "Failed to save GPIO overrides: %s", esp_err_to_name(err));
   }
 
   return err;

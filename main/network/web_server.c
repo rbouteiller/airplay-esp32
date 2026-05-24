@@ -4,8 +4,10 @@
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "cJSON.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -31,6 +33,7 @@ static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
 
 #define SPIFFS_CHUNK_SIZE 1024
+#define JSON_BODY_MAX     2048
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
@@ -53,6 +56,169 @@ static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
   fclose(f);
   httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
+}
+
+static esp_err_t read_request_body(httpd_req_t *req, char *content,
+                                   size_t content_size) {
+  if (req->content_len <= 0 || req->content_len >= (int)content_size) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  int total = 0;
+  while (total < req->content_len) {
+    int ret = httpd_req_recv(req, content + total, req->content_len - total);
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      continue;
+    }
+    if (ret <= 0) {
+      return ESP_FAIL;
+    }
+    total += ret;
+  }
+
+  content[total] = '\0';
+  return ESP_OK;
+}
+
+static void gpio_config_to_json(cJSON *obj,
+                                const settings_gpio_config_t *config) {
+  if (!obj || !config) {
+    return;
+  }
+
+  cJSON_AddNumberToObject(obj, "i2s_sck", config->i2s_sck);
+  cJSON_AddNumberToObject(obj, "i2s_bck", config->i2s_bck);
+  cJSON_AddNumberToObject(obj, "i2s_ws", config->i2s_ws);
+  cJSON_AddNumberToObject(obj, "i2s_do", config->i2s_do);
+  cJSON_AddNumberToObject(obj, "i2s_gnd", config->i2s_gnd);
+  cJSON_AddNumberToObject(obj, "i2s_vcc", config->i2s_vcc);
+  cJSON_AddNumberToObject(obj, "dac_i2c_sda", config->dac_i2c_sda);
+  cJSON_AddNumberToObject(obj, "dac_i2c_scl", config->dac_i2c_scl);
+  cJSON_AddNumberToObject(obj, "jack", config->jack);
+  cJSON_AddNumberToObject(obj, "spkfault", config->spkfault);
+  cJSON_AddNumberToObject(obj, "mute", config->mute);
+  cJSON_AddNumberToObject(obj, "led_status", config->led_status);
+  cJSON_AddNumberToObject(obj, "led_error", config->led_error);
+  cJSON_AddNumberToObject(obj, "led_rgb", config->led_rgb);
+  cJSON_AddNumberToObject(obj, "btn_play_pause", config->btn_play_pause);
+  cJSON_AddNumberToObject(obj, "btn_volume_up", config->btn_volume_up);
+  cJSON_AddNumberToObject(obj, "btn_volume_down", config->btn_volume_down);
+  cJSON_AddNumberToObject(obj, "btn_next", config->btn_next);
+  cJSON_AddNumberToObject(obj, "btn_prev", config->btn_prev);
+}
+
+static bool parse_gpio_json_value(cJSON *item, int *value, const char **error) {
+  if (!item || !value) {
+    if (error) {
+      *error = "Missing GPIO value";
+    }
+    return false;
+  }
+
+  if (cJSON_IsNumber(item)) {
+    int gpio = item->valueint;
+    if (!settings_is_valid_gpio(gpio)) {
+      if (error) {
+        *error = "GPIO out of range";
+      }
+      return false;
+    }
+    *value = gpio;
+    return true;
+  }
+
+  if (!cJSON_IsString(item)) {
+    if (error) {
+      *error = "GPIO must be a string or number";
+    }
+    return false;
+  }
+
+  const char *raw = cJSON_GetStringValue(item);
+  if (!raw) {
+    if (error) {
+      *error = "GPIO value is empty";
+    }
+    return false;
+  }
+
+  char buf[32];
+  size_t raw_len = strlen(raw);
+  if (raw_len >= sizeof(buf)) {
+    if (error) {
+      *error = "GPIO value is too long";
+    }
+    return false;
+  }
+
+  memcpy(buf, raw, raw_len + 1);
+
+  char *start = buf;
+  while (*start && isspace((unsigned char)*start)) {
+    start++;
+  }
+
+  char *end = start + strlen(start);
+  while (end > start && isspace((unsigned char)*(end - 1))) {
+    end--;
+  }
+  *end = '\0';
+
+  if (*start == '\0') {
+    *value = -1;
+    return true;
+  }
+
+  if (strncasecmp(start, "GPIO", 4) == 0) {
+    start += 4;
+  }
+
+  if (*start == '\0') {
+    if (error) {
+      *error = "GPIO number missing";
+    }
+    return false;
+  }
+
+  char *parse_end = NULL;
+  long parsed = strtol(start, &parse_end, 10);
+  while (parse_end && *parse_end &&
+         isspace((unsigned char)*parse_end)) {
+    parse_end++;
+  }
+
+  if (!parse_end || *parse_end != '\0') {
+    if (error) {
+      *error = "GPIO format must be like 1 or GPIO1";
+    }
+    return false;
+  }
+
+  if (!settings_is_valid_gpio((int)parsed)) {
+    if (error) {
+      *error = "GPIO out of range";
+    }
+    return false;
+  }
+
+  *value = (int)parsed;
+  return true;
+}
+
+static bool update_gpio_field(cJSON *json, const char *key, int *target,
+                              const char **error) {
+  cJSON *item = cJSON_GetObjectItemCaseSensitive(json, key);
+  if (!item) {
+    return true;
+  }
+
+  int parsed = -1;
+  if (!parse_gpio_json_value(item, &parsed, error)) {
+    return false;
+  }
+
+  *target = parsed;
+  return true;
 }
 
 // API handlers
@@ -212,13 +378,11 @@ static esp_err_t wifi_scan_handler(httpd_req_t *req) {
 }
 
 static esp_err_t wifi_config_handler(httpd_req_t *req) {
-  char content[512];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    httpd_resp_send_500(req);
+  char content[JSON_BODY_MAX];
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
     return ESP_FAIL;
   }
-  content[ret] = '\0';
 
   cJSON *json = cJSON_Parse(content);
   if (!json) {
@@ -263,13 +427,11 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
 }
 
 static esp_err_t device_name_handler(httpd_req_t *req) {
-  char content[256];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    httpd_resp_send_500(req);
+  char content[JSON_BODY_MAX];
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
     return ESP_FAIL;
   }
-  content[ret] = '\0';
 
   cJSON *json = cJSON_Parse(content);
   if (!json) {
@@ -300,6 +462,111 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   free(json_str);
   cJSON_Delete(json);
   cJSON_Delete(response);
+
+  return ESP_OK;
+}
+
+static esp_err_t gpio_config_get_handler(httpd_req_t *req) {
+  settings_gpio_config_t current;
+  settings_gpio_config_t defaults;
+  settings_get_gpio_config(&current);
+  settings_get_default_gpio_config(&defaults);
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON *config = cJSON_CreateObject();
+  cJSON *default_config = cJSON_CreateObject();
+
+  gpio_config_to_json(config, &current);
+  gpio_config_to_json(default_config, &defaults);
+  cJSON_AddItemToObject(json, "config", config);
+  cJSON_AddItemToObject(json, "defaults", default_config);
+  cJSON_AddBoolToObject(json, "success", true);
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t gpio_config_post_handler(httpd_req_t *req) {
+  char content[JSON_BODY_MAX];
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  settings_gpio_config_t config;
+  settings_get_gpio_config(&config);
+  const char *parse_error = NULL;
+  bool should_restart = false;
+
+  bool ok = update_gpio_field(json, "i2s_sck", &config.i2s_sck, &parse_error) &&
+            update_gpio_field(json, "i2s_bck", &config.i2s_bck, &parse_error) &&
+            update_gpio_field(json, "i2s_ws", &config.i2s_ws, &parse_error) &&
+            update_gpio_field(json, "i2s_do", &config.i2s_do, &parse_error) &&
+            update_gpio_field(json, "i2s_gnd", &config.i2s_gnd, &parse_error) &&
+            update_gpio_field(json, "i2s_vcc", &config.i2s_vcc, &parse_error) &&
+            update_gpio_field(json, "dac_i2c_sda", &config.dac_i2c_sda,
+                              &parse_error) &&
+            update_gpio_field(json, "dac_i2c_scl", &config.dac_i2c_scl,
+                              &parse_error) &&
+            update_gpio_field(json, "jack", &config.jack, &parse_error) &&
+            update_gpio_field(json, "spkfault", &config.spkfault,
+                              &parse_error) &&
+            update_gpio_field(json, "mute", &config.mute, &parse_error) &&
+            update_gpio_field(json, "led_status", &config.led_status,
+                              &parse_error) &&
+            update_gpio_field(json, "led_error", &config.led_error,
+                              &parse_error) &&
+            update_gpio_field(json, "led_rgb", &config.led_rgb, &parse_error) &&
+            update_gpio_field(json, "btn_play_pause",
+                              &config.btn_play_pause, &parse_error) &&
+            update_gpio_field(json, "btn_volume_up",
+                              &config.btn_volume_up, &parse_error) &&
+            update_gpio_field(json, "btn_volume_down",
+                              &config.btn_volume_down, &parse_error) &&
+            update_gpio_field(json, "btn_next", &config.btn_next,
+                              &parse_error) &&
+            update_gpio_field(json, "btn_prev", &config.btn_prev,
+                              &parse_error);
+
+  cJSON *response = cJSON_CreateObject();
+  if (!ok) {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error",
+                            parse_error ? parse_error : "Invalid GPIO config");
+  } else {
+    esp_err_t err = settings_set_gpio_config(&config);
+    if (err == ESP_OK) {
+      cJSON_AddBoolToObject(response, "success", true);
+      cJSON_AddStringToObject(response, "message",
+                              "GPIO config saved. Restarting...");
+      should_restart = true;
+    } else {
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+    }
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  cJSON_Delete(json);
+
+  if (should_restart) {
+    vTaskDelay(pdMS_TO_TICKS(700));
+    esp_restart();
+  }
 
   return ESP_OK;
 }
@@ -624,13 +891,11 @@ static esp_err_t eq_get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t eq_post_handler(httpd_req_t *req) {
-  char content[512];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    httpd_resp_send_500(req);
+  char content[JSON_BODY_MAX];
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
     return ESP_FAIL;
   }
-  content[ret] = '\0';
 
   cJSON *json = cJSON_Parse(content);
   if (!json) {
@@ -695,7 +960,7 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
-  config.max_uri_handlers = 24;   // Room for captive portal + EQ + speedtest
+  config.max_uri_handlers = 28;   // Room for captive portal + EQ + GPIO APIs
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -752,6 +1017,16 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
   httpd_register_uri_handler(s_server, &device_name_uri);
+
+  httpd_uri_t gpio_config_get_uri = {.uri = "/api/gpio/config",
+                                     .method = HTTP_GET,
+                                     .handler = gpio_config_get_handler};
+  httpd_register_uri_handler(s_server, &gpio_config_get_uri);
+
+  httpd_uri_t gpio_config_post_uri = {.uri = "/api/gpio/config",
+                                      .method = HTTP_POST,
+                                      .handler = gpio_config_post_handler};
+  httpd_register_uri_handler(s_server, &gpio_config_post_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,

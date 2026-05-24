@@ -10,6 +10,28 @@
 // Default device name (used if none configured)
 #define SETTINGS_DEFAULT_DEVICE_NAME "ESP32 AirPlay"
 
+typedef struct {
+  int i2s_sck;
+  int i2s_bck;
+  int i2s_ws;
+  int i2s_do;
+  int i2s_gnd;
+  int i2s_vcc;
+  int dac_i2c_sda;
+  int dac_i2c_scl;
+  int jack;
+  int spkfault;
+  int mute;
+  int led_status;
+  int led_error;
+  int led_rgb;
+  int btn_play_pause;
+  int btn_volume_up;
+  int btn_volume_down;
+  int btn_next;
+  int btn_prev;
+} settings_gpio_config_t;
+
 /**
  * Initialize settings module (call once at startup)
  */
@@ -98,6 +120,27 @@ esp_err_t settings_get_device_name(char *name, size_t len);
  * @param name Device name
  */
 esp_err_t settings_set_device_name(const char *name);
+
+/**
+ * Fill a GPIO config struct with compile-time defaults.
+ */
+void settings_get_default_gpio_config(settings_gpio_config_t *config);
+
+/**
+ * Get the active GPIO config (saved overrides or compile-time defaults).
+ */
+esp_err_t settings_get_gpio_config(settings_gpio_config_t *config);
+
+/**
+ * Persist GPIO overrides.
+ */
+esp_err_t settings_set_gpio_config(const settings_gpio_config_t *config);
+
+/**
+ * Validate a GPIO number for the current target.
+ * -1 is accepted and means "disabled".
+ */
+bool settings_is_valid_gpio(int gpio);
 
 // ---- EQ settings ----
 

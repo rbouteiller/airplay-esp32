@@ -1,148 +1,1053 @@
-<!DOCTYPE html><html><head>
-<meta charset='UTF-8'>
-<meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>AirPlay Receiver</title>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AirPlay 接收器控制门户</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
-.wrap{max-width:480px;margin:0 auto}
-.header{text-align:center;padding:30px 0}
-.header h1{font-size:28px;font-weight:600;margin-bottom:8px}
-.header p{color:#888;font-size:14px}
-.status-bar{background:#0f3460;border-radius:12px;padding:16px;margin-bottom:20px;text-align:center}
-.status-bar.ok{background:#1b4332}
-.status-bar.err{background:#5c1a1a}
-.card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
-.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
-.form-group{margin-bottom:14px}
-.form-group label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
-input[type=text],input[type=password]{width:100%;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
-input:focus{outline:none;border-color:#e94560}
-.btn{display:inline-block;padding:12px 20px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s}
-.btn-primary{background:#e94560;color:#fff}
-.btn-primary:hover{background:#d63850}
-.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
-.btn-secondary:hover{background:rgba(255,255,255,0.2)}
-.btn-danger{background:#dc3545;color:#fff}
-.btn-danger:hover{background:#c82333}
-.btn-block{width:100%;margin-top:10px}
-.btn:disabled{opacity:0.5;cursor:not-allowed}
-.wifi-list{max-height:180px;overflow-y:auto;margin:12px 0;border-radius:8px}
-.wifi-item{padding:12px;background:rgba(0,0,0,0.2);margin-bottom:4px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
-.wifi-item:hover{background:rgba(233,69,96,0.2)}
-.wifi-item.sel{background:rgba(233,69,96,0.3);border:1px solid #e94560}
-.wifi-item .ssid{font-weight:500}
-.wifi-item .rssi{font-size:12px;color:#888}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.info-item{background:rgba(0,0,0,0.2);padding:12px;border-radius:8px}
-.info-item label{font-size:11px;color:#888;display:block;margin-bottom:4px}
-.info-item span{font-size:14px;font-weight:500}
-.msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px}
-.msg.ok{background:rgba(27,67,50,0.5)}
-.msg.err{background:rgba(92,26,26,0.5)}
-.msg.info{background:rgba(15,52,96,0.5)}
-.file-row{display:flex;gap:10px;align-items:center}
-.file-name{flex:1;font-size:13px;color:#888}
-.actions{display:flex;gap:10px;margin-top:10px}
-</style></head><body>
-<div class='wrap'>
-<div class='header'><h1>AirPlay Receiver</h1><p>ESP32 Configuration Panel</p></div>
-<div id='status-bar' class='status-bar'>Loading...</div>
-<div class='card'><h2>WiFi Network</h2>
-<button class='btn btn-secondary' onclick='scanWiFi()'>Scan Networks</button>
-<div id='wifi-list' class='wifi-list'></div>
-<div class='form-group'><label>Network Name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select network'></div>
-<div class='form-group'><label>Password</label><input type='password' id='wifi-pass' placeholder='Enter password'></div>
-<button class='btn btn-primary btn-block' onclick='saveWiFi()'>Connect to WiFi</button>
-<div id='wifi-msg'></div></div>
-<div class='card'><h2>Device Settings</h2>
-<div class='form-group'><label>AirPlay Device Name</label><input type='text' id='dev-name' placeholder='My Speaker'></div>
-<button class='btn btn-primary' onclick='saveName()'>Save Name</button>
-<div id='name-msg'></div></div>
-<div class='card'><h2>Firmware Update</h2>
-<div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
-<button class='btn btn-secondary' onclick='document.getElementById("fw-file").click()'>Choose File</button>
-<span class='file-name' id='fw-name'>No file selected</span></div>
-<button class='btn btn-primary btn-block' id='ota-btn' onclick='startOTA()' disabled>Upload Firmware</button>
-<div id='ota-msg'></div></div>
-<div class='card'><h2>System</h2>
-<div class='info-grid'>
-<div class='info-item'><label>IP Address</label><span id='info-ip'>-</span></div>
-<div class='info-item'><label>MAC Address</label><span id='info-mac'>-</span></div>
-<div class='info-item'><label>Device Name</label><span id='info-name'>-</span></div>
-<div class='info-item'><label>Free Memory</label><span id='info-heap'>-</span></div>
-<div class='info-item'><label>Firmware</label><span id='info-fw'>-</span></div>
-<div class='info-item'><label>WiFi SSID</label><span id='info-ssid'>-</span></div>
-<div class='info-item'><label>WiFi RSSI</label><span id='info-rssi'>-</span></div>
-<div class='info-item'><label>WiFi Channel</label><span id='info-chan'>-</span></div>
-<div class='info-item'><label>WiFi PHY</label><span id='info-phy'>-</span></div>
-<div class='info-item' style='grid-column:1/-1'><label>WiFi BSSID</label><span id='info-bssid'>-</span></div>
+:root{
+  color-scheme:dark;
+  --bg:#040816;
+  --bg-soft:#091126;
+  --panel:rgba(10,19,43,0.72);
+  --panel-strong:rgba(12,24,54,0.88);
+  --line:rgba(120,188,255,0.18);
+  --line-strong:rgba(131,231,255,0.42);
+  --text:#eff5ff;
+  --muted:#97a8d4;
+  --accent:#7af6ff;
+  --accent-2:#ff5bbd;
+  --accent-3:#97ffb5;
+  --danger:#ff6d87;
+  --warn:#ffca74;
+  --shadow:0 24px 80px rgba(0,0,0,0.38);
+  --card-glow:inset 0 1px 0 rgba(255,255,255,0.05),0 0 0 1px rgba(122,246,255,0.08);
+  --input-bg:rgba(3,10,28,0.7);
+  --ok-bg:rgba(24,104,75,0.34);
+  --err-bg:rgba(135,31,53,0.28);
+  --info-bg:rgba(32,72,145,0.3);
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    color-scheme:light;
+    --bg:#eef4ff;
+    --bg-soft:#dfeafe;
+    --panel:rgba(255,255,255,0.86);
+    --panel-strong:rgba(255,255,255,0.94);
+    --line:rgba(32,92,194,0.12);
+    --line-strong:rgba(0,155,255,0.34);
+    --text:#132041;
+    --muted:#52668f;
+    --accent:#007ce8;
+    --accent-2:#ff2e96;
+    --accent-3:#0ba66f;
+    --danger:#d33b59;
+    --warn:#d4831d;
+    --shadow:0 30px 80px rgba(24,56,110,0.16);
+    --card-glow:inset 0 1px 0 rgba(255,255,255,0.7),0 0 0 1px rgba(0,124,232,0.08);
+    --input-bg:rgba(239,245,255,0.92);
+    --ok-bg:rgba(11,166,111,0.14);
+    --err-bg:rgba(211,59,89,0.12);
+    --info-bg:rgba(0,124,232,0.1);
+  }
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC","SF Pro Display","Segoe UI","Helvetica Neue",sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(circle at 18% 18%, rgba(122,246,255,0.16), transparent 28%),
+    radial-gradient(circle at 82% 12%, rgba(255,91,189,0.18), transparent 24%),
+    radial-gradient(circle at 50% 100%, rgba(151,255,181,0.10), transparent 26%),
+    linear-gradient(155deg, var(--bg) 0%, var(--bg-soft) 44%, var(--bg) 100%);
+  overflow-x:hidden;
+}
+body::before,
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+}
+body::before{
+  background:
+    linear-gradient(rgba(122,246,255,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(122,246,255,0.06) 1px, transparent 1px);
+  background-size:34px 34px;
+  mask-image:linear-gradient(to bottom, rgba(0,0,0,0.84), rgba(0,0,0,0.16));
+}
+body::after{
+  background:
+    radial-gradient(circle at center, rgba(122,246,255,0.16), transparent 55%);
+  opacity:.45;
+  animation:pulse 8s ease-in-out infinite;
+}
+
+@keyframes pulse{
+  0%,100%{transform:scale(1);opacity:.34}
+  50%{transform:scale(1.08);opacity:.52}
+}
+
+.shell{
+  position:relative;
+  max-width:1260px;
+  margin:0 auto;
+  padding:28px 16px 48px;
+}
+
+.hero{
+  position:relative;
+  padding:28px;
+  margin-bottom:20px;
+  border:1px solid var(--line);
+  border-radius:28px;
+  background:linear-gradient(140deg, rgba(10,20,48,0.82), rgba(8,13,32,0.56));
+  box-shadow:var(--shadow),var(--card-glow);
+  overflow:hidden;
+}
+@media (prefers-color-scheme: light){
+  .hero{
+    background:linear-gradient(140deg, rgba(255,255,255,0.92), rgba(232,241,255,0.82));
+  }
+}
+
+.hero::before{
+  content:"";
+  position:absolute;
+  inset:auto -10% -25% auto;
+  width:320px;
+  height:320px;
+  border-radius:50%;
+  background:radial-gradient(circle, rgba(122,246,255,0.3), transparent 66%);
+  filter:blur(10px);
+}
+
+.hero-grid{
+  position:relative;
+  display:grid;
+  grid-template-columns:minmax(0,1.3fr) minmax(280px,.9fr);
+  gap:18px;
+  align-items:stretch;
+}
+
+.eyeline{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 12px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:rgba(122,246,255,0.08);
+  color:var(--accent);
+  font-size:12px;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+
+.hero h1{
+  margin:18px 0 10px;
+  font-size:clamp(2rem,4vw,3.4rem);
+  line-height:.95;
+  letter-spacing:-.04em;
+}
+
+.hero p{
+  margin:0;
+  max-width:760px;
+  color:var(--muted);
+  font-size:15px;
+  line-height:1.75;
+}
+
+.hero-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin-top:20px;
+}
+
+.meta-chip{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 14px;
+  min-width:170px;
+  border-radius:16px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.03);
+  backdrop-filter:blur(14px);
+}
+
+.meta-chip strong,
+.status-panel strong{
+  display:block;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+
+.meta-chip span,
+.status-panel span{
+  display:block;
+  margin-top:4px;
+  font-size:15px;
+}
+
+.status-panel{
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  padding:18px;
+  border-radius:24px;
+  border:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(4,10,26,0.82), rgba(14,26,55,0.54));
+  box-shadow:var(--card-glow);
+}
+@media (prefers-color-scheme: light){
+  .status-panel{
+    background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(235,244,255,0.86));
+  }
+}
+
+.status-led{
+  width:12px;
+  height:12px;
+  border-radius:50%;
+  background:var(--warn);
+  box-shadow:0 0 0 8px rgba(255,202,116,0.12),0 0 18px rgba(255,202,116,0.55);
+}
+
+.status-panel.ok .status-led{
+  background:var(--accent-3);
+  box-shadow:0 0 0 8px rgba(151,255,181,0.12),0 0 18px rgba(151,255,181,0.6);
+}
+
+.status-panel.err .status-led{
+  background:var(--danger);
+  box-shadow:0 0 0 8px rgba(255,109,135,0.12),0 0 18px rgba(255,109,135,0.58);
+}
+
+.status-top{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  align-items:flex-start;
+}
+
+.status-top h2{
+  margin:10px 0 0;
+  font-size:1.3rem;
+}
+
+.status-note{
+  margin-top:18px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.65;
+}
+
+.layout{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:18px;
+}
+
+.card{
+  position:relative;
+  padding:22px;
+  border-radius:24px;
+  border:1px solid var(--line);
+  background:var(--panel);
+  box-shadow:var(--shadow),var(--card-glow);
+  backdrop-filter:blur(18px);
+  overflow:hidden;
+}
+
+.card::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  border-radius:inherit;
+  border:1px solid rgba(255,255,255,0.03);
+  pointer-events:none;
+}
+
+.card-wide{grid-column:1/-1}
+
+.card-head{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:flex-start;
+  margin-bottom:18px;
+}
+
+.card-head h2{
+  margin:0;
+  font-size:1.05rem;
+  letter-spacing:.02em;
+}
+
+.card-head p,
+.card-note{
+  margin:8px 0 0;
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.7;
+}
+
+.accent{
+  color:var(--accent);
+  font-size:11px;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+
+.stack{display:grid;gap:12px}
+.field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.gpio-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}
+.group-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+
+.group{
+  padding:16px;
+  border-radius:18px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.03);
+}
+
+.group h3{
+  margin:0 0 6px;
+  font-size:13px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--accent);
+}
+
+.group p{
+  margin:0 0 12px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+
+.form-group{display:grid;gap:7px}
+.form-group label{
+  font-size:12px;
+  color:var(--muted);
+  letter-spacing:.08em;
+  text-transform:none;
+}
+
+.hint{
+  font-size:11px;
+  color:var(--muted);
+  opacity:.88;
+}
+
+input[type=text],
+input[type=password]{
+  width:100%;
+  padding:13px 14px;
+  border-radius:14px;
+  border:1px solid rgba(122,246,255,0.16);
+  background:var(--input-bg);
+  color:var(--text);
+  font-size:14px;
+  transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease;
+}
+
+input::placeholder{color:rgba(151,168,212,0.72)}
+
+input:focus{
+  outline:none;
+  border-color:var(--line-strong);
+  box-shadow:0 0 0 4px rgba(122,246,255,0.12),0 0 20px rgba(122,246,255,0.14);
+  transform:translateY(-1px);
+}
+
+.btn,
+a.btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:46px;
+  padding:0 18px;
+  border:none;
+  border-radius:14px;
+  text-decoration:none;
+  font-size:14px;
+  font-weight:600;
+  cursor:pointer;
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease;
+}
+
+.btn:hover,
+a.btn:hover{transform:translateY(-1px)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+.btn-primary{
+  color:#04101f;
+  background:linear-gradient(135deg, var(--accent), #9dd0ff);
+  box-shadow:0 14px 30px rgba(122,246,255,0.2);
+}
+
+.btn-secondary{
+  color:var(--text);
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.04);
+}
+
+.btn-danger{
+  color:#fff;
+  background:linear-gradient(135deg, var(--danger), #ff8ca1);
+  box-shadow:0 14px 30px rgba(255,109,135,0.18);
+}
+
+.btn-row{display:flex;flex-wrap:wrap;gap:10px}
+.btn-block{width:100%}
+
+.msg{
+  margin-top:12px;
+  padding:12px 14px;
+  border-radius:14px;
+  font-size:13px;
+  line-height:1.55;
+  border:1px solid transparent;
+}
+.msg.ok{background:var(--ok-bg);border-color:rgba(151,255,181,0.18)}
+.msg.err{background:var(--err-bg);border-color:rgba(255,109,135,0.2)}
+.msg.info{background:var(--info-bg);border-color:rgba(122,246,255,0.18)}
+
+.wifi-list{
+  display:grid;
+  gap:8px;
+  max-height:240px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+
+.wifi-item{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid transparent;
+  background:rgba(255,255,255,0.04);
+  cursor:pointer;
+  transition:transform .18s ease,background .18s ease,border-color .18s ease;
+}
+
+.wifi-item:hover{
+  transform:translateX(3px);
+  border-color:rgba(122,246,255,0.2);
+  background:rgba(122,246,255,0.08);
+}
+
+.wifi-item.sel{
+  border-color:rgba(255,91,189,0.34);
+  background:rgba(255,91,189,0.12);
+  box-shadow:0 0 0 1px rgba(255,91,189,0.16);
+}
+
+.wifi-meta{display:grid;gap:4px}
+.wifi-item .ssid{font-weight:600}
+.wifi-item .details{font-size:12px;color:var(--muted)}
+.wifi-item .rssi{font-size:13px;color:var(--accent)}
+
+.info-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:12px;
+}
+
+.info-item{
+  padding:14px;
+  border-radius:16px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.03);
+}
+
+.info-item label{
+  display:block;
+  margin-bottom:6px;
+  font-size:11px;
+  color:var(--muted);
+  letter-spacing:.12em;
+  text-transform:none;
+}
+
+.info-item span{
+  display:block;
+  font-size:14px;
+  word-break:break-word;
+}
+
+.file-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+}
+
+.file-name{
+  flex:1;
+  min-width:180px;
+  color:var(--muted);
+  font-size:13px;
+}
+
+.utility-links{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:12px;
+}
+
+.utility-tile{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:16px;
+  border-radius:18px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.03);
+}
+
+.utility-tile strong{
+  font-size:14px;
+}
+
+.utility-tile span{
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.65;
+}
+
+.footnote{
+  margin-top:18px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.7;
+}
+
+@media (max-width:880px){
+  .hero-grid{grid-template-columns:1fr}
+}
+
+@media (max-width:640px){
+  .shell{padding:16px 12px 32px}
+  .hero,.card{padding:18px}
+  .hero h1{font-size:2rem}
+  .btn,.btn-block,a.btn{width:100%}
+  .btn-row{display:grid}
+  .meta-chip{min-width:unset}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <section class="hero">
+    <div class="hero-grid">
+      <div>
+        <div class="eyeline">信号矩阵 / AP 配网门户</div>
+        <h1>AirPlay 接收器<br>控制中枢</h1>
+        <p>
+          在一个自适应控制界面中完成 Wi‑Fi 配网、设备标识、固件升级和运行时 GPIO 路由配置。
+          GPIO 输入支持 <strong>`1`</strong> 或 <strong>`GPIO1`</strong>，可选引脚可用
+          <strong>`-1`</strong> 禁用。
+        </p>
+        <div class="hero-meta">
+          <div class="meta-chip">
+            <div>
+              <strong>访问地址</strong>
+              <span>192.168.4.1 / 局域网 IP</span>
+            </div>
+          </div>
+          <div class="meta-chip">
+            <div>
+              <strong>GPIO 格式</strong>
+              <span>`GPIO12`、`12`、`-1`</span>
+            </div>
+          </div>
+          <div class="meta-chip">
+            <div>
+              <strong>生效方式</strong>
+              <span>保存后重启</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="status-panel" class="status-panel">
+        <div class="status-top">
+          <div>
+            <div class="status-led"></div>
+            <h2 id="status-title">连接状态未知</h2>
+          </div>
+          <div style="text-align:right">
+            <strong>实时链路</strong>
+            <span id="status-detail">正在加载遥测信息...</span>
+          </div>
+        </div>
+        <div class="status-note">
+          在接入现有网络之前，配网门户始终可通过热点地址访问。连接路由器后，
+          请使用设备的局域网 IP 重新打开此控制面板。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="layout">
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <div class="accent">无线接入</div>
+          <h2>Wi‑Fi 配网</h2>
+          <p>扫描附近网络或手动输入 SSID，然后写入 NVS 并重启。</p>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-bottom:14px">
+        <button class="btn btn-secondary" onclick="scanWiFi()">扫描网络</button>
+      </div>
+      <div id="wifi-list" class="wifi-list"></div>
+      <div class="stack" style="margin-top:14px">
+        <div class="form-group">
+          <label for="wifi-ssid">网络名称 / SSID</label>
+          <input type="text" id="wifi-ssid" placeholder="输入或选择网络">
+        </div>
+        <div class="form-group">
+          <label for="wifi-pass">密码</label>
+          <input type="password" id="wifi-pass" placeholder="输入密码">
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-primary btn-block" onclick="saveWiFi()">连接 Wi‑Fi</button>
+      </div>
+      <div id="wifi-msg"></div>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <div class="accent">设备标识</div>
+          <h2>设备设置</h2>
+          <p>设置 AirPlay 广播名称，用于网络发现与蓝牙配对。</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="form-group">
+          <label for="dev-name">AirPlay 设备名称</label>
+          <input type="text" id="dev-name" placeholder="我的音箱">
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-primary" onclick="saveName()">保存设备名称</button>
+      </div>
+      <div id="name-msg"></div>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <div class="accent">固件更新</div>
+          <h2>OTA 升级</h2>
+          <p>可直接在浏览器上传固件镜像，刷写完成后设备会自动重启。</p>
+        </div>
+      </div>
+      <div class="file-row">
+        <input type="file" id="fw-file" accept=".bin" style="display:none">
+        <button class="btn btn-secondary" onclick="document.getElementById('fw-file').click()">选择固件</button>
+        <span class="file-name" id="fw-name">未选择文件</span>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-primary btn-block" id="ota-btn" onclick="startOTA()" disabled>上传并刷写</button>
+      </div>
+      <div id="ota-msg"></div>
+    </article>
+
+    <article class="card card-wide">
+      <div class="card-head">
+        <div>
+          <div class="accent">硬件矩阵</div>
+          <h2>GPIO 配置</h2>
+          <p>运行时 GPIO 覆盖值会存入 NVS，并在重启后生效。请输入类似 <strong>`1`</strong> 或 <strong>`GPIO1`</strong> 的值。</p>
+        </div>
+      </div>
+      <div class="group-grid">
+        <section class="group">
+          <h3>音频总线</h3>
+          <p>主 I2S 输出和可选 GPIO 供电引脚，适用于简易 DAC 小板。</p>
+          <div class="gpio-grid">
+            <div class="form-group"><label for="i2s_sck">I2S MCLK</label><input type="text" id="i2s_sck" placeholder="GPIO8"><div class="hint" data-default-for="i2s_sck"></div></div>
+            <div class="form-group"><label for="i2s_bck">I2S BCK</label><input type="text" id="i2s_bck" placeholder="GPIO26"><div class="hint" data-default-for="i2s_bck"></div></div>
+            <div class="form-group"><label for="i2s_ws">I2S WS</label><input type="text" id="i2s_ws" placeholder="GPIO25"><div class="hint" data-default-for="i2s_ws"></div></div>
+            <div class="form-group"><label for="i2s_do">I2S DOUT</label><input type="text" id="i2s_do" placeholder="GPIO22"><div class="hint" data-default-for="i2s_do"></div></div>
+            <div class="form-group"><label for="i2s_gnd">I2S GND</label><input type="text" id="i2s_gnd" placeholder="-1"><div class="hint" data-default-for="i2s_gnd"></div></div>
+            <div class="form-group"><label for="i2s_vcc">I2S VCC</label><input type="text" id="i2s_vcc" placeholder="-1"><div class="hint" data-default-for="i2s_vcc"></div></div>
+          </div>
+        </section>
+
+        <section class="group">
+          <h3>DAC 与功放控制</h3>
+          <p>适用于带外部 DAC 控制、静音线、耳机插孔检测或故障监测的板型。</p>
+          <div class="gpio-grid">
+            <div class="form-group"><label for="dac_i2c_sda">DAC I2C SDA</label><input type="text" id="dac_i2c_sda" placeholder="GPIO21"><div class="hint" data-default-for="dac_i2c_sda"></div></div>
+            <div class="form-group"><label for="dac_i2c_scl">DAC I2C SCL</label><input type="text" id="dac_i2c_scl" placeholder="GPIO22"><div class="hint" data-default-for="dac_i2c_scl"></div></div>
+            <div class="form-group"><label for="mute">静音 GPIO</label><input type="text" id="mute" placeholder="GPIO14"><div class="hint" data-default-for="mute"></div></div>
+            <div class="form-group"><label for="jack">插孔检测</label><input type="text" id="jack" placeholder="-1"><div class="hint" data-default-for="jack"></div></div>
+            <div class="form-group"><label for="spkfault">功放故障</label><input type="text" id="spkfault" placeholder="-1"><div class="hint" data-default-for="spkfault"></div></div>
+          </div>
+        </section>
+
+        <section class="group">
+          <h3>LED 与按键 IO</h3>
+          <p>配置面板指示灯和播放按键。未使用的引脚请保持为 <strong>`-1`</strong>。</p>
+          <div class="gpio-grid">
+            <div class="form-group"><label for="led_status">状态灯</label><input type="text" id="led_status" placeholder="-1"><div class="hint" data-default-for="led_status"></div></div>
+            <div class="form-group"><label for="led_error">错误灯</label><input type="text" id="led_error" placeholder="-1"><div class="hint" data-default-for="led_error"></div></div>
+            <div class="form-group"><label for="led_rgb">RGB 灯</label><input type="text" id="led_rgb" placeholder="-1"><div class="hint" data-default-for="led_rgb"></div></div>
+            <div class="form-group"><label for="btn_play_pause">播放 / 暂停</label><input type="text" id="btn_play_pause" placeholder="-1"><div class="hint" data-default-for="btn_play_pause"></div></div>
+            <div class="form-group"><label for="btn_volume_up">音量加</label><input type="text" id="btn_volume_up" placeholder="-1"><div class="hint" data-default-for="btn_volume_up"></div></div>
+            <div class="form-group"><label for="btn_volume_down">音量减</label><input type="text" id="btn_volume_down" placeholder="-1"><div class="hint" data-default-for="btn_volume_down"></div></div>
+            <div class="form-group"><label for="btn_next">下一曲</label><input type="text" id="btn_next" placeholder="-1"><div class="hint" data-default-for="btn_next"></div></div>
+            <div class="form-group"><label for="btn_prev">上一曲</label><input type="text" id="btn_prev" placeholder="-1"><div class="hint" data-default-for="btn_prev"></div></div>
+          </div>
+        </section>
+      </div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn btn-secondary" onclick="restoreGPIODefaults()">恢复默认值</button>
+        <button class="btn btn-primary" onclick="saveGPIOConfig()">保存 GPIO 映射</button>
+      </div>
+      <div id="gpio-msg"></div>
+      <div class="footnote">
+        运行时引脚覆盖不会改变显示屏 SPI / 以太网引脚矩阵；这类需求仍需使用对应板型的固件构建配置。
+      </div>
+    </article>
+
+    <article class="card card-wide">
+      <div class="card-head">
+        <div>
+          <div class="accent">系统遥测</div>
+          <h2>系统快照</h2>
+          <p>实时网络、固件和内存诊断信息，便于快速上电检查。</p>
+        </div>
+      </div>
+      <div class="info-grid">
+        <div class="info-item"><label>IP 地址</label><span id="info-ip">-</span></div>
+        <div class="info-item"><label>MAC 地址</label><span id="info-mac">-</span></div>
+        <div class="info-item"><label>设备名称</label><span id="info-name">-</span></div>
+        <div class="info-item"><label>可用内存</label><span id="info-heap">-</span></div>
+        <div class="info-item"><label>固件版本</label><span id="info-fw">-</span></div>
+        <div class="info-item"><label>Wi-Fi SSID</label><span id="info-ssid">-</span></div>
+        <div class="info-item"><label>Wi-Fi RSSI</label><span id="info-rssi">-</span></div>
+        <div class="info-item"><label>Wi-Fi 信道</label><span id="info-chan">-</span></div>
+        <div class="info-item"><label>Wi-Fi PHY</label><span id="info-phy">-</span></div>
+        <div class="info-item" style="grid-column:1/-1"><label>Wi-Fi BSSID</label><span id="info-bssid">-</span></div>
+      </div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn btn-danger" onclick="restart()">重启设备</button>
+      </div>
+    </article>
+
+    <article class="card card-wide">
+      <div class="card-head">
+        <div>
+          <div class="accent">工具入口</div>
+          <h2>诊断与工具面板</h2>
+          <p>无需离开门户即可打开实时日志、Wi‑Fi 吞吐测试和 EQ 控制。</p>
+        </div>
+      </div>
+      <div class="utility-links">
+        <div class="utility-tile">
+          <strong>实时系统日志</strong>
+          <span>通过 WebSocket 查看 ESP 日志输出，检查启动、Wi‑Fi 与音频事件。</span>
+          <a href="/logs" class="btn btn-primary">打开日志查看器</a>
+        </div>
+        <div class="utility-tile">
+          <strong>Wi‑Fi 速率测试</strong>
+          <span>测量浏览器与设备之间的延迟和吞吐。</span>
+          <a href="/speedtest" class="btn btn-primary">打开测速</a>
+        </div>
+        <div class="utility-tile" id="eq-card" style="display:none">
+          <strong>均衡器</strong>
+          <span>在 TAS58xx 路径可用时调整 15 段参数均衡器。</span>
+          <a href="/eq" class="btn btn-primary">打开均衡器</a>
+        </div>
+      </div>
+    </article>
+  </section>
 </div>
-<div class='actions'><button class='btn btn-danger' onclick='restart()'>Restart Device</button></div>
-</div>
-<div class='card'><h2>System Logs</h2>
-<p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log output via WebSocket</p>
-<a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>
-<div class='card'><h2>WiFi Speedtest</h2>
-<p style='color:#888;font-size:13px;margin-bottom:12px'>Measure latency and throughput to this device</p>
-<a href='/speedtest' class='btn btn-primary'>Open Speedtest</a></div>
-<div class='card' id='eq-card' style='display:none'><h2>Equalizer</h2>
-<p style='color:#888;font-size:13px;margin-bottom:12px'>15-band parametric EQ for DAC tuning</p>
-<a href='/eq' class='btn btn-primary'>Open Equalizer</a></div>
-</div>
+
 <script>
-function msg(id,txt,type){var e=document.getElementById(id);if(e){e.innerHTML='<div class="msg '+type+'">'+txt+'</div>';setTimeout(function(){e.innerHTML='';},4000);}}
-async function scanWiFi(){
-  var l=document.getElementById('wifi-list');l.innerHTML='<div class="msg info">Scanning...</div>';
-  try{var r=await fetch('/api/wifi/scan');var d=await r.json();
-    if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach(function(n){
-      var i=document.createElement('div');i.className='wifi-item';
-      i.innerHTML='<span class="ssid">'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span>';
-      i.onclick=function(){document.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});i.classList.add('sel');document.getElementById('wifi-ssid').value=n.ssid;};
-      l.appendChild(i);});}
-    else{l.innerHTML='<div class="msg info">No networks found</div>';}}
-  catch(e){l.innerHTML='<div class="msg err">Scan failed</div>';}}
-async function saveWiFi(){
-  var s=document.getElementById('wifi-ssid').value.trim();var p=document.getElementById('wifi-pass').value;
-  if(!s){msg('wifi-msg','Enter network name','err');return;}
-  try{var r=await fetch('/api/wifi/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,password:p})});
-    var d=await r.json();if(d.success){msg('wifi-msg','Saved! Restarting...','ok');}else{msg('wifi-msg',d.error,'err');}}
-  catch(e){msg('wifi-msg','Error','err');}}
-async function saveName(){
-  var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
-  try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
-    var d=await r.json();if(d.success){msg('name-msg','Saved! Restart to apply.','ok');loadInfo();}else{msg('name-msg',d.error,'err');}}
-  catch(e){msg('name-msg','Error','err');}}
-async function startOTA(){
-  var f=document.getElementById('fw-file').files[0];if(!f){msg('ota-msg','Select a file','err');return;}
-  document.getElementById('ota-btn').disabled=true;msg('ota-msg','Uploading...','info');
-  try{await fetch('/api/ota/update',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});msg('ota-msg','Done! Rebooting...','ok');}
-  catch(e){msg('ota-msg','Rebooting...','ok');}}
-async function restart(){
-  if(!confirm('Restart the device?'))return;
-  try{await fetch('/api/system/restart',{method:'POST'});msg('','Restarting...','info');}catch(e){}}
-async function loadInfo(){
-  try{var r=await fetch('/api/system/info');var d=await r.json();
-    if(d.success){var i=d.info;var b=document.getElementById('status-bar');
-      if(i.eth_connected){b.className='status-bar ok';b.innerHTML='Ethernet: '+i.ip;}
-      else if(i.wifi_connected){b.className='status-bar ok';b.innerHTML='WiFi: '+i.ip;}
-      else{b.className='status-bar err';b.innerHTML='Not connected - Configure WiFi below';}
-      document.getElementById('info-ip').textContent=i.ip||'-';
-      document.getElementById('info-mac').textContent=i.mac||'-';
-      document.getElementById('info-name').textContent=i.device_name||'-';
-      document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
-      document.getElementById('info-fw').textContent=i.firmware_version||'-';
-      function rssiLabel(r){if(r==null)return '-';var q='';if(r>=-55)q=' (excellent)';else if(r>=-65)q=' (good)';else if(r>=-75)q=' (fair)';else q=' (poor)';return r+' dBm'+q;}
-      document.getElementById('info-ssid').textContent=i.wifi_ssid||'-';
-      document.getElementById('info-rssi').textContent=rssiLabel(i.wifi_rssi);
-      document.getElementById('info-chan').textContent=i.wifi_channel||'-';
-      document.getElementById('info-phy').textContent=i.wifi_phy||'-';
-      document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
-      if(i.eq_supported){document.getElementById('eq-card').style.display='';}
-      document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
-window.onload=function(){
-  document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
-    document.getElementById('fw-name').textContent=f?f.name:'No file selected';
-    document.getElementById('ota-btn').disabled=!f;};
-  loadInfo();setInterval(loadInfo,30000);};
-</script></body></html>
+const gpioFields = [
+  'i2s_sck','i2s_bck','i2s_ws','i2s_do','i2s_gnd','i2s_vcc',
+  'dac_i2c_sda','dac_i2c_scl','jack','spkfault','mute',
+  'led_status','led_error','led_rgb',
+  'btn_play_pause','btn_volume_up','btn_volume_down','btn_next','btn_prev'
+];
+
+let gpioDefaults = {};
+
+function msg(id, txt, type) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = '<div class="msg ' + type + '">' + txt + '</div>';
+  setTimeout(function() { el.innerHTML = ''; }, 4500);
+}
+
+function formatGPIOValue(value) {
+  if (value === undefined || value === null || value === '') return '-1';
+  var num = Number(value);
+  if (!isFinite(num) || num < 0) return '-1';
+  return 'GPIO' + num;
+}
+
+function setGPIOField(id, value, defaults) {
+  var input = document.getElementById(id);
+  if (!input) return;
+  input.value = formatGPIOValue(value);
+  if (defaults && Object.prototype.hasOwnProperty.call(defaults, id)) {
+    input.placeholder = formatGPIOValue(defaults[id]);
+    var hint = document.querySelector('[data-default-for="' + id + '"]');
+    if (hint) hint.textContent = '默认值：' + formatGPIOValue(defaults[id]);
+  }
+}
+
+async function loadGPIOConfig() {
+  try {
+    var resp = await fetch('/api/gpio/config');
+    var data = await resp.json();
+    if (!data.success) return;
+    gpioDefaults = data.defaults || {};
+    gpioFields.forEach(function(id) {
+      setGPIOField(id, data.config ? data.config[id] : -1, gpioDefaults);
+    });
+  } catch (e) {
+    msg('gpio-msg', '加载 GPIO 配置失败', 'err');
+  }
+}
+
+function restoreGPIODefaults() {
+  gpioFields.forEach(function(id) {
+    setGPIOField(id, gpioDefaults[id], gpioDefaults);
+  });
+  msg('gpio-msg', '表单已恢复默认 GPIO 值，保存后生效。', 'info');
+}
+
+async function saveGPIOConfig() {
+  var payload = {};
+  gpioFields.forEach(function(id) {
+    var input = document.getElementById(id);
+    payload[id] = input ? input.value.trim() : '';
+  });
+
+  try {
+    var resp = await fetch('/api/gpio/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    var data = await resp.json();
+    if (data.success) {
+      msg('gpio-msg', data.message || 'GPIO 配置已保存，正在重启...', 'ok');
+    } else {
+      msg('gpio-msg', data.error || '保存 GPIO 配置失败', 'err');
+    }
+  } catch (e) {
+    msg('gpio-msg', '保存 GPIO 配置失败', 'err');
+  }
+}
+
+async function scanWiFi() {
+  var list = document.getElementById('wifi-list');
+  list.innerHTML = '<div class="msg info">正在扫描无线网络...</div>';
+  try {
+    var resp = await fetch('/api/wifi/scan');
+    var data = await resp.json();
+    if (data.success && data.networks && data.networks.length) {
+      list.innerHTML = '';
+      data.networks.forEach(function(net) {
+        var item = document.createElement('div');
+        item.className = 'wifi-item';
+        item.innerHTML =
+          '<div class="wifi-meta">' +
+            '<span class="ssid">' + net.ssid + '</span>' +
+            '<span class="details">信道 ' + net.channel + '</span>' +
+          '</div>' +
+          '<span class="rssi">' + net.rssi + ' dBm</span>';
+        item.onclick = function() {
+          document.querySelectorAll('.wifi-item').forEach(function(node) {
+            node.classList.remove('sel');
+          });
+          item.classList.add('sel');
+          document.getElementById('wifi-ssid').value = net.ssid;
+        };
+        list.appendChild(item);
+      });
+    } else {
+      list.innerHTML = '<div class="msg info">未发现 Wi‑Fi 网络</div>';
+    }
+  } catch (e) {
+    list.innerHTML = '<div class="msg err">Wi‑Fi 扫描失败</div>';
+  }
+}
+
+async function saveWiFi() {
+  var ssid = document.getElementById('wifi-ssid').value.trim();
+  var password = document.getElementById('wifi-pass').value;
+  if (!ssid) {
+    msg('wifi-msg', '请先输入 Wi‑Fi SSID', 'err');
+    return;
+  }
+
+  try {
+    var resp = await fetch('/api/wifi/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid: ssid, password: password})
+    });
+    var data = await resp.json();
+    if (data.success) {
+      msg('wifi-msg', 'Wi‑Fi 凭据已保存，正在重启...', 'ok');
+    } else {
+      msg('wifi-msg', data.error || '保存 Wi‑Fi 凭据失败', 'err');
+    }
+  } catch (e) {
+    msg('wifi-msg', '保存 Wi‑Fi 凭据失败', 'err');
+  }
+}
+
+async function saveName() {
+  var name = document.getElementById('dev-name').value.trim();
+  if (!name) {
+    msg('name-msg', '请先输入设备名称', 'err');
+    return;
+  }
+
+  try {
+    var resp = await fetch('/api/device/name', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name})
+    });
+    var data = await resp.json();
+    if (data.success) {
+      msg('name-msg', '设备名称已保存，重启后会更新广播名称。', 'ok');
+      loadInfo();
+    } else {
+      msg('name-msg', data.error || '保存设备名称失败', 'err');
+    }
+  } catch (e) {
+    msg('name-msg', '保存设备名称失败', 'err');
+  }
+}
+
+async function startOTA() {
+  var file = document.getElementById('fw-file').files[0];
+  if (!file) {
+    msg('ota-msg', '请先选择固件文件', 'err');
+    return;
+  }
+
+  document.getElementById('ota-btn').disabled = true;
+  msg('ota-msg', '正在上传固件镜像...', 'info');
+
+  try {
+    await fetch('/api/ota/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/octet-stream'},
+      body: file
+    });
+    msg('ota-msg', '固件已上传，设备正在重启...', 'ok');
+  } catch (e) {
+    msg('ota-msg', '上传已完成，或设备已在传输期间重启', 'ok');
+  }
+}
+
+async function restart() {
+  if (!confirm('现在重启设备吗？')) return;
+  try {
+    await fetch('/api/system/restart', {method: 'POST'});
+    msg('gpio-msg', '已向设备发送重启指令', 'info');
+  } catch (e) {}
+}
+
+function formatRSSI(value) {
+  if (value === null || value === undefined) return '-';
+  var quality = '较差';
+  if (value >= -55) quality = '优秀';
+  else if (value >= -65) quality = '良好';
+  else if (value >= -75) quality = '一般';
+  return value + ' dBm（' + quality + '）';
+}
+
+function updateStatusPanel(info) {
+  var panel = document.getElementById('status-panel');
+  var title = document.getElementById('status-title');
+  var detail = document.getElementById('status-detail');
+
+  if (info.eth_connected) {
+    panel.className = 'status-panel ok';
+    title.textContent = '以太网上行已连接';
+    detail.textContent = info.ip || '无 IP';
+  } else if (info.wifi_connected) {
+    panel.className = 'status-panel ok';
+    title.textContent = 'Wi‑Fi 已连接路由器';
+    detail.textContent = info.ip || '无 IP';
+  } else {
+    panel.className = 'status-panel err';
+    title.textContent = '等待网络连接';
+    detail.textContent = '请通过 AP 模式连接';
+  }
+}
+
+async function loadInfo() {
+  try {
+    var resp = await fetch('/api/system/info');
+    var data = await resp.json();
+    if (!data.success) return;
+
+    var info = data.info;
+    updateStatusPanel(info);
+
+    document.getElementById('info-ip').textContent = info.ip || '-';
+    document.getElementById('info-mac').textContent = info.mac || '-';
+    document.getElementById('info-name').textContent = info.device_name || '-';
+    document.getElementById('info-heap').textContent = Math.round(info.free_heap / 1024) + ' KB';
+    document.getElementById('info-fw').textContent = info.firmware_version || '-';
+    document.getElementById('info-ssid').textContent = info.wifi_ssid || '-';
+    document.getElementById('info-rssi').textContent = formatRSSI(info.wifi_rssi);
+    document.getElementById('info-chan').textContent = info.wifi_channel || '-';
+    document.getElementById('info-phy').textContent = info.wifi_phy || '-';
+    document.getElementById('info-bssid').textContent = info.wifi_bssid || '-';
+
+    if (info.eq_supported) {
+      document.getElementById('eq-card').style.display = '';
+    }
+
+    document.getElementById('dev-name').placeholder = info.device_name || '';
+  } catch (e) {}
+}
+
+window.onload = function() {
+  document.getElementById('fw-file').onchange = function(event) {
+    var file = event.target.files[0];
+    document.getElementById('fw-name').textContent = file ? file.name : '未选择文件';
+    document.getElementById('ota-btn').disabled = !file;
+  };
+
+  loadInfo();
+  loadGPIOConfig();
+  setInterval(loadInfo, 30000);
+};
+</script>
+</body>
+</html>
