@@ -2,6 +2,7 @@ menu "Board Configuration"
     choice BOARD_TARGET
         prompt "Select Target Board"
         default BOARD_ESP32_GENERIC if IDF_TARGET_ESP32
+        default BOARD_ESP32S2_GENERIC if IDF_TARGET_ESP32S2
         default BOARD_ESP32S3_GENERIC if IDF_TARGET_ESP32S3
         default BOARD_WAVESHARE_ESP32P4 if IDF_TARGET_ESP32P4
 
@@ -12,6 +13,10 @@ menu "Board Configuration"
         config BOARD_SQUEEZEAMP_4M
             bool "SqueezeAMP (4MB flash)"
             depends on IDF_TARGET_ESP32
+
+        config BOARD_ESP32S2_GENERIC
+            bool "ESP32-S2 Generic"
+            depends on IDF_TARGET_ESP32S2
 
         config BOARD_ESP32S3_GENERIC
             bool "ESP32-S3 Generic"
@@ -47,6 +52,7 @@ menu "Board Configuration"
         string
         default "squeezeamp" if BOARD_SQUEEZEAMP
         default "squeezeamp" if BOARD_SQUEEZEAMP_4M
+        default "esp32s2-generic" if BOARD_ESP32S2_GENERIC
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
         default "esp32-generic" if BOARD_ESP32_GENERIC
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK
