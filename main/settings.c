@@ -327,6 +327,40 @@ esp_err_t settings_set_wifi_credentials(const char *ssid,
   return err;
 }
 
+esp_err_t settings_clear_wifi_credentials(void) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_erase_key(nvs, NVS_KEY_WIFI_SSID);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = ESP_OK;
+  }
+  if (err == ESP_OK) {
+    esp_err_t pass_err = nvs_erase_key(nvs, NVS_KEY_WIFI_PASSWORD);
+    if (pass_err != ESP_OK && pass_err != ESP_ERR_NVS_NOT_FOUND) {
+      err = pass_err;
+    }
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Cleared saved WiFi credentials");
+  } else {
+    ESP_LOGE(TAG, "Failed to clear WiFi credentials: %s",
+             esp_err_to_name(err));
+  }
+
+  return err;
+}
+
 bool settings_has_wifi_credentials(void) {
   char ssid[MAX_WIFI_SSID_LEN + 1];
   return settings_get_wifi_ssid(ssid, sizeof(ssid)) == ESP_OK;

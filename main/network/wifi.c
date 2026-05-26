@@ -60,16 +60,33 @@ static void schedule_retry(void) {
   esp_timer_start_once(s_retry_timer, (uint64_t)delay_s * 1000000);
 }
 
-static void enable_ap_mode(void) {
-  wifi_mode_t mode;
-  if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_APSTA) {
-    ESP_LOGI(TAG, "Re-enabling AP mode for configuration access");
-    if (!s_ap_netif) {
-      s_ap_netif = esp_netif_create_default_wifi_ap();
-    }
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_set_config(WIFI_IF_AP, &s_ap_config);
+esp_err_t wifi_enable_ap_mode(void) {
+  if (!s_wifi_initialized) {
+    wifi_init_apsta(NULL, NULL);
+    return ESP_OK;
   }
+
+  wifi_mode_t mode;
+  esp_err_t err = esp_wifi_get_mode(&mode);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  if (!s_ap_netif) {
+    s_ap_netif = esp_netif_create_default_wifi_ap();
+  }
+
+  if (mode != WIFI_MODE_APSTA) {
+    ESP_LOGI(TAG, "Re-enabling AP mode for configuration access");
+    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK) {
+      return err;
+    }
+  } else {
+    ESP_LOGI(TAG, "AP mode already active, refreshing AP config");
+  }
+
+  return esp_wifi_set_config(WIFI_IF_AP, &s_ap_config);
 }
 
 static void event_handler(void *arg, esp_event_base_t event_base,
@@ -99,7 +116,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
                  "WiFi connection failed after %d attempts, switching to "
                  "backoff retries",
                  AP_REENABLE_THRESHOLD);
-        enable_ap_mode();
+        wifi_enable_ap_mode();
       }
       // Delayed retries with backoff
       schedule_retry();

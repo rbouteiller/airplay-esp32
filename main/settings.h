@@ -102,6 +102,11 @@ esp_err_t settings_get_wifi_password(char *password, size_t len);
 esp_err_t settings_set_wifi_credentials(const char *ssid, const char *password);
 
 /**
+ * Clear saved WiFi credentials from persistent storage.
+ */
+esp_err_t settings_clear_wifi_credentials(void);
+
+/**
  * Check if WiFi credentials are stored
  * @return true if credentials exist, false otherwise
  */

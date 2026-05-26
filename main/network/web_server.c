@@ -2,6 +2,8 @@
 
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "cJSON.h"
 #include <ctype.h>
@@ -14,6 +16,9 @@
 
 #include "esp_wifi.h"
 
+#include "dns_server.h"
+#include "led.h"
+#include "spiffs_storage.h"
 #include "settings.h"
 #include "wifi.h"
 #include "ethernet.h"
@@ -34,6 +39,9 @@ static httpd_handle_t s_server = NULL;
 
 #define SPIFFS_CHUNK_SIZE 1024
 #define JSON_BODY_MAX     2048
+#define AP_IP_ADDR        0x0104A8C0
+#define STORAGE_PARTITION_LABEL "storage"
+#define STORAGE_WRITE_CHUNK     4096
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
@@ -78,6 +86,28 @@ static esp_err_t read_request_body(httpd_req_t *req, char *content,
 
   content[total] = '\0';
   return ESP_OK;
+}
+
+static const esp_partition_t *find_storage_partition(void) {
+  return esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                  ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
+                                  STORAGE_PARTITION_LABEL);
+}
+
+static bool storage_update_should_reboot(httpd_req_t *req) {
+  char query[48];
+  char value[16];
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+    return true;
+  }
+
+  if (httpd_query_key_value(query, "reboot", value, sizeof(value)) != ESP_OK) {
+    return true;
+  }
+
+  return !(strcmp(value, "0") == 0 || strcasecmp(value, "false") == 0 ||
+           strcasecmp(value, "no") == 0);
 }
 
 static void gpio_config_to_json(cJSON *obj,
@@ -189,7 +219,7 @@ static bool parse_gpio_json_value(cJSON *item, int *value, const char **error) {
 
   if (!parse_end || *parse_end != '\0') {
     if (error) {
-      *error = "GPIO format must be like 1 or GPIO1";
+      *error = "GPIO format must be like 1, GPIO1, or -1";
     }
     return false;
   }
@@ -505,6 +535,7 @@ static esp_err_t gpio_config_post_handler(httpd_req_t *req) {
 
   settings_gpio_config_t config;
   settings_get_gpio_config(&config);
+  settings_gpio_config_t previous_config = config;
   const char *parse_error = NULL;
   bool should_restart = false;
 
@@ -546,6 +577,7 @@ static esp_err_t gpio_config_post_handler(httpd_req_t *req) {
   } else {
     esp_err_t err = settings_set_gpio_config(&config);
     if (err == ESP_OK) {
+      led_prepare_rgb_gpio_change(previous_config.led_rgb, config.led_rgb);
       cJSON_AddBoolToObject(response, "success", true);
       cJSON_AddStringToObject(response, "message",
                               "GPIO config saved. Restarting...");
@@ -593,6 +625,120 @@ static esp_err_t ota_update_handler(httpd_req_t *req) {
   httpd_resp_sendstr(req, "Firmware update complete, rebooting now!\n");
   vTaskDelay(pdMS_TO_TICKS(500));
   esp_restart();
+
+  return ESP_OK;
+}
+
+static esp_err_t storage_update_handler(httpd_req_t *req) {
+  bool reboot_after_update = storage_update_should_reboot(req);
+
+  if (req->content_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No storage image uploaded");
+    return ESP_FAIL;
+  }
+
+  const esp_partition_t *storage_partition = find_storage_partition();
+  if (!storage_partition) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Storage partition not found");
+    return ESP_FAIL;
+  }
+
+  if ((size_t)req->content_len != storage_partition->size) {
+    char err_msg[160];
+    snprintf(err_msg, sizeof(err_msg),
+             "Image size mismatch: expected %u bytes for partition '%s', got %d",
+             (unsigned)storage_partition->size, STORAGE_PARTITION_LABEL,
+             req->content_len);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err_msg);
+    return ESP_FAIL;
+  }
+
+  uint8_t *image = heap_caps_malloc((size_t)req->content_len,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!image) {
+    image = heap_caps_malloc((size_t)req->content_len, MALLOC_CAP_8BIT);
+  }
+  if (!image) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Not enough memory for storage image");
+    return ESP_FAIL;
+  }
+
+  ESP_LOGI(TAG, "Receiving storage image into RAM (%d bytes)...",
+           req->content_len);
+  size_t received = 0;
+  while (received < (size_t)req->content_len) {
+    int recv_len = httpd_req_recv(req, (char *)image + received,
+                                  (size_t)req->content_len - received);
+    if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+      continue;
+    }
+    if (recv_len <= 0) {
+      free(image);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Failed to receive storage image");
+      return ESP_FAIL;
+    }
+    received += (size_t)recv_len;
+  }
+
+  bool was_mounted = spiffs_storage_is_mounted();
+  if (was_mounted) {
+    spiffs_storage_deinit();
+  }
+
+  esp_err_t err =
+      esp_partition_erase_range(storage_partition, 0, storage_partition->size);
+  if (err != ESP_OK) {
+    if (was_mounted) {
+      spiffs_storage_init();
+    }
+    free(image);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Failed to erase storage partition");
+    return ESP_FAIL;
+  }
+
+  for (size_t offset = 0; offset < (size_t)req->content_len;
+       offset += STORAGE_WRITE_CHUNK) {
+    size_t chunk =
+        ((size_t)req->content_len - offset) < STORAGE_WRITE_CHUNK
+            ? (size_t)req->content_len - offset
+            : STORAGE_WRITE_CHUNK;
+    err = esp_partition_write(storage_partition, offset, image + offset, chunk);
+    if (err != ESP_OK) {
+      if (was_mounted) {
+        spiffs_storage_init();
+      }
+      free(image);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Failed to write storage partition");
+      return ESP_FAIL;
+    }
+  }
+
+  free(image);
+
+  ESP_LOGI(TAG, "Storage image updated successfully");
+  if (!reboot_after_update && was_mounted) {
+    err = spiffs_storage_init();
+    if (err != ESP_OK) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Storage image written but remount failed");
+      return ESP_FAIL;
+    }
+  }
+
+  if (reboot_after_update) {
+    httpd_resp_sendstr(req, "Storage update complete, rebooting now!\n");
+    vTaskDelay(pdMS_TO_TICKS(700));
+    esp_restart();
+  } else {
+    httpd_resp_sendstr(req,
+                       "Storage update complete, reboot deferred for combined "
+                       "OTA flow.\n");
+  }
 
   return ESP_OK;
 }
@@ -687,6 +833,60 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
   ESP_LOGI(TAG, "Restart requested via web interface");
   vTaskDelay(pdMS_TO_TICKS(500));
   esp_restart();
+
+  return ESP_OK;
+}
+
+static esp_err_t wifi_enable_ap_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  esp_err_t err = wifi_enable_ap_mode();
+  if (err == ESP_OK) {
+    err = dns_server_start(AP_IP_ADDR);
+  }
+
+  if (err == ESP_OK) {
+    cJSON_AddBoolToObject(json, "success", true);
+    cJSON_AddStringToObject(
+        json, "message",
+        "AP hotspot enabled. Connect to the setup SSID and open 192.168.4.1.");
+  } else {
+    cJSON_AddBoolToObject(json, "success", false);
+    cJSON_AddStringToObject(json, "error", esp_err_to_name(err));
+  }
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t wifi_reset_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  esp_err_t err = settings_clear_wifi_credentials();
+
+  if (err == ESP_OK) {
+    cJSON_AddBoolToObject(json, "success", true);
+    cJSON_AddStringToObject(
+        json, "message",
+        "WiFi credentials cleared. Restarting into AP provisioning mode.");
+  } else {
+    cJSON_AddBoolToObject(json, "success", false);
+    cJSON_AddStringToObject(json, "error", esp_err_to_name(err));
+  }
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "WiFi reset requested via web interface");
+    vTaskDelay(pdMS_TO_TICKS(700));
+    esp_restart();
+  }
 
   return ESP_OK;
 }
@@ -1013,6 +1213,16 @@ esp_err_t web_server_start(uint16_t port) {
                                  .handler = wifi_config_handler};
   httpd_register_uri_handler(s_server, &wifi_config_uri);
 
+  httpd_uri_t wifi_enable_ap_uri = {.uri = "/api/wifi/enable-ap",
+                                    .method = HTTP_POST,
+                                    .handler = wifi_enable_ap_handler};
+  httpd_register_uri_handler(s_server, &wifi_enable_ap_uri);
+
+  httpd_uri_t wifi_reset_uri = {.uri = "/api/wifi/reset",
+                                .method = HTTP_POST,
+                                .handler = wifi_reset_handler};
+  httpd_register_uri_handler(s_server, &wifi_reset_uri);
+
   httpd_uri_t device_name_uri = {.uri = "/api/device/name",
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
@@ -1032,6 +1242,11 @@ esp_err_t web_server_start(uint16_t port) {
                          .method = HTTP_POST,
                          .handler = ota_update_handler};
   httpd_register_uri_handler(s_server, &ota_uri);
+
+  httpd_uri_t storage_update_uri = {.uri = "/api/storage/update",
+                                    .method = HTTP_POST,
+                                    .handler = storage_update_handler};
+  httpd_register_uri_handler(s_server, &storage_update_uri);
 
   httpd_uri_t system_info_uri = {.uri = "/api/system/info",
                                  .method = HTTP_GET,

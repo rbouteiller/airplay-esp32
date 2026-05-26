@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AirPlay 接收器控制门户</title>
+<title>AirPlay 配置中心</title>
 <style>
 :root{
   color-scheme:dark;
@@ -128,7 +128,7 @@ body::after{
 .hero-grid{
   position:relative;
   display:grid;
-  grid-template-columns:minmax(0,1.3fr) minmax(280px,.9fr);
+  grid-template-columns:minmax(0,1fr);
   gap:18px;
   align-items:stretch;
 }
@@ -181,8 +181,7 @@ body::after{
   backdrop-filter:blur(14px);
 }
 
-.meta-chip strong,
-.status-panel strong{
+.meta-chip strong{
   display:block;
   font-size:12px;
   font-weight:600;
@@ -191,57 +190,10 @@ body::after{
   color:var(--muted);
 }
 
-.meta-chip span,
-.status-panel span{
+.meta-chip span{
   display:block;
   margin-top:4px;
   font-size:15px;
-}
-
-.status-panel{
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  padding:18px;
-  border-radius:24px;
-  border:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(4,10,26,0.82), rgba(14,26,55,0.54));
-  box-shadow:var(--card-glow);
-}
-@media (prefers-color-scheme: light){
-  .status-panel{
-    background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(235,244,255,0.86));
-  }
-}
-
-.status-led{
-  width:12px;
-  height:12px;
-  border-radius:50%;
-  background:var(--warn);
-  box-shadow:0 0 0 8px rgba(255,202,116,0.12),0 0 18px rgba(255,202,116,0.55);
-}
-
-.status-panel.ok .status-led{
-  background:var(--accent-3);
-  box-shadow:0 0 0 8px rgba(151,255,181,0.12),0 0 18px rgba(151,255,181,0.6);
-}
-
-.status-panel.err .status-led{
-  background:var(--danger);
-  box-shadow:0 0 0 8px rgba(255,109,135,0.12),0 0 18px rgba(255,109,135,0.58);
-}
-
-.status-top{
-  display:flex;
-  justify-content:space-between;
-  gap:16px;
-  align-items:flex-start;
-}
-
-.status-top h2{
-  margin:10px 0 0;
-  font-size:1.3rem;
 }
 
 .status-note{
@@ -301,13 +253,6 @@ body::after{
   color:var(--muted);
   font-size:13px;
   line-height:1.7;
-}
-
-.accent{
-  color:var(--accent);
-  font-size:11px;
-  letter-spacing:.16em;
-  text-transform:uppercase;
 }
 
 .stack{display:grid;gap:12px}
@@ -499,11 +444,269 @@ a.btn:hover{transform:translateY(-1px)}
   align-items:center;
 }
 
-.file-name{
+.picker-box{
+  width:100%;
+  padding:6px;
+  display:flex;
+  align-items:stretch;
+  gap:0;
+  border-radius:22px;
+  border:2px solid rgba(255,255,255,0.78);
+  background:rgba(16,20,34,0.38);
+  color:var(--text);
+  cursor:pointer;
+  text-align:left;
+  transition:border-color .18s ease, transform .18s ease, background .18s ease;
+}
+
+.picker-box:hover{
+  border-color:#fff;
+  background:rgba(20,24,42,0.44);
+}
+
+.picker-box:focus-visible{
+  outline:2px solid rgba(122,246,255,0.55);
+  outline-offset:2px;
+}
+
+.picker-box:disabled{
+  opacity:.6;
+  cursor:not-allowed;
+  transform:none;
+}
+
+.picker-box-cta{
+  flex:0 0 auto;
+  padding:15px 24px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:16px;
+  background:rgba(255,255,255,0.04);
+  border-right:1px solid rgba(255,255,255,0.08);
+  font-size:14px;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+.picker-box-value{
   flex:1;
-  min-width:180px;
+  min-width:0;
+  padding:0 18px;
+  display:flex;
+  align-items:center;
+  color:var(--text);
+  font-size:14px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.selected-file{
+  margin-top:16px;
+  padding:16px 18px;
+  display:flex;
+  align-items:center;
+  gap:14px;
+  border-radius:20px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.035);
+}
+
+.selected-file[hidden]{display:none}
+
+.selected-file-icon{
+  flex:0 0 auto;
+  width:42px;
+  height:42px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:14px;
+  background:rgba(255,113,203,0.12);
+  color:#ff8fd5;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.08em;
+}
+
+.selected-file-copy{
+  min-width:0;
+  flex:1;
+}
+
+.selected-file-copy strong{
+  display:block;
+  font-size:15px;
+  line-height:1.35;
+  word-break:break-all;
+}
+
+.selected-file-copy span{
+  display:block;
+  margin-top:4px;
+  color:var(--muted);
+  font-size:12px;
+}
+
+.selected-file-remove{
+  flex:0 0 auto;
+  border:none;
+  background:none;
+  color:var(--text);
+  font-size:26px;
+  line-height:1;
+  cursor:pointer;
+  padding:4px 6px;
+}
+
+.selected-file-remove:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+.file-meta{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+
+.progress-card{
+  margin-top:14px;
+  padding:14px;
+  border-radius:16px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.04);
+}
+
+.progress-card[hidden]{display:none}
+
+.progress-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  margin-bottom:10px;
+}
+
+.progress-label{
+  font-size:13px;
+  font-weight:600;
+}
+
+.progress-value{
+  font-size:13px;
+  color:var(--accent);
+  font-variant-numeric:tabular-nums;
+}
+
+.progress-track{
+  position:relative;
+  height:10px;
+  border-radius:999px;
+  overflow:hidden;
+  background:rgba(255,255,255,0.08);
+  border:1px solid rgba(122,246,255,0.12);
+}
+
+.progress-fill{
+  width:0%;
+  height:100%;
+  border-radius:inherit;
+  background:linear-gradient(90deg, var(--accent), #9dd0ff 55%, #ff71cb);
+  box-shadow:0 0 18px rgba(122,246,255,0.28);
+  transition:width .18s ease;
+}
+
+.progress-note{
+  margin-top:10px;
+  font-size:12px;
+  color:var(--muted);
+  line-height:1.6;
+}
+
+.ota-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:16px;
+  margin-top:18px;
+}
+
+.ota-pane{
+  padding:18px;
+  border-radius:22px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.03);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.ota-pane-head{
+  display:flex;
+  align-items:flex-start;
+  gap:14px;
+  margin-bottom:18px;
+}
+
+.ota-badge{
+  flex:0 0 auto;
+  min-width:56px;
+  height:56px;
+  padding:0 12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:16px;
+  background:linear-gradient(135deg, rgba(255,113,203,0.2), rgba(122,246,255,0.12));
+  border:1px solid rgba(255,113,203,0.18);
+  color:#ff8fd5;
+  font-size:13px;
+  font-weight:700;
+  letter-spacing:.08em;
+}
+
+.ota-pane-copy{
+  min-width:0;
+}
+
+.ota-pane-copy strong{
+  display:block;
+  font-size:16px;
+}
+
+.ota-pane-copy span{
+  display:block;
+  margin-top:6px;
   color:var(--muted);
   font-size:13px;
+  line-height:1.6;
+}
+
+.ota-both-action{
+  margin-top:18px;
+}
+
+.ota-both-action[hidden]{display:none}
+
+.ota-both-buttons{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.ota-both-action .btn{
+  min-height:52px;
+}
+
+.ota-both-cancel-wrap{
+  display:flex;
+  justify-content:center;
+}
+
+.ota-both-cancel-wrap .btn{
+  width:auto;
+  min-width:240px;
+  padding:0 24px;
 }
 
 .utility-links{
@@ -558,49 +761,7 @@ a.btn:hover{transform:translateY(-1px)}
   <section class="hero">
     <div class="hero-grid">
       <div>
-        <div class="eyeline">信号矩阵 / AP 配网门户</div>
-        <h1>AirPlay 接收器<br>控制中枢</h1>
-        <p>
-          在一个自适应控制界面中完成 Wi‑Fi 配网、设备标识、固件升级和运行时 GPIO 路由配置。
-          GPIO 输入支持 <strong>`1`</strong> 或 <strong>`GPIO1`</strong>，可选引脚可用
-          <strong>`-1`</strong> 禁用。
-        </p>
-        <div class="hero-meta">
-          <div class="meta-chip">
-            <div>
-              <strong>访问地址</strong>
-              <span>192.168.4.1 / 局域网 IP</span>
-            </div>
-          </div>
-          <div class="meta-chip">
-            <div>
-              <strong>GPIO 格式</strong>
-              <span>`GPIO12`、`12`、`-1`</span>
-            </div>
-          </div>
-          <div class="meta-chip">
-            <div>
-              <strong>生效方式</strong>
-              <span>保存后重启</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="status-panel" class="status-panel">
-        <div class="status-top">
-          <div>
-            <div class="status-led"></div>
-            <h2 id="status-title">连接状态未知</h2>
-          </div>
-          <div style="text-align:right">
-            <strong>实时链路</strong>
-            <span id="status-detail">正在加载遥测信息...</span>
-          </div>
-        </div>
-        <div class="status-note">
-          在接入现有网络之前，配网门户始终可通过热点地址访问。连接路由器后，
-          请使用设备的局域网 IP 重新打开此控制面板。
-        </div>
+        <h1>AirPlay 配置中心</h1>
       </div>
     </div>
   </section>
@@ -609,13 +770,12 @@ a.btn:hover{transform:translateY(-1px)}
     <article class="card">
       <div class="card-head">
         <div>
-          <div class="accent">无线接入</div>
           <h2>Wi‑Fi 配网</h2>
           <p>扫描附近网络或手动输入 SSID，然后写入 NVS 并重启。</p>
         </div>
       </div>
       <div class="btn-row" style="margin-bottom:14px">
-        <button class="btn btn-secondary" onclick="scanWiFi()">扫描网络</button>
+        <button class="btn btn-secondary" id="wifi-scan-btn" onclick="scanWiFi()">扫描网络</button>
       </div>
       <div id="wifi-list" class="wifi-list"></div>
       <div class="stack" style="margin-top:14px">
@@ -637,7 +797,6 @@ a.btn:hover{transform:translateY(-1px)}
     <article class="card">
       <div class="card-head">
         <div>
-          <div class="accent">设备标识</div>
           <h2>设备设置</h2>
           <p>设置 AirPlay 广播名称，用于网络发现与蓝牙配对。</p>
         </div>
@@ -654,31 +813,11 @@ a.btn:hover{transform:translateY(-1px)}
       <div id="name-msg"></div>
     </article>
 
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <div class="accent">固件更新</div>
-          <h2>OTA 升级</h2>
-          <p>可直接在浏览器上传固件镜像，刷写完成后设备会自动重启。</p>
-        </div>
-      </div>
-      <div class="file-row">
-        <input type="file" id="fw-file" accept=".bin" style="display:none">
-        <button class="btn btn-secondary" onclick="document.getElementById('fw-file').click()">选择固件</button>
-        <span class="file-name" id="fw-name">未选择文件</span>
-      </div>
-      <div class="btn-row" style="margin-top:14px">
-        <button class="btn btn-primary btn-block" id="ota-btn" onclick="startOTA()" disabled>上传并刷写</button>
-      </div>
-      <div id="ota-msg"></div>
-    </article>
-
     <article class="card card-wide">
       <div class="card-head">
         <div>
-          <div class="accent">硬件矩阵</div>
           <h2>GPIO 配置</h2>
-          <p>运行时 GPIO 覆盖值会存入 NVS，并在重启后生效。请输入类似 <strong>`1`</strong> 或 <strong>`GPIO1`</strong> 的值。</p>
+          <p>运行时 GPIO 覆盖值会存入 NVS，并在重启后生效。请输入类似 <strong>`1`</strong>、<strong>`GPIO1`</strong> 或 <strong>`-1`</strong>（禁用）的值。</p>
         </div>
       </div>
       <div class="group-grid">
@@ -735,7 +874,6 @@ a.btn:hover{transform:translateY(-1px)}
     <article class="card card-wide">
       <div class="card-head">
         <div>
-          <div class="accent">系统遥测</div>
           <h2>系统快照</h2>
           <p>实时网络、固件和内存诊断信息，便于快速上电检查。</p>
         </div>
@@ -754,15 +892,114 @@ a.btn:hover{transform:translateY(-1px)}
       </div>
       <div class="btn-row" style="margin-top:16px">
         <button class="btn btn-danger" onclick="restart()">重启设备</button>
+        <button class="btn btn-secondary" onclick="enableAP()">开启 AP</button>
+        <button class="btn btn-secondary" onclick="resetWiFi()">重置 Wi‑Fi</button>
+      </div>
+      <div id="system-msg"></div>
+    </article>
+
+    <article class="card card-wide">
+      <div class="card-head">
+        <div>
+          <h2>OTA 升级</h2>
+          <p>应用固件与网页资源分开升级，避免每次改页面都必须连接电脑全量烧录。</p>
+        </div>
+      </div>
+      <div class="ota-grid">
+        <section class="ota-pane">
+          <div class="ota-pane-head">
+            <span class="ota-badge">APP</span>
+            <div class="ota-pane-copy">
+              <strong>Firmware</strong>
+              <span>上传 `firmware.bin`，只更新程序本体与后端逻辑，不覆盖网页资源分区。</span>
+            </div>
+          </div>
+          <input type="file" id="fw-file" accept=".bin" style="display:none">
+          <button type="button" class="picker-box" id="fw-picker-btn" onclick="document.getElementById('fw-file').click()">
+            <span class="picker-box-cta">选择文件</span>
+            <span class="picker-box-value" id="fw-picker-value">点击选择 `.bin` 固件</span>
+          </button>
+          <div class="file-meta" id="ota-meta">请选择 `.bin` 固件镜像后再开始 OTA 升级。</div>
+          <div class="selected-file" id="ota-selected-file" hidden>
+            <span class="selected-file-icon">BIN</span>
+            <div class="selected-file-copy">
+              <strong id="ota-selected-name"></strong>
+              <span id="ota-selected-size"></span>
+            </div>
+            <button type="button" class="selected-file-remove" id="ota-selected-remove" onclick="clearOTASelection()" aria-label="取消已选固件">&times;</button>
+          </div>
+          <div class="progress-card" id="ota-progress-card" hidden>
+            <div class="progress-head">
+              <span class="progress-label" id="ota-progress-label">等待上传</span>
+              <span class="progress-value" id="ota-progress-value">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="ota-progress-fill"></div>
+            </div>
+            <div class="progress-note" id="ota-progress-note">设备将在上传完成后自动重启。</div>
+          </div>
+          <div class="btn-row" style="margin-top:14px">
+            <button class="btn btn-primary btn-block" id="ota-btn" onclick="startOTA()" disabled>上传应用固件</button>
+            <button class="btn btn-danger" id="ota-cancel-btn" onclick="cancelOTAUpload()" disabled>取消上传</button>
+          </div>
+          <div id="ota-msg"></div>
+        </section>
+
+        <section class="ota-pane">
+          <div class="ota-pane-head">
+            <span class="ota-badge">WEB</span>
+            <div class="ota-pane-copy">
+              <strong>SPIFFS</strong>
+              <span>上传当前板型的 `spiffs.bin`，只更新 AP 门户与静态资源，不覆盖应用固件。</span>
+            </div>
+          </div>
+          <input type="file" id="storage-file" accept=".bin" style="display:none">
+          <button type="button" class="picker-box" id="storage-picker-btn" onclick="document.getElementById('storage-file').click()">
+            <span class="picker-box-cta">选择文件</span>
+            <span class="picker-box-value" id="storage-picker-value">点击选择 `spiffs.bin` 资源包</span>
+          </button>
+          <div class="file-meta" id="storage-meta">请选择当前板型的 `spiffs.bin` 存储镜像，文件大小必须与 storage 分区一致。</div>
+          <div class="selected-file" id="storage-selected-file" hidden>
+            <span class="selected-file-icon">FS</span>
+            <div class="selected-file-copy">
+              <strong id="storage-selected-name"></strong>
+              <span id="storage-selected-size"></span>
+            </div>
+            <button type="button" class="selected-file-remove" id="storage-selected-remove" onclick="clearStorageSelection()" aria-label="取消已选资源包">&times;</button>
+          </div>
+          <div class="progress-card" id="storage-progress-card" hidden>
+            <div class="progress-head">
+              <span class="progress-label" id="storage-progress-label">等待上传</span>
+              <span class="progress-value" id="storage-progress-value">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="storage-progress-fill"></div>
+            </div>
+            <div class="progress-note" id="storage-progress-note">资源更新完成后设备将自动重启。</div>
+          </div>
+          <div class="btn-row" style="margin-top:14px">
+            <button class="btn btn-primary btn-block" id="storage-btn" onclick="startStorageUpdate()" disabled>上传网页资源</button>
+            <button class="btn btn-danger" id="storage-cancel-btn" onclick="cancelStorageUpload()" disabled>取消上传</button>
+          </div>
+          <div id="storage-msg"></div>
+        </section>
+      </div>
+      <div class="ota-both-action" id="ota-both-actions" hidden>
+        <div class="ota-both-buttons">
+          <button class="btn btn-primary btn-block" id="ota-both-btn" onclick="startBothUpdates()" disabled>同时升级两个固件</button>
+          <div class="ota-both-cancel-wrap">
+            <button class="btn btn-danger" id="ota-both-cancel-btn" onclick="cancelBothOTAAction()" disabled>取消已选两个固件</button>
+          </div>
+        </div>
+        <div id="ota-both-msg"></div>
       </div>
     </article>
 
     <article class="card card-wide">
       <div class="card-head">
         <div>
-          <div class="accent">工具入口</div>
-          <h2>诊断与工具面板</h2>
-          <p>无需离开门户即可打开实时日志、Wi‑Fi 吞吐测试和 EQ 控制。</p>
+          <h2>系统诊断</h2>
+          <p>无需离开门户即可打开实时日志，并在支持的板型上进入 EQ 控制。</p>
         </div>
       </div>
       <div class="utility-links">
@@ -770,11 +1007,6 @@ a.btn:hover{transform:translateY(-1px)}
           <strong>实时系统日志</strong>
           <span>通过 WebSocket 查看 ESP 日志输出，检查启动、Wi‑Fi 与音频事件。</span>
           <a href="/logs" class="btn btn-primary">打开日志查看器</a>
-        </div>
-        <div class="utility-tile">
-          <strong>Wi‑Fi 速率测试</strong>
-          <span>测量浏览器与设备之间的延迟和吞吐。</span>
-          <a href="/speedtest" class="btn btn-primary">打开测速</a>
         </div>
         <div class="utility-tile" id="eq-card" style="display:none">
           <strong>均衡器</strong>
@@ -795,6 +1027,9 @@ const gpioFields = [
 ];
 
 let gpioDefaults = {};
+let otaRequest = null;
+let storageRequest = null;
+let combinedUploadActive = false;
 
 function msg(id, txt, type) {
   var el = document.getElementById(id);
@@ -868,18 +1103,27 @@ async function saveGPIOConfig() {
 
 async function scanWiFi() {
   var list = document.getElementById('wifi-list');
+  var ssidInput = document.getElementById('wifi-ssid');
+  var scanBtn = document.getElementById('wifi-scan-btn');
   list.innerHTML = '<div class="msg info">正在扫描无线网络...</div>';
+  if (scanBtn) scanBtn.disabled = true;
   try {
     var resp = await fetch('/api/wifi/scan');
     var data = await resp.json();
     if (data.success && data.networks && data.networks.length) {
+      var networks = data.networks.slice().sort(function(a, b) {
+        return (Number(b.rssi) || -999) - (Number(a.rssi) || -999);
+      });
+      var strongestSSID = '';
+      var strongestItem = null;
       list.innerHTML = '';
-      data.networks.forEach(function(net) {
+      networks.forEach(function(net) {
+        var ssid = (net.ssid || '').trim();
         var item = document.createElement('div');
         item.className = 'wifi-item';
         item.innerHTML =
           '<div class="wifi-meta">' +
-            '<span class="ssid">' + net.ssid + '</span>' +
+            '<span class="ssid">' + (ssid || '隐藏网络') + '</span>' +
             '<span class="details">信道 ' + net.channel + '</span>' +
           '</div>' +
           '<span class="rssi">' + net.rssi + ' dBm</span>';
@@ -888,15 +1132,26 @@ async function scanWiFi() {
             node.classList.remove('sel');
           });
           item.classList.add('sel');
-          document.getElementById('wifi-ssid').value = net.ssid;
+          if (ssid) ssidInput.value = ssid;
         };
         list.appendChild(item);
+        if (!strongestSSID && ssid) {
+          strongestSSID = ssid;
+          strongestItem = item;
+        }
       });
+      if (strongestSSID) {
+        ssidInput.value = strongestSSID;
+        if (strongestItem) strongestItem.classList.add('sel');
+        msg('wifi-msg', '已自动填入信号最强的网络：' + strongestSSID, 'info');
+      }
     } else {
       list.innerHTML = '<div class="msg info">未发现 Wi‑Fi 网络</div>';
     }
   } catch (e) {
     list.innerHTML = '<div class="msg err">Wi‑Fi 扫描失败</div>';
+  } finally {
+    if (scanBtn) scanBtn.disabled = false;
   }
 }
 
@@ -950,34 +1205,476 @@ async function saveName() {
   }
 }
 
-async function startOTA() {
+function isUploadBusy() {
+  return !!otaRequest || !!storageRequest || combinedUploadActive;
+}
+
+function hasBothSelections() {
+  return !!document.getElementById('fw-file').files[0] &&
+         !!document.getElementById('storage-file').files[0];
+}
+
+function clearCombinedUploadMessage() {
+  var el = document.getElementById('ota-both-msg');
+  if (el) el.innerHTML = '';
+}
+
+function updateOTAButtons() {
+  var input = document.getElementById('fw-file');
+  var file = input.files[0];
+  var busy = isUploadBusy();
+  document.getElementById('fw-picker-btn').disabled = busy;
+  document.getElementById('ota-btn').disabled = !file || busy;
+  document.getElementById('ota-cancel-btn').disabled = !otaRequest;
+  document.getElementById('ota-selected-remove').disabled = !file || busy;
+}
+
+function updateStorageButtons() {
+  var input = document.getElementById('storage-file');
+  var file = input.files[0];
+  var busy = isUploadBusy();
+  document.getElementById('storage-picker-btn').disabled = busy;
+  document.getElementById('storage-btn').disabled = !file || busy;
+  document.getElementById('storage-cancel-btn').disabled = !storageRequest;
+  document.getElementById('storage-selected-remove').disabled = !file || busy;
+}
+
+function updateCombinedOTAButton() {
+  var actions = document.getElementById('ota-both-actions');
+  var uploadBtn = document.getElementById('ota-both-btn');
+  var cancelBtn = document.getElementById('ota-both-cancel-btn');
+  var bothSelected = hasBothSelections();
+  var busy = isUploadBusy();
+
+  actions.hidden = !bothSelected;
+  uploadBtn.disabled = !bothSelected || busy;
+
+  if (combinedUploadActive) {
+    cancelBtn.textContent = '取消双 OTA 上传';
+    cancelBtn.disabled = !otaRequest && !storageRequest;
+  } else {
+    cancelBtn.textContent = '取消已选两个固件';
+    cancelBtn.disabled = !bothSelected || busy;
+  }
+}
+
+function refreshOTAControls() {
+  updateOTAButtons();
+  updateStorageButtons();
+  updateCombinedOTAButton();
+}
+
+function setOTASelectionText(file) {
+  document.getElementById('fw-picker-value').textContent = file
+    ? file.name
+    : '点击选择 `.bin` 固件';
+  document.getElementById('ota-selected-file').hidden = !file;
+  document.getElementById('ota-selected-name').textContent = file ? file.name : '';
+  document.getElementById('ota-selected-size').textContent = file ? formatBytes(file.size) : '';
+}
+
+function setOTAProgress(percent, label, note) {
+  var card = document.getElementById('ota-progress-card');
+  var fill = document.getElementById('ota-progress-fill');
+  var value = document.getElementById('ota-progress-value');
+  var labelEl = document.getElementById('ota-progress-label');
+  var noteEl = document.getElementById('ota-progress-note');
+  var safePercent = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  card.hidden = false;
+  fill.style.width = safePercent + '%';
+  value.textContent = safePercent + '%';
+  if (label) labelEl.textContent = label;
+  if (note) noteEl.textContent = note;
+}
+
+function resetOTAProgress() {
+  var card = document.getElementById('ota-progress-card');
+  document.getElementById('ota-progress-fill').style.width = '0%';
+  document.getElementById('ota-progress-value').textContent = '0%';
+  document.getElementById('ota-progress-label').textContent = '等待上传';
+  document.getElementById('ota-progress-note').textContent = '设备将在上传完成后自动重启。';
+  card.hidden = true;
+}
+
+function clearOTASelection() {
+  if (isUploadBusy()) return;
+  var input = document.getElementById('fw-file');
+  input.value = '';
+  setOTASelectionText(null);
+  resetOTAProgress();
+  document.getElementById('ota-msg').innerHTML = '';
+  clearCombinedUploadMessage();
+  refreshOTAControls();
+}
+
+function cancelOTAUpload() {
+  if (otaRequest) {
+    otaRequest.abort();
+  }
+}
+
+function setStorageSelectionText(file) {
+  document.getElementById('storage-picker-value').textContent = file
+    ? file.name
+    : '点击选择 `spiffs.bin` 资源包';
+  document.getElementById('storage-selected-file').hidden = !file;
+  document.getElementById('storage-selected-name').textContent = file ? file.name : '';
+  document.getElementById('storage-selected-size').textContent = file ? formatBytes(file.size) : '';
+}
+
+function setStorageProgress(percent, label, note) {
+  var card = document.getElementById('storage-progress-card');
+  var fill = document.getElementById('storage-progress-fill');
+  var value = document.getElementById('storage-progress-value');
+  var labelEl = document.getElementById('storage-progress-label');
+  var noteEl = document.getElementById('storage-progress-note');
+  var safePercent = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  card.hidden = false;
+  fill.style.width = safePercent + '%';
+  value.textContent = safePercent + '%';
+  if (label) labelEl.textContent = label;
+  if (note) noteEl.textContent = note;
+}
+
+function resetStorageProgress() {
+  var card = document.getElementById('storage-progress-card');
+  document.getElementById('storage-progress-fill').style.width = '0%';
+  document.getElementById('storage-progress-value').textContent = '0%';
+  document.getElementById('storage-progress-label').textContent = '等待上传';
+  document.getElementById('storage-progress-note').textContent = '资源更新完成后设备将自动重启。';
+  card.hidden = true;
+}
+
+function clearStorageSelection() {
+  if (isUploadBusy()) return;
+  var input = document.getElementById('storage-file');
+  input.value = '';
+  setStorageSelectionText(null);
+  resetStorageProgress();
+  document.getElementById('storage-msg').innerHTML = '';
+  clearCombinedUploadMessage();
+  refreshOTAControls();
+}
+
+function clearBothSelections() {
+  if (isUploadBusy()) return;
+  document.getElementById('fw-file').value = '';
+  document.getElementById('storage-file').value = '';
+  setOTASelectionText(null);
+  setStorageSelectionText(null);
+  resetOTAProgress();
+  resetStorageProgress();
+  document.getElementById('ota-msg').innerHTML = '';
+  document.getElementById('storage-msg').innerHTML = '';
+  clearCombinedUploadMessage();
+  refreshOTAControls();
+}
+
+function cancelBothOTAAction() {
+  if (combinedUploadActive) {
+    if (storageRequest) {
+      storageRequest.abort();
+      return;
+    }
+    if (otaRequest) {
+      otaRequest.abort();
+    }
+    return;
+  }
+
+  clearBothSelections();
+}
+
+function cancelStorageUpload() {
+  if (storageRequest) {
+    storageRequest.abort();
+  }
+}
+
+function formatBytes(bytes) {
+  if (!isFinite(bytes) || bytes <= 0) return '0 B';
+  var units = ['B', 'KB', 'MB', 'GB'];
+  var index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  var value = bytes / Math.pow(1024, index);
+  return value.toFixed(index === 0 ? 0 : 1) + ' ' + units[index];
+}
+
+function beginBinaryUpload(options) {
+  return new Promise(function(resolve, reject) {
+    var request = new XMLHttpRequest();
+    var uploadCompleted = false;
+    var finished = false;
+
+    function releaseRequest() {
+      if (finished) return false;
+      finished = true;
+      options.setRequest(null);
+      return true;
+    }
+
+    options.setRequest(request);
+    request.open('POST', options.url, true);
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    options.onStart();
+
+    request.upload.onprogress = function(event) {
+      if (!event.lengthComputable) return;
+      if (event.loaded >= event.total) uploadCompleted = true;
+      options.onProgress(event, uploadCompleted);
+    };
+
+    request.onload = function() {
+      var responseText = request.responseText || '';
+      if (!releaseRequest()) return;
+      if (request.status >= 200 && request.status < 300) {
+        options.onSuccess(responseText);
+        resolve({responseText: responseText, status: request.status});
+      } else {
+        options.onFailure(responseText);
+        reject({message: responseText || options.failureMessage, silent: true});
+      }
+    };
+
+    request.onerror = function() {
+      if (!releaseRequest()) return;
+      if (uploadCompleted && options.allowDisconnectAfterUpload) {
+        options.onDisconnectAfterUpload();
+        resolve({disconnectedAfterUpload: true, status: 0});
+      } else {
+        options.onError(uploadCompleted);
+        reject({message: options.failureMessage, silent: true});
+      }
+    };
+
+    request.onabort = function() {
+      if (!releaseRequest()) return;
+      options.onAbort();
+      reject({aborted: true, silent: true});
+    };
+
+    request.send(options.file);
+  });
+}
+
+function uploadOTAFile(file, isCombinedFlow) {
+  return beginBinaryUpload({
+    file: file,
+    url: '/api/ota/update',
+    failureMessage: '固件上传失败，请重试。',
+    allowDisconnectAfterUpload: true,
+    setRequest: function(request) {
+      otaRequest = request;
+      refreshOTAControls();
+    },
+    onStart: function() {
+      msg('ota-msg', isCombinedFlow ? '正在上传应用固件，完成后设备会统一重启。' : '正在上传固件镜像...', 'info');
+      setOTAProgress(
+        0,
+        isCombinedFlow ? '准备上传应用固件' : '准备上传固件',
+        isCombinedFlow ? '网页资源已就绪，正在将应用固件发送到设备。' : '正在将固件镜像发送到设备。'
+      );
+    },
+    onProgress: function(event, uploadCompleted) {
+      var percent = event.total > 0 ? (event.loaded / event.total) * 100 : 0;
+      if (uploadCompleted) {
+        setOTAProgress(
+          100,
+          '上传完成',
+          isCombinedFlow ? '应用固件传输完成，等待设备校验后统一重启。' : '固件传输完成，等待设备校验并自动重启。'
+        );
+      } else {
+        setOTAProgress(percent, '上传中', '已发送 ' + formatBytes(event.loaded) + ' / ' + formatBytes(event.total));
+      }
+    },
+    onSuccess: function() {
+      setOTAProgress(
+        100,
+        '升级完成',
+        isCombinedFlow ? '两个更新都已提交，设备正在应用新固件并重启。' : '设备正在应用固件并重启。'
+      );
+      msg('ota-msg', isCombinedFlow ? '应用固件已上传，设备正在完成双 OTA 升级并重启...' : '固件已上传，设备正在重启...', 'ok');
+    },
+    onFailure: function(responseText) {
+      setOTAProgress(0, '升级失败', '设备返回了错误响应，请重新选择固件后再试。');
+      msg('ota-msg', responseText || '固件上传失败，请重试。', 'err');
+    },
+    onDisconnectAfterUpload: function() {
+      setOTAProgress(100, '等待重启', '固件传输已完成，设备可能正在应用更新并重启。');
+      msg('ota-msg', '固件传输已完成，设备可能正在重启。', 'ok');
+    },
+    onError: function() {
+      setOTAProgress(0, '上传失败', '上传中断，请重新选择固件后再试。');
+      msg('ota-msg', '固件上传失败，请重试。', 'err');
+    },
+    onAbort: function() {
+      setOTAProgress(0, '上传已取消', '已取消本次固件上传，已选择的文件仍可再次上传。');
+      msg('ota-msg', '已取消固件上传。', 'info');
+    }
+  });
+}
+
+function uploadStorageFile(file, rebootAfterUpdate) {
+  var isCombinedFlow = !rebootAfterUpdate;
+  return beginBinaryUpload({
+    file: file,
+    url: rebootAfterUpdate ? '/api/storage/update' : '/api/storage/update?reboot=0',
+    failureMessage: '网页资源上传失败，请重试。',
+    allowDisconnectAfterUpload: rebootAfterUpdate,
+    setRequest: function(request) {
+      storageRequest = request;
+      refreshOTAControls();
+    },
+    onStart: function() {
+      msg('storage-msg', isCombinedFlow ? '正在上传网页资源镜像，完成后会自动继续上传应用固件。' : '正在上传网页资源镜像...', 'info');
+      setStorageProgress(
+        0,
+        isCombinedFlow ? '准备上传网页资源' : '准备上传资源包',
+        isCombinedFlow ? '正在将 spiffs.bin 写入 storage 分区；完成后会继续上传应用固件。' : '正在将 spiffs.bin 发送到 storage 分区更新接口。'
+      );
+    },
+    onProgress: function(event, uploadCompleted) {
+      var percent = event.total > 0 ? (event.loaded / event.total) * 100 : 0;
+      if (uploadCompleted) {
+        setStorageProgress(
+          100,
+          '上传完成',
+          isCombinedFlow ? '网页资源传输完成，等待设备写入 storage 分区并继续应用 OTA。' : '资源镜像传输完成，等待设备写入 storage 分区并自动重启。'
+        );
+      } else {
+        setStorageProgress(percent, '上传中', '已发送 ' + formatBytes(event.loaded) + ' / ' + formatBytes(event.total));
+      }
+    },
+    onSuccess: function() {
+      setStorageProgress(
+        100,
+        isCombinedFlow ? '网页资源已就绪' : '更新完成',
+        isCombinedFlow ? '网页资源已写入完成，正在继续上传应用固件。' : '设备正在应用网页资源并重启。'
+      );
+      msg('storage-msg', isCombinedFlow ? '网页资源已写入，正在继续上传应用固件...' : '网页资源已上传，设备正在重启...', 'ok');
+    },
+    onFailure: function(responseText) {
+      setStorageProgress(0, '更新失败', '设备返回了错误响应，请确认文件来自当前板型的 spiffs.bin。');
+      msg('storage-msg', responseText || '网页资源上传失败，请重试。', 'err');
+    },
+    onDisconnectAfterUpload: function() {
+      setStorageProgress(100, '等待重启', '资源镜像可能已上传完成，设备正在重启。');
+      msg('storage-msg', '网页资源传输已完成，设备可能正在重启。', 'ok');
+    },
+    onError: function() {
+      setStorageProgress(0, '上传失败', '上传中断，请重新选择资源包后再试。');
+      msg('storage-msg', '网页资源上传失败，请重试。', 'err');
+    },
+    onAbort: function() {
+      setStorageProgress(0, '上传已取消', '已取消本次网页资源上传，已选择的文件仍可再次上传。');
+      msg('storage-msg', '已取消网页资源上传。', 'info');
+    }
+  });
+}
+
+function startOTA() {
   var file = document.getElementById('fw-file').files[0];
   if (!file) {
     msg('ota-msg', '请先选择固件文件', 'err');
     return;
   }
 
-  document.getElementById('ota-btn').disabled = true;
-  msg('ota-msg', '正在上传固件镜像...', 'info');
+  if (isUploadBusy()) return;
+  uploadOTAFile(file, false).catch(function() {});
+}
+
+function startStorageUpdate() {
+  var file = document.getElementById('storage-file').files[0];
+  if (!file) {
+    msg('storage-msg', '请先选择资源包文件', 'err');
+    return;
+  }
+
+  if (!confirm('即将更新网页资源分区。该操作不会覆盖应用固件，但设备会在完成后自动重启。现在继续吗？')) {
+    return;
+  }
+
+  if (isUploadBusy()) return;
+  uploadStorageFile(file, true).catch(function() {});
+}
+
+async function startBothUpdates() {
+  var otaFile = document.getElementById('fw-file').files[0];
+  var storageFile = document.getElementById('storage-file').files[0];
+
+  if (!otaFile || !storageFile) {
+    msg('ota-both-msg', '请先同时选择应用固件和网页资源包。', 'err');
+    return;
+  }
+
+  if (isUploadBusy()) return;
+
+  if (!confirm('将先更新网页资源，再更新应用固件，最后只重启一次设备。现在继续吗？')) {
+    return;
+  }
+
+  combinedUploadActive = true;
+  refreshOTAControls();
+  msg('ota-both-msg', '正在执行双 OTA 升级：先上传网页资源，再上传应用固件。', 'info');
 
   try {
-    await fetch('/api/ota/update', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/octet-stream'},
-      body: file
-    });
-    msg('ota-msg', '固件已上传，设备正在重启...', 'ok');
-  } catch (e) {
-    msg('ota-msg', '上传已完成，或设备已在传输期间重启', 'ok');
+    await uploadStorageFile(storageFile, false);
+    msg('ota-both-msg', '网页资源已写入，正在继续上传应用固件。', 'info');
+    await uploadOTAFile(otaFile, true);
+    msg('ota-both-msg', '两个固件都已提交，设备正在应用更新并重启。', 'ok');
+  } catch (error) {
+    if (error && error.aborted) {
+      msg('ota-both-msg', '双 OTA 升级已取消。', 'info');
+    } else {
+      msg('ota-both-msg', (error && error.message) || '双 OTA 升级失败，请重试。', 'err');
+    }
+  } finally {
+    combinedUploadActive = false;
+    refreshOTAControls();
   }
 }
 
 async function restart() {
   if (!confirm('现在重启设备吗？')) return;
   try {
-    await fetch('/api/system/restart', {method: 'POST'});
-    msg('gpio-msg', '已向设备发送重启指令', 'info');
-  } catch (e) {}
+    var resp = await fetch('/api/system/restart', {method: 'POST'});
+    var data = await resp.json();
+    if (data.success) {
+      msg('system-msg', '已向设备发送重启指令。', 'info');
+    } else {
+      msg('system-msg', data.error || '发送重启指令失败。', 'err');
+    }
+  } catch (e) {
+    msg('system-msg', '发送重启指令失败。', 'err');
+  }
+}
+
+async function enableAP() {
+  try {
+    var resp = await fetch('/api/wifi/enable-ap', {method: 'POST'});
+    var data = await resp.json();
+    if (data.success) {
+      msg('system-msg', '已开启 AP，可连接配网热点后访问 192.168.4.1。', 'ok');
+    } else {
+      msg('system-msg', data.error || '开启 AP 失败。', 'err');
+    }
+  } catch (e) {
+    msg('system-msg', '开启 AP 失败。', 'err');
+  }
+}
+
+async function resetWiFi() {
+  if (!confirm('清除已保存的 Wi‑Fi 后，设备将重启并回到 AP 配网模式。现在继续吗？')) return;
+  try {
+    var resp = await fetch('/api/wifi/reset', {method: 'POST'});
+    var data = await resp.json();
+    if (data.success) {
+      msg('system-msg', '已清除 Wi‑Fi 凭据，设备正在重启到 AP 配网模式。', 'ok');
+    } else {
+      msg('system-msg', data.error || '重置 Wi‑Fi 失败。', 'err');
+    }
+  } catch (e) {
+    msg('system-msg', '重置 Wi‑Fi 失败。', 'err');
+  }
 }
 
 function formatRSSI(value) {
@@ -989,26 +1686,6 @@ function formatRSSI(value) {
   return value + ' dBm（' + quality + '）';
 }
 
-function updateStatusPanel(info) {
-  var panel = document.getElementById('status-panel');
-  var title = document.getElementById('status-title');
-  var detail = document.getElementById('status-detail');
-
-  if (info.eth_connected) {
-    panel.className = 'status-panel ok';
-    title.textContent = '以太网上行已连接';
-    detail.textContent = info.ip || '无 IP';
-  } else if (info.wifi_connected) {
-    panel.className = 'status-panel ok';
-    title.textContent = 'Wi‑Fi 已连接路由器';
-    detail.textContent = info.ip || '无 IP';
-  } else {
-    panel.className = 'status-panel err';
-    title.textContent = '等待网络连接';
-    detail.textContent = '请通过 AP 模式连接';
-  }
-}
-
 async function loadInfo() {
   try {
     var resp = await fetch('/api/system/info');
@@ -1016,8 +1693,6 @@ async function loadInfo() {
     if (!data.success) return;
 
     var info = data.info;
-    updateStatusPanel(info);
-
     document.getElementById('info-ip').textContent = info.ip || '-';
     document.getElementById('info-mac').textContent = info.mac || '-';
     document.getElementById('info-name').textContent = info.device_name || '-';
@@ -1040,12 +1715,25 @@ async function loadInfo() {
 window.onload = function() {
   document.getElementById('fw-file').onchange = function(event) {
     var file = event.target.files[0];
-    document.getElementById('fw-name').textContent = file ? file.name : '未选择文件';
-    document.getElementById('ota-btn').disabled = !file;
+    setOTASelectionText(file || null);
+    resetOTAProgress();
+    document.getElementById('ota-msg').innerHTML = '';
+    clearCombinedUploadMessage();
+    refreshOTAControls();
+  };
+
+  document.getElementById('storage-file').onchange = function(event) {
+    var file = event.target.files[0];
+    setStorageSelectionText(file || null);
+    resetStorageProgress();
+    document.getElementById('storage-msg').innerHTML = '';
+    clearCombinedUploadMessage();
+    refreshOTAControls();
   };
 
   loadInfo();
   loadGPIOConfig();
+  refreshOTAControls();
   setInterval(loadInfo, 30000);
 };
 </script>

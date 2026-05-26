@@ -278,6 +278,51 @@ static led_mode_t s_rgb_mode = LED_OFF;
 static bool s_rgb_enabled = false;
 static int s_rgb_gpio = -1;
 
+static void rgb_led_clear(void);
+
+static esp_err_t rgb_led_clear_on_gpio(int gpio) {
+  if (gpio < 0) {
+    return ESP_OK;
+  }
+
+  if (s_rgb_strip && gpio == s_rgb_gpio) {
+    rgb_led_clear();
+    s_rgb_enabled = false;
+    s_rgb_mode = LED_OFF;
+    return ESP_OK;
+  }
+
+  led_strip_handle_t strip = NULL;
+  led_strip_config_t strip_cfg = {
+      .strip_gpio_num = gpio,
+      .max_leds = 1,
+      .led_model = LED_MODEL_WS2812,
+      .flags.invert_out = false,
+  };
+  led_strip_rmt_config_t rmt_cfg = {
+      .clk_src = RMT_CLK_SRC_DEFAULT,
+      .resolution_hz = 10 * 1000 * 1000,
+      .flags.with_dma = false,
+  };
+
+  esp_err_t err = led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &strip);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = led_strip_clear(strip);
+  if (err == ESP_OK) {
+    err = led_strip_refresh(strip);
+  }
+
+  esp_err_t del_err = led_strip_del(strip);
+  if (err == ESP_OK && del_err != ESP_OK) {
+    err = del_err;
+  }
+
+  return err;
+}
+
 static void rgb_led_init(void) {
   settings_gpio_config_t gpio_cfg;
   settings_get_gpio_config(&gpio_cfg);
@@ -285,6 +330,9 @@ static void rgb_led_init(void) {
 
   if (s_rgb_gpio < 0) {
     s_rgb_enabled = false;
+    s_rgb_strip = NULL;
+    s_rgb_mode = LED_OFF;
+    ESP_LOGI(TAG, "RGB LED disabled");
     return;
   }
 
@@ -557,5 +605,20 @@ void led_set_error(bool error) {
     apply_state(STATE_ERROR);
   } else {
     apply_state(s_prev_state);
+  }
+}
+
+void led_prepare_rgb_gpio_change(int previous_rgb_gpio, int new_rgb_gpio) {
+  if (previous_rgb_gpio < 0 || previous_rgb_gpio == new_rgb_gpio) {
+    return;
+  }
+
+  esp_err_t err = rgb_led_clear_on_gpio(previous_rgb_gpio);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Cleared RGB LED on previous GPIO %d before restart",
+             previous_rgb_gpio);
+  } else {
+    ESP_LOGW(TAG, "Failed to clear RGB LED on previous GPIO %d: %s",
+             previous_rgb_gpio, esp_err_to_name(err));
   }
 }
