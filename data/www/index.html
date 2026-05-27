@@ -127,10 +127,11 @@ body::after{
 
 .hero-grid{
   position:relative;
-  display:grid;
-  grid-template-columns:minmax(0,1fr);
-  gap:18px;
-  align-items:stretch;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  min-height:122px;
+  text-align:center;
 }
 
 .eyeline{
@@ -148,7 +149,7 @@ body::after{
 }
 
 .hero h1{
-  margin:18px 0 10px;
+  margin:0;
   font-size:clamp(2rem,4vw,3.4rem);
   line-height:.95;
   letter-spacing:-.04em;
@@ -205,6 +206,14 @@ body::after{
   line-height:1.65;
 }
 
+.top-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1.22fr) minmax(320px,.9fr);
+  gap:18px;
+  margin-bottom:18px;
+  align-items:stretch;
+}
+
 .layout{
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
@@ -259,6 +268,61 @@ body::after{
 .field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 .gpio-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}
 .group-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+
+.top-card{
+  min-height:100%;
+}
+
+.top-card .card-head{
+  margin-bottom:14px;
+}
+
+.top-card .card-head p{
+  max-width:34rem;
+}
+
+.wifi-card{
+  display:grid;
+  align-content:start;
+}
+
+.device-card{
+  display:grid;
+  align-content:start;
+}
+
+.device-card .stack{
+  gap:14px;
+}
+
+.device-hints{
+  margin-top:16px;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
+
+.mini-note{
+  padding:14px 15px;
+  border-radius:16px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.035);
+}
+
+.mini-note strong{
+  display:block;
+  margin-bottom:4px;
+  font-size:12px;
+  letter-spacing:.08em;
+  color:var(--accent);
+}
+
+.mini-note span{
+  display:block;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
 
 .group{
   padding:16px;
@@ -742,8 +806,13 @@ a.btn:hover{transform:translateY(-1px)}
   line-height:1.7;
 }
 
+@media (max-width:960px){
+  .top-grid{grid-template-columns:1fr}
+  .device-hints{grid-template-columns:1fr}
+}
+
 @media (max-width:880px){
-  .hero-grid{grid-template-columns:1fr}
+  .hero-grid{min-height:unset}
 }
 
 @media (max-width:640px){
@@ -766,8 +835,8 @@ a.btn:hover{transform:translateY(-1px)}
     </div>
   </section>
 
-  <section class="layout">
-    <article class="card">
+  <section class="top-grid">
+    <article class="card top-card wifi-card">
       <div class="card-head">
         <div>
           <h2>Wi‑Fi 配网</h2>
@@ -794,7 +863,7 @@ a.btn:hover{transform:translateY(-1px)}
       <div id="wifi-msg"></div>
     </article>
 
-    <article class="card">
+    <article class="card top-card device-card">
       <div class="card-head">
         <div>
           <h2>设备设置</h2>
@@ -810,9 +879,21 @@ a.btn:hover{transform:translateY(-1px)}
       <div class="btn-row" style="margin-top:14px">
         <button class="btn btn-primary" onclick="saveName()">保存设备名称</button>
       </div>
+      <div class="device-hints">
+        <div class="mini-note">
+          <strong>显示名称</strong>
+          <span>会直接出现在 iPhone、iPad 和 Mac 的 AirPlay 列表中。</span>
+        </div>
+        <div class="mini-note">
+          <strong>保存方式</strong>
+          <span>写入 NVS，重启后广播名称和发现信息一起刷新。</span>
+        </div>
+      </div>
       <div id="name-msg"></div>
     </article>
+  </section>
 
+  <section class="layout">
     <article class="card card-wide">
       <div class="card-head">
         <div>
