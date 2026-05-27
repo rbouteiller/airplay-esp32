@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Persistent settings storage (NVS)
@@ -9,6 +10,8 @@
 
 // Default device name (used if none configured)
 #define SETTINGS_DEFAULT_DEVICE_NAME "ESP32 AirPlay"
+#define SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD 5
+#define SETTINGS_POWER_CYCLE_RESET_WINDOW_MS      5000
 
 typedef struct {
   int i2s_sck;
@@ -105,6 +108,19 @@ esp_err_t settings_set_wifi_credentials(const char *ssid, const char *password);
  * Clear saved WiFi credentials from persistent storage.
  */
 esp_err_t settings_clear_wifi_credentials(void);
+
+/**
+ * Process one power-on boot for the power-cycle AP recovery feature.
+ * A round is defined as: power on -> power off before the stable window.
+ * After N complete rounds, the next power-on boot clears saved WiFi
+ * credentials so the device returns to AP provisioning.
+ */
+esp_err_t settings_record_power_cycle_boot(bool *wifi_reset_triggered);
+
+/**
+ * Clear the consecutive power-cycle boot counter after a stable run window.
+ */
+esp_err_t settings_clear_power_cycle_counter(void);
 
 /**
  * Check if WiFi credentials are stored

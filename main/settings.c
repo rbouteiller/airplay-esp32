@@ -2,6 +2,7 @@
 
 #include "dac.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "nvs.h"
 #include "soc/soc_caps.h"
 #include "sdkconfig.h"
@@ -19,6 +20,10 @@ static const char *TAG = "settings";
 #define NVS_KEY_DEVICE_NAME   "device_name"
 #define NVS_KEY_EQ_GAINS      "eq_gains"
 #define NVS_KEY_GPIO_CFG      "gpio_cfg"
+#define NVS_KEY_POWER_CYCLES  "pc_cycles"
+#define NVS_KEY_POWER_PENDING "pc_pending"
+#define NVS_KEY_POWER_ARM     "pc_arm"
+#define NVS_KEY_POWER_LEGACY  "boot_count"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -37,6 +42,112 @@ static float g_eq_gains[SETTINGS_EQ_BANDS];
 static bool g_eq_loaded = false;
 static settings_gpio_config_t g_gpio_config;
 static bool g_gpio_loaded = false;
+
+typedef struct {
+  uint8_t completed_cycles;
+  bool boot_pending;
+  bool arm_next_boot;
+} power_cycle_state_t;
+
+static esp_err_t erase_key_if_exists(nvs_handle_t nvs, const char *key) {
+  esp_err_t err = nvs_erase_key(nvs, key);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    return ESP_OK;
+  }
+  return err;
+}
+
+static esp_err_t clear_wifi_credentials_locked(nvs_handle_t nvs) {
+  esp_err_t err = erase_key_if_exists(nvs, NVS_KEY_WIFI_SSID);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  return erase_key_if_exists(nvs, NVS_KEY_WIFI_PASSWORD);
+}
+
+static esp_err_t get_power_cycle_state_locked(nvs_handle_t nvs,
+                                              power_cycle_state_t *state) {
+  if (!state) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  state->completed_cycles = 0;
+  state->boot_pending = false;
+  state->arm_next_boot = false;
+
+  uint8_t cycles = 0;
+  esp_err_t err = nvs_get_u8(nvs, NVS_KEY_POWER_CYCLES, &cycles);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = ESP_OK;
+  } else if (err != ESP_OK) {
+    return err;
+  }
+
+  uint8_t pending = 0;
+  esp_err_t pending_err = nvs_get_u8(nvs, NVS_KEY_POWER_PENDING, &pending);
+  if (pending_err == ESP_ERR_NVS_NOT_FOUND) {
+    pending_err = ESP_OK;
+  }
+  if (pending_err != ESP_OK) {
+    return pending_err;
+  }
+
+  uint8_t arm = 0;
+  esp_err_t arm_err = nvs_get_u8(nvs, NVS_KEY_POWER_ARM, &arm);
+  if (arm_err == ESP_ERR_NVS_NOT_FOUND) {
+    arm_err = ESP_OK;
+  }
+  if (arm_err != ESP_OK) {
+    return arm_err;
+  }
+
+  state->completed_cycles = cycles;
+  state->boot_pending = pending != 0;
+  state->arm_next_boot = arm != 0;
+  return ESP_OK;
+}
+
+static esp_err_t set_power_cycle_state_locked(nvs_handle_t nvs,
+                                              const power_cycle_state_t *state) {
+  if (!state) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t err;
+  if (state->completed_cycles == 0) {
+    err = erase_key_if_exists(nvs, NVS_KEY_POWER_CYCLES);
+  } else {
+    err = nvs_set_u8(nvs, NVS_KEY_POWER_CYCLES, state->completed_cycles);
+  }
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  if (!state->boot_pending) {
+    err = erase_key_if_exists(nvs, NVS_KEY_POWER_PENDING);
+  } else {
+    err = nvs_set_u8(nvs, NVS_KEY_POWER_PENDING, 1);
+  }
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  if (!state->arm_next_boot) {
+    err = erase_key_if_exists(nvs, NVS_KEY_POWER_ARM);
+  } else {
+    err = nvs_set_u8(nvs, NVS_KEY_POWER_ARM, 1);
+  }
+  return err;
+}
+
+static esp_err_t clear_power_cycle_state_locked(nvs_handle_t nvs) {
+  return erase_key_if_exists(nvs, NVS_KEY_POWER_LEGACY);
+}
+
+static bool is_countable_power_cycle_reset(esp_reset_reason_t reason) {
+  return reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT;
+}
 
 void settings_get_default_gpio_config(settings_gpio_config_t *config) {
   if (!config) {
@@ -335,16 +446,7 @@ esp_err_t settings_clear_wifi_credentials(void) {
     return err;
   }
 
-  err = nvs_erase_key(nvs, NVS_KEY_WIFI_SSID);
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    err = ESP_OK;
-  }
-  if (err == ESP_OK) {
-    esp_err_t pass_err = nvs_erase_key(nvs, NVS_KEY_WIFI_PASSWORD);
-    if (pass_err != ESP_OK && pass_err != ESP_ERR_NVS_NOT_FOUND) {
-      err = pass_err;
-    }
-  }
+  err = clear_wifi_credentials_locked(nvs);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
@@ -358,6 +460,145 @@ esp_err_t settings_clear_wifi_credentials(void) {
              esp_err_to_name(err));
   }
 
+  return err;
+}
+
+esp_err_t settings_record_power_cycle_boot(bool *wifi_reset_triggered) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS for boot counter: %s",
+             esp_err_to_name(err));
+    return err;
+  }
+
+  if (wifi_reset_triggered) {
+    *wifi_reset_triggered = false;
+  }
+
+  power_cycle_state_t state = {0};
+  err = get_power_cycle_state_locked(nvs, &state);
+  if (err != ESP_OK) {
+    nvs_close(nvs);
+    ESP_LOGE(TAG, "Failed to read power-cycle state: %s",
+             esp_err_to_name(err));
+    return err;
+  }
+
+  esp_reset_reason_t reason = esp_reset_reason();
+  if (!is_countable_power_cycle_reset(reason)) {
+    power_cycle_state_t baseline = {0};
+    baseline.arm_next_boot = true;
+    err = set_power_cycle_state_locked(nvs, &baseline);
+    if (err == ESP_OK) {
+      err = clear_power_cycle_state_locked(nvs);
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG,
+               "Cleared power-cycle sequence after non-power reset (%d)",
+               reason);
+    }
+    nvs_close(nvs);
+    return err;
+  }
+
+  if (state.boot_pending && state.completed_cycles < UINT8_MAX) {
+    state.completed_cycles++;
+    state.boot_pending = false;
+    ESP_LOGI(TAG, "Completed rapid power-cycle round: %u/%d",
+             state.completed_cycles, SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD);
+  }
+
+  if (state.completed_cycles >= SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD) {
+    err = clear_wifi_credentials_locked(nvs);
+    if (err == ESP_OK) {
+      power_cycle_state_t baseline = {0};
+      baseline.arm_next_boot = true;
+      err = set_power_cycle_state_locked(nvs, &baseline);
+    }
+    if (err == ESP_OK) {
+      err = clear_power_cycle_state_locked(nvs);
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err == ESP_OK) {
+      if (wifi_reset_triggered) {
+        *wifi_reset_triggered = true;
+      }
+      ESP_LOGW(TAG,
+               "Detected %d completed power-cycle rounds; cleared WiFi "
+               "credentials",
+               SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD);
+    }
+  } else if (state.arm_next_boot || state.completed_cycles > 0) {
+    state.boot_pending = true;
+    state.arm_next_boot = false;
+    err = set_power_cycle_state_locked(nvs, &state);
+    if (err == ESP_OK) {
+      err = clear_power_cycle_state_locked(nvs);
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "Power-cycle sequence armed: %u/%d rounds completed",
+               state.completed_cycles, SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD);
+    }
+  } else {
+    power_cycle_state_t baseline = {0};
+    baseline.arm_next_boot = true;
+    err = set_power_cycle_state_locked(nvs, &baseline);
+    if (err == ESP_OK) {
+      err = clear_power_cycle_state_locked(nvs);
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG,
+               "Ignoring current power-on state; next power-on -> power-off "
+               "starts round 1");
+    }
+  }
+
+  nvs_close(nvs);
+  return err;
+}
+
+esp_err_t settings_clear_power_cycle_counter(void) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS for clearing boot counter: %s",
+             esp_err_to_name(err));
+    return err;
+  }
+
+  power_cycle_state_t state = {0};
+  err = get_power_cycle_state_locked(nvs, &state);
+  if (err == ESP_OK && (state.completed_cycles != 0 || state.boot_pending ||
+                        state.arm_next_boot)) {
+    power_cycle_state_t baseline = {0};
+    baseline.arm_next_boot = true;
+    err = set_power_cycle_state_locked(nvs, &baseline);
+    if (err == ESP_OK) {
+      err = clear_power_cycle_state_locked(nvs);
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG,
+               "Power-cycle round timed out; cleared sequence and re-armed "
+               "next boot as round 1");
+    }
+  }
+
+  nvs_close(nvs);
   return err;
 }
 
