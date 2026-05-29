@@ -29,10 +29,6 @@ typedef struct {
   // played.
   int consecutive_early_frames;
   // Late-frame guard: counts consecutive individually-late frames.  When this
-  // exceeds MAX_CONSECUTIVE_LATE the whole buffer is considered stale (e.g.
-  // after a track skip where the anchor network_time has already passed) and a
-  // bulk flush is triggered instead of draining frame-by-frame.
-  int consecutive_late_frames;
   // Quick-start flag: set after a seek/flush/track-change so that
   // audio_timing_read starts playback with just 1 buffered frame instead of
   // waiting for target_buffer_frames.  Anchor-based timing is used from the

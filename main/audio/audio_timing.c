@@ -18,15 +18,13 @@
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
 #define TIMING_THRESHOLD_US           10000 // 10ms. early/late threshold
-// MAX_CONSECUTIVE_EARLY: number of consecutive early frames before we conclude
-// the anchor is genuinely stuck/wrong.  At ~8 ms per frame this is ~6 seconds
-// of silence, which is well beyond any normal pre-buffer depth.
-#define MAX_CONSECUTIVE_EARLY 750
-// MAX_CONSECUTIVE_LATE: number of consecutive individually-late frames before
-// we conclude the whole buffer is stale and do a bulk flush.  At ~8 ms/frame
-// this is ~24 ms — just enough to distinguish a genuine stale-buffer from a
-// one-off WiFi jitter spike, without the 20-frame drain+log storm.
-#define MAX_CONSECUTIVE_LATE 3
+// MAX_CONSECUTIVE_EARLY: safety valve — counts how many consecutive calls to
+// audio_timing_read returned silence because the pending frame was still too
+// early.  Each call corresponds to one DMA period (~46 ms on I2S at 44100 Hz).
+// 50 calls × 46 ms ≈ 2.3 s: long enough that a legitimate pre-buffer of any
+// realistic depth will never hit it, short enough to detect a genuinely stuck
+// or invalid anchor in a few seconds.
+#define MAX_CONSECUTIVE_EARLY 50
 
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
@@ -143,7 +141,6 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
   timing->consecutive_early_frames = 0;
-  timing->consecutive_late_frames = 0;
   timing->quick_start = false;
   timing->deferred_flush_pending = false;
   timing->flush_until_ts = 0;
@@ -213,7 +210,6 @@ void audio_timing_set_anchor(audio_timing_t *timing,
   // Reset frame counters so pre-buffered audio after a pause/resume or
   // track skip does not accumulate into the new anchor's counts.
   timing->consecutive_early_frames = 0;
-  timing->consecutive_late_frames = 0;
 
   // Compute lead time: how far in the future this anchor's network timestamp
   // is relative to now.  Negative means the anchor is already in the past
@@ -384,7 +380,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         timing->playout_started = false;
         timing->ready_time_us = 0;
         timing->consecutive_early_frames = 0;
-        timing->consecutive_late_frames = 0;
         // quick_start so the first frame of the next track starts playing
         // as soon as 1 frame arrives, with normal anchor timing applied.
         timing->quick_start = true;
@@ -468,16 +463,12 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         } else if (early_us < -TIMING_THRESHOLD_US) {
           // Reset consecutive early counter on late/normal frames
           timing->consecutive_early_frames = 0;
-          timing->consecutive_late_frames++;
 
           // Late frame — drop it and continue draining within the SAME call.
           // The 256-attempt drain loop chews through stale frames at zero
           // wall-time cost, skipping past arbitrarily many stale frames in
           // one pass without the DMA ever idling.
-          if (timing->consecutive_late_frames == 1) {
-            ESP_LOGW(TAG, "Dropping late frame(s): %lld ms",
-                     -early_us / 1000LL);
-          }
+          ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
           if (stats) {
             stats->late_frames++;
           }
@@ -492,9 +483,8 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       }
     }
 
-    // Frame is on time (or anchor-invalid) — reset counters.
+    // Frame is on time (or anchor-invalid) — reset counter.
     timing->consecutive_early_frames = 0;
-    timing->consecutive_late_frames = 0;
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
