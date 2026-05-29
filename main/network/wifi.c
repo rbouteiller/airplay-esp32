@@ -38,6 +38,37 @@ static wifi_config_t s_ap_config;
 static void wifi_select_best_ap(const char *ssid);
 static void scan_and_connect_task(void *arg);
 
+static void sanitize_hostname(const char *name, char *out, size_t out_len) {
+  size_t j = 0;
+  for (size_t i = 0; name[i] && j < out_len - 1; i++) {
+    char c = name[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      out[j++] = c;
+    } else if (j > 0 && out[j - 1] != '-') {
+      out[j++] = '-';
+    }
+  }
+  while (j > 0 && out[j - 1] == '-') j--;
+  if (j == 0) {
+    strlcpy(out, "esp32-airplay", out_len);
+    return;
+  }
+  out[j] = '\0';
+}
+
+void wifi_set_hostname(const char *device_name) {
+  if (!s_sta_netif || !device_name) return;
+  char hostname[33];
+  sanitize_hostname(device_name, hostname, sizeof(hostname));
+  esp_err_t err = esp_netif_set_hostname(s_sta_netif, hostname);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set hostname '%s': %s", hostname,
+             esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "Hostname set to: %s", hostname);
+  }
+}
+
 static void retry_timer_callback(void *arg) {
   if (!s_sta_connected) {
     ESP_LOGI(TAG, "Retry timer fired, reconnecting (attempt %d)...",
@@ -242,6 +273,9 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
 
   if (!s_sta_netif) {
     s_sta_netif = esp_netif_create_default_wifi_sta();
+    char dev_name[65];
+    settings_get_device_name(dev_name, sizeof(dev_name));
+    wifi_set_hostname(dev_name);
   }
   if (!s_ap_netif) {
     s_ap_netif = esp_netif_create_default_wifi_ap();

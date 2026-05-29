@@ -4,6 +4,7 @@
 
 #include "ethernet.h"
 
+#include "settings.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -173,6 +174,11 @@ esp_err_t ethernet_init(void) {
   esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(s_eth_handle);
   ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, glue));
 
+  // Set hostname before DHCP starts
+  char dev_name[65];
+  settings_get_device_name(dev_name, sizeof(dev_name));
+  ethernet_set_hostname(dev_name);
+
   // Start Ethernet
   ret = esp_eth_start(s_eth_handle);
   if (ret != ESP_OK) {
@@ -183,6 +189,33 @@ esp_err_t ethernet_init(void) {
   ESP_LOGI(TAG, "W5500 Ethernet initialized (CS=%d, INT=%d, RST=%d)",
            BOARD_ETH_CS_GPIO, BOARD_ETH_INT_GPIO, BOARD_ETH_RST_GPIO);
   return ESP_OK;
+}
+
+void ethernet_set_hostname(const char *device_name) {
+  if (!s_eth_netif || !device_name) return;
+  char hostname[33];
+  size_t j = 0;
+  for (size_t i = 0; device_name[i] && j < sizeof(hostname) - 1; i++) {
+    char c = device_name[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      hostname[j++] = c;
+    } else if (j > 0 && hostname[j - 1] != '-') {
+      hostname[j++] = '-';
+    }
+  }
+  while (j > 0 && hostname[j - 1] == '-') j--;
+  if (j == 0) {
+    strlcpy(hostname, "esp32-airplay", sizeof(hostname));
+  } else {
+    hostname[j] = '\0';
+  }
+  esp_err_t err = esp_netif_set_hostname(s_eth_netif, hostname);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set hostname '%s': %s", hostname,
+             esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "Hostname set to: %s", hostname);
+  }
 }
 
 bool ethernet_is_connected(void) {

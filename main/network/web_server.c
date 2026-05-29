@@ -284,6 +284,8 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
     const char *name = cJSON_GetStringValue(name_json);
     esp_err_t err = settings_set_device_name(name);
     if (err == ESP_OK) {
+      wifi_set_hostname(name);
+      ethernet_set_hostname(name);
       cJSON_AddBoolToObject(response, "success", true);
     } else {
       cJSON_AddBoolToObject(response, "success", false);

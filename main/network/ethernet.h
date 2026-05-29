@@ -11,6 +11,7 @@ bool ethernet_is_connected(void);
 bool ethernet_is_link_up(void);
 esp_err_t ethernet_get_ip_str(char *ip_str, size_t len);
 void ethernet_get_mac_str(char *mac_str, size_t len);
+void ethernet_set_hostname(const char *device_name);
 
 #else // !CONFIG_ETH_W5500_ENABLED
 
@@ -33,6 +34,9 @@ static inline void ethernet_get_mac_str(char *mac_str, size_t len) {
   if (mac_str && len > 0) {
     mac_str[0] = '\0';
   }
+}
+static inline void ethernet_set_hostname(const char *device_name) {
+  (void)device_name;
 }
 
 #endif // CONFIG_ETH_W5500_ENABLED
