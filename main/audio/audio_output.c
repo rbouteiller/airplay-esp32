@@ -3,6 +3,7 @@
 #include "audio_receiver.h"
 #include "audio_resample.h"
 #include "led.h"
+#include "settings.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -12,19 +13,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
-// SIDE NOTE; providing power from GPIO pins is capped ~20mA.
-#if CONFIG_I2S_GND_IO >= 0
-#define I2S_GND_PIN CONFIG_I2S_GND_IO
-#endif
-#if CONFIG_I2S_VCC_IO >= 0
-#define I2S_VCC_PIN CONFIG_I2S_VCC_IO
-#endif
-
 #define TAG           "audio_output"
-#define I2S_SCK_PIN   CONFIG_I2S_SCK_IO
-#define I2S_BCK_PIN   CONFIG_I2S_BCK_IO
-#define I2S_LRCK_PIN  CONFIG_I2S_WS_IO
-#define I2S_DOUT_PIN  CONFIG_I2S_DO_IO
 #define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
 #define FRAME_SAMPLES 352
 
@@ -116,6 +105,9 @@ static void playback_task(void *arg) {
 }
 
 esp_err_t audio_output_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+
   i2s_chan_config_t chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   chan_cfg.dma_desc_num = I2S_DMA_DESC_NUM;
@@ -130,28 +122,32 @@ esp_err_t audio_output_init(void) {
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
-              .mclk = I2S_SCK_PIN,
-              .bclk = I2S_BCK_PIN,
-              .ws = I2S_LRCK_PIN,
-              .dout = I2S_DOUT_PIN,
+              .mclk = gpio_cfg.i2s_sck >= 0 ? gpio_cfg.i2s_sck : I2S_GPIO_UNUSED,
+              .bclk = gpio_cfg.i2s_bck >= 0 ? gpio_cfg.i2s_bck : I2S_GPIO_UNUSED,
+              .ws = gpio_cfg.i2s_ws >= 0 ? gpio_cfg.i2s_ws : I2S_GPIO_UNUSED,
+              .dout = gpio_cfg.i2s_do >= 0 ? gpio_cfg.i2s_do : I2S_GPIO_UNUSED,
               .din = I2S_GPIO_UNUSED,
           },
   };
-#ifdef I2S_GND_PIN
-  gpio_reset_pin(I2S_GND_PIN);
-  gpio_set_direction(I2S_GND_PIN, GPIO_MODE_OUTPUT);
-  gpio_set_level(I2S_GND_PIN, 0);
-#endif
-#ifdef I2S_VCC_PIN
-  gpio_reset_pin(I2S_VCC_PIN);
-  gpio_set_direction(I2S_VCC_PIN, GPIO_MODE_OUTPUT);
-  gpio_set_level(I2S_VCC_PIN, 1);
-#endif
+  if (gpio_cfg.i2s_gnd >= 0) {
+    gpio_reset_pin(gpio_cfg.i2s_gnd);
+    gpio_set_direction(gpio_cfg.i2s_gnd, GPIO_MODE_OUTPUT);
+    gpio_set_level(gpio_cfg.i2s_gnd, 0);
+  }
+  if (gpio_cfg.i2s_vcc >= 0) {
+    gpio_reset_pin(gpio_cfg.i2s_vcc);
+    gpio_set_direction(gpio_cfg.i2s_vcc, GPIO_MODE_OUTPUT);
+    gpio_set_level(gpio_cfg.i2s_vcc, 1);
+  }
 
   ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx_handle, &std_cfg), TAG,
                       "std mode init failed");
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
+
+  ESP_LOGI(TAG, "I2S GPIO config: mclk=%d bck=%d ws=%d dout=%d gnd=%d vcc=%d",
+           gpio_cfg.i2s_sck, gpio_cfg.i2s_bck, gpio_cfg.i2s_ws,
+           gpio_cfg.i2s_do, gpio_cfg.i2s_gnd, gpio_cfg.i2s_vcc);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 

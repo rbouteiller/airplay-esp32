@@ -37,6 +37,19 @@ static const char *TAG = "main";
 static bool s_airplay_started = false;
 static bool s_airplay_infrastructure_ready = false;
 
+static void clear_power_cycle_counter_task(void *arg) {
+  (void)arg;
+
+  vTaskDelay(pdMS_TO_TICKS(SETTINGS_POWER_CYCLE_RESET_WINDOW_MS));
+  esp_err_t err = settings_clear_power_cycle_counter();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to clear power-cycle sequence: %s",
+             esp_err_to_name(err));
+  }
+
+  vTaskDelete(NULL);
+}
+
 static void start_airplay_services(void) {
   if (s_airplay_started) {
     return;
@@ -198,6 +211,22 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+
+  bool power_cycle_wifi_reset = false;
+  esp_err_t settings_err =
+      settings_record_power_cycle_boot(&power_cycle_wifi_reset);
+  if (settings_err != ESP_OK) {
+    ESP_LOGW(TAG, "Power-cycle WiFi recovery unavailable: %s",
+             esp_err_to_name(settings_err));
+  } else if (power_cycle_wifi_reset) {
+    ESP_LOGW(TAG,
+             "Detected %d completed power-cycle rounds; entering AP "
+             "provisioning mode with cleared WiFi credentials",
+             SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD);
+  }
+  task_create_spiram(clear_power_cycle_counter_task, "bootcnt_clr", 2048, NULL,
+                     1, NULL, NULL);
+
   spiffs_storage_init();
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
