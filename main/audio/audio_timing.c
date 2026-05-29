@@ -28,23 +28,6 @@
 // one-off WiFi jitter spike, without the 20-frame drain+log storm.
 #define MAX_CONSECUTIVE_LATE 3
 
-// Closed-loop fill-depth controller.  Keeps the time-span of buffered audio
-// (newest_play_time − oldest_play_time) close to timing->output_latency_us
-// so the system retains equal jitter margin on both sides.  Without this,
-// any small clock-rate mismatch between the source (phone) and our DAC
-// causes the fill depth to drift monotonically until something catastrophic
-// (underrun or bulk flush) resets it.
-//
-// FILL_DEPTH_DEADBAND_US: corrections only fire outside ±this band around
-// the target.  Wide enough that normal TCP-batch jitter doesn't trigger.
-//
-// MIN_CORRECTION_INTERVAL_FRAMES: at most one correction per N played
-// frames.  At ~23 ms per AAC frame and one frame's worth of skew per
-// correction, N=200 caps effective sample-rate skew at ~0.5 % — well
-// below the threshold of audibility.
-#define FILL_DEPTH_DEADBAND_US         100000 // ±100 ms hysteresis
-#define MIN_CORRECTION_INTERVAL_FRAMES 200
-
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
 // automatically whenever a new anchor is set.
@@ -164,7 +147,6 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->quick_start = false;
   timing->deferred_flush_pending = false;
   timing->flush_until_ts = 0;
-  timing->frames_since_correction = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -310,40 +292,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   } else if (ntp_clock_is_locked()) {
     sync_mode = SYNC_MODE_NTP;
   }
-
-  // ---------- Fill-depth diagnostic (no correction) ----------
-  //
-  // Earlier revisions of this code dropped or padded frames here to keep the
-  // buffer time-span near timing->output_latency_us.  That was misguided:
-  // the buffer time-span reflects the phone's PUSH pattern (TCP bursts and
-  // end-of-track pre-buffer routinely send 1–4 s ahead), not playout drift.
-  // Frames have correct RTP-anchored play times; dropping them just causes
-  // audible skips of legitimately-future audio.  PTP keeps us synced and
-  // the per-frame early-pending / late-drop paths handle transients, so no
-  // depth-based correction is needed.  Memory pressure is handled by the
-  // overflow path in audio_buffer_queue_chunk.
-  //
-  // We still expose the depth as a diagnostic so anomalies (e.g. depth
-  // staying above a couple of seconds for a long stretch, indicating a
-  // sender bug) remain visible in logs without forcing corrective action.
-  if (timing->anchor_valid && timing->playout_started &&
-      format->sample_rate > 0 && timing->nominal_frame_samples > 0 &&
-      buffered_frames >= 2 &&
-      timing->frames_since_correction >= MIN_CORRECTION_INTERVAL_FRAMES) {
-    int64_t depth_us = ((int64_t)buffered_frames *
-                        (int64_t)timing->nominal_frame_samples * 1000000LL) /
-                       (int64_t)format->sample_rate;
-    int64_t target_us = (int64_t)timing->output_latency_us;
-    int64_t excess = depth_us - target_us;
-    if (excess < 0)
-      excess = -excess;
-    if (excess > FILL_DEPTH_DEADBAND_US) {
-      ESP_LOGD(TAG, "fill_depth=%lldms (target=%lldms, frames=%d) — no action",
-               depth_us / 1000LL, target_us / 1000LL, buffered_frames);
-      timing->frames_since_correction = 0;
-    }
-  }
-  // -----------------------------------------------------------
 
   // Drain up to MAX_DRAIN_ATTEMPTS late/invalid frames within a SINGLE
   // DMA callback.  The previous limit of 8 was the root cause of run-away
@@ -565,11 +513,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       timing->quick_start = false;
       ESP_LOGI(TAG, "Playout started%s: rtp=%" PRIu32,
                was_quick ? " (quick_start)" : "", hdr->rtp_timestamp);
-    }
-
-    // Tick the fill-depth controller's rate limiter once per played frame.
-    if (timing->frames_since_correction < UINT32_MAX) {
-      timing->frames_since_correction++;
     }
 
     return frame_samples;

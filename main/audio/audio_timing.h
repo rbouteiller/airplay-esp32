@@ -47,11 +47,6 @@ typedef struct {
   // mutex (write flush_until_ts first, arm bool second; read bool first).
   bool deferred_flush_pending;
   uint32_t flush_until_ts;
-  // Closed-loop fill-depth controller state.  Counts how many audio_timing_read
-  // calls have played a real frame since the last drop/pad correction.  Used
-  // to rate-limit corrections so the effective sample-rate skew stays below
-  // the threshold of audibility.
-  uint32_t frames_since_correction;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);
