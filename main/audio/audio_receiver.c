@@ -284,6 +284,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
       receiver.timing.pending_valid = false;
       receiver.timing.pending_frame_len = 0;
       receiver.timing.ready_time_us = 0;
+      receiver.timing.deferred_flush_pending = false;
       receiver.blocks_read_in_sequence = 0;
       receiver.discard_before_rtp = rtp_time;
       receiver.discard_before_rtp_valid = true;
@@ -323,6 +324,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
       receiver.timing.pending_valid = false;
       receiver.timing.pending_frame_len = 0;
       receiver.timing.ready_time_us = 0;
+      receiver.timing.deferred_flush_pending = false;
       receiver.blocks_read_in_sequence = 0;
       receiver.timing.quick_start = true;
       if (!gates_armed) {
