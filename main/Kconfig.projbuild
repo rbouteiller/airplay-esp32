@@ -9,6 +9,22 @@ menu "Airplay ESP Configuration"
             help
                 Brightness level for the status LED (0=off, 255=max).
 
+        config LED_STATUS_INVERT
+            bool "Invert Status LED output (active-low)"
+            default y
+            help
+                If enabled, the status LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
+        config LED_ERROR_INVERT
+            bool "Invert Error LED output (active-low)"
+            default y
+            help
+                If enabled, the error LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
         menu "Status LED Behavior"
             choice LED_STATUS_ON_PLAYING
                 prompt "Status LED when playing"
