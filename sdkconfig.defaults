@@ -53,6 +53,13 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions.csv"
 # Compiler optimization
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
+# USB Audio Class defaults for the current usb_device_uac integration.
+# Keep both streams stereo at 48 kHz so the UAC descriptors, feedback,
+# and AirPlay USB backend all use the same resampled output rate.
+CONFIG_UAC_SPEAKER_CHANNEL_NUM=2
+CONFIG_UAC_MIC_CHANNEL_NUM=2
+CONFIG_UAC_SAMPLE_RATE=48000
+
 # HTTP server — limit open sockets to avoid LWIP socket exhaustion.
 # Default is 7; with RTSP + audio + NTP + PTP + WiFi the budget is tight.
 CONFIG_HTTPD_WS_SUPPORT=y
