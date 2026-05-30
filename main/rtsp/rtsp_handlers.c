@@ -417,11 +417,12 @@ static void handle_options(int socket, rtsp_conn_t *conn,
       "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
       "SETRATEANCHORTIME\r\n";
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1: handle Apple-Challenge if present
+  // AirPlay v1: handle Apple-Challenge if present. Triggered by request
+  // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
+  // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
-    // Get our IP and MAC
+    conn->protocol_version = 1;
     esp_netif_ip_info_t ip_info;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
@@ -442,10 +443,6 @@ static void handle_options(int socket, rtsp_conn_t *conn,
     }
     ESP_LOGW(TAG, "Failed to build Apple-Challenge response");
   }
-#else
-  (void)raw;
-  (void)raw_len;
-#endif
 
   rtsp_send_response(socket, conn, 200, "OK", req->cseq, public_methods, NULL,
                      0);
@@ -541,6 +538,7 @@ static void handle_post(int socket, rtsp_conn_t *conn,
   size_t body_len = req->body_len;
 
   if (strstr(req->path, "/pair-setup")) {
+    conn->protocol_version = 2;
     // Create session if needed
     if (!conn->hap_session) {
       conn->hap_session = hap_session_create();
@@ -608,6 +606,7 @@ static void handle_post(int socket, rtsp_conn_t *conn,
     free(response);
 
   } else if (strstr(req->path, "/pair-verify")) {
+    conn->protocol_version = 2;
     if (!conn->hap_session) {
       conn->hap_session = hap_session_create();
       if (!conn->hap_session) {
@@ -815,11 +814,13 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
     format.max_samples_per_frame = 1024;
   }
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1: parse RSA-encrypted AES key and IV from SDP
+  // AirPlay v1: parse RSA-encrypted AES key and IV from SDP. Triggered by
+  // SDP shape so safe unconditionally — AirPlay 2 uses HAP-derived keys
+  // and never embeds rsaaeskey in ANNOUNCE.
   const char *rsaaeskey = strcasestr(sdp, "rsaaeskey:");
   const char *aesiv_str = strcasestr(sdp, "aesiv:");
   if (rsaaeskey && aesiv_str) {
+    conn->protocol_version = 1;
     // Extract base64 key (may span multiple lines, concatenate until next
     // field or end of SDP). In practice it's a single long base64 line.
     rsaaeskey += strlen("rsaaeskey:");
@@ -883,7 +884,6 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
                aes_key_len, iv_len);
     }
   }
-#endif
 
   // Update connection state
   strlcpy(conn->codec, format.codec, sizeof(conn->codec));
@@ -935,6 +935,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
            stream_count);
 
   if (body && body_len > 0 && is_bplist && request_has_streams) {
+    conn->protocol_version = 2;
     for (size_t i = 0; i < stream_count; i++) {
       int64_t stream_type = -1;
       size_t ekey_len = 0, eiv_len = 0, shk_len = 0;
@@ -1057,12 +1058,13 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
   // Handle initial SETUP vs stream SETUP
   if (!request_has_streams) {
-#ifdef CONFIG_AIRPLAY_FORCE_V1
     // AirPlay v1: SETUP has no bplist body — transport info is in the header.
-    // Check for a Transport header to distinguish from an AirPlay 2 initial
-    // SETUP (which has no streams and no Transport header).
-    if (raw && strstr((const char *)raw, "Transport:")) {
+    // Detected by request shape (Transport: header present); AirPlay 2's
+    // initial SETUP has neither streams nor a Transport header. RTSP header
+    // names are case-insensitive (RFC 2326 §12), so use strcasestr.
+    if (raw && strcasestr((const char *)raw, "Transport:")) {
       ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
+      conn->protocol_version = 1;
       int64_t stream_type = 96; // RTP
       conn->stream_type = stream_type;
 
@@ -1101,7 +1103,6 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       conn->stream_active = true;
       return;
     }
-#endif // CONFIG_AIRPLAY_FORCE_V1
 
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
 
@@ -1633,11 +1634,12 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   if (!has_streams) {
     // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
     // when the TCP connection closes.
-#ifndef CONFIG_AIRPLAY_FORCE_V1
-    // In v1 mode, keep DACP session alive so the grace period can
-    // probe mDNS to differentiate pause from real disconnect.
-    dacp_clear_session();
-#endif
+    // For v1 sessions, keep the DACP session alive across teardown so the
+    // grace period can probe mDNS to differentiate pause from real
+    // disconnect. v2 sessions clear immediately.
+    if (conn->protocol_version != 1) {
+      dacp_clear_session();
+    }
     conn->dacp_id[0] = '\0';
     conn->active_remote[0] = '\0';
     ntp_clock_stop();

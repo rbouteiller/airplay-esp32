@@ -53,6 +53,12 @@ struct rtsp_conn {
   // DACP identifiers for sending commands back to the client
   char dacp_id[32];       // DACP-ID header (hex string)
   char active_remote[32]; // Active-Remote header (token string)
+
+  // AirPlay protocol version detected from request shape:
+  //   0 = unknown (handshake not complete)
+  //   1 = classic RAOP (Apple-Challenge / rsaaeskey / Transport: header)
+  //   2 = AirPlay 2 (HAP / bplist streams)
+  uint8_t protocol_version;
 };
 
 /**

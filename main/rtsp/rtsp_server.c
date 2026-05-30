@@ -269,77 +269,80 @@ cleanup:
   audio_output_flush();
   ntp_clock_stop();
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
   // AirPlay v1 grace period: iOS sends TEARDOWN + TCP close for both pause
   // and genuine disconnect. Wait briefly and probe DACP mDNS to tell them
   // apart. Emit PAUSED immediately so listeners (e.g. BT switching) don't
-  // act on the disconnect prematurely.
-  if (!slot->should_stop) {
-    s_resume_requested = false;
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
-
-    // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
-    for (int i = 0; i < 6 && !slot->should_stop; i++) {
-      vTaskDelay(pdMS_TO_TICKS(500));
-      if (s_resume_requested) {
-        ESP_LOGI(TAG, "Resume requested during Phase 1 — skipping to Phase 2");
-        break;
-      }
-    }
-
-    // Phase 2: wait for reconnect as long as DACP service is advertised.
-    // Re-probe every ~5 s. The phone unadvertises the service when the
-    // user switches away, so disappearance = genuine disconnect.
+  // act on the disconnect prematurely. Runtime-conditional on the active
+  // protocol so AirPlay 2 sessions still clear immediately.
+  if (conn && conn->protocol_version == 1) {
     if (!slot->should_stop) {
-      bool stay = dacp_probe_service() || s_resume_requested;
-      if (s_resume_requested) {
-        s_resume_requested = false;
-        ESP_LOGI(TAG, "Resume requested via button — waiting for reconnect");
-        stay = true;
-      }
-      if (stay) {
-        ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
-      }
-      while (stay && !slot->should_stop) {
-        // Wait 5 s between probes (10 × 500 ms), checking flags each tick
-        for (int i = 0; i < 10 && !slot->should_stop; i++) {
-          vTaskDelay(pdMS_TO_TICKS(500));
-          if (s_resume_requested) {
-            s_resume_requested = false;
-            ESP_LOGI(TAG,
-                     "Resume requested via button — extending grace period");
-          }
-        }
-        if (slot->should_stop) {
+      s_resume_requested = false;
+      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+
+      // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
+      for (int i = 0; i < 6 && !slot->should_stop; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_resume_requested) {
+          ESP_LOGI(TAG,
+                   "Resume requested during Phase 1 — skipping to Phase 2");
           break;
         }
-        // Re-probe: still advertised?
-        stay = dacp_probe_service();
+      }
+
+      // Phase 2: wait for reconnect as long as DACP service is advertised.
+      // Re-probe every ~5 s. The phone unadvertises the service when the
+      // user switches away, so disappearance = genuine disconnect.
+      if (!slot->should_stop) {
+        bool stay = dacp_probe_service() || s_resume_requested;
+        if (s_resume_requested) {
+          s_resume_requested = false;
+          ESP_LOGI(TAG, "Resume requested via button — waiting for reconnect");
+          stay = true;
+        }
         if (stay) {
-          ESP_LOGD(TAG, "DACP still advertised — continuing wait");
-        } else {
-          ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
+          ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
+        }
+        while (stay && !slot->should_stop) {
+          // Wait 5 s between probes (10 × 500 ms), checking flags each tick
+          for (int i = 0; i < 10 && !slot->should_stop; i++) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            if (s_resume_requested) {
+              s_resume_requested = false;
+              ESP_LOGI(TAG,
+                       "Resume requested via button — extending grace period");
+            }
+          }
+          if (slot->should_stop) {
+            break;
+          }
+          // Re-probe: still advertised?
+          stay = dacp_probe_service();
+          if (stay) {
+            ESP_LOGD(TAG, "DACP still advertised — continuing wait");
+          } else {
+            ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
+          }
         }
       }
-    }
 
-    if (slot->is_old) {
-      // New client connected during grace period — treat as reconnect
-      ESP_LOGI(TAG, "Client reconnected during grace period");
+      if (slot->is_old) {
+        // New client connected during grace period — treat as reconnect
+        ESP_LOGI(TAG, "Client reconnected during grace period");
+      } else {
+        ESP_LOGI(TAG, "Grace period expired — full disconnect");
+        dacp_clear_session();
+        rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      }
     } else {
-      ESP_LOGI(TAG, "Grace period expired — full disconnect");
+      // Forcefully stopped (server shutdown or replaced by new client)
       dacp_clear_session();
       rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
     }
   } else {
-    // Forcefully stopped (server shutdown or replaced by new client)
+    // v2 / unknown — no grace period, clear immediately.
     dacp_clear_session();
     rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
   }
-#else
-  dacp_clear_session();
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-#endif
 
   // When being replaced by a new client (is_old), skip global state changes —
   // the new session's SETUP already manages PTP and the event port task.
