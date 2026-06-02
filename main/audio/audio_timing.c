@@ -17,7 +17,25 @@
 #define PIPELINE_LATENCY_US           5000 // ~5ms scheduling + write delay
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           10000 // 10ms. early/late threshold
+
+// Early/late threshold: how far a frame may be early (held as pending) or late
+// (dropped) before the timing engine acts.  Buffered AirPlay 2 streams have a
+// deep jitter buffer so a tight threshold keeps sync without drop-outs.
+// Unbuffered realtime streams (ALAC/UDP) have almost no buffer to absorb
+// scheduling hiccups — e.g. when artwork/metadata arrives on the RTSP
+// connection — so they need a much looser threshold to avoid audible
+// drop-outs.  Both are configurable via Kconfig.
+#ifdef CONFIG_AIRPLAY_TIMING_THRESHOLD_MS
+#define TIMING_THRESHOLD_US (CONFIG_AIRPLAY_TIMING_THRESHOLD_MS * 1000)
+#else
+#define TIMING_THRESHOLD_US 10000 // 10ms. early/late threshold (buffered)
+#endif
+
+#ifdef CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS
+#define RT_TIMING_THRESHOLD_US (CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS * 1000)
+#else
+#define RT_TIMING_THRESHOLD_US 50000 // 50ms early/late threshold (realtime)
+#endif
 // MAX_CONSECUTIVE_EARLY: safety valve — counts how many consecutive calls to
 // audio_timing_read returned silence because the pending frame was still too
 // early.  Each call corresponds to one DMA period (~46 ms on I2S at 44100 Hz).
@@ -255,6 +273,15 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   const audio_format_t *format = &stream->format;
   int buffered_frames = audio_buffer_get_frame_count(buffer);
 
+  // Unbuffered realtime streams (ALAC/UDP) get a looser early/late threshold
+  // than buffered AirPlay 2 streams, because they have little jitter buffer to
+  // absorb scheduling hiccups and would otherwise drop frames (audible
+  // drop-outs) whenever the pipeline stalls — e.g. while artwork/metadata is
+  // received on the RTSP connection.
+  const int64_t timing_threshold_us = audio_stream_uses_buffer(stream->type)
+                                          ? TIMING_THRESHOLD_US
+                                          : RT_TIMING_THRESHOLD_US;
+
   // Wait for enough buffer before starting.
   // In quick_start mode (after a seek/skip), start as soon as 1 frame is
   // available to minimise the gap between tracks.  Anchor-based timing
@@ -399,7 +426,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       int64_t early_us = 0;
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
-        if (early_us > TIMING_THRESHOLD_US) {
+        if (early_us > timing_threshold_us) {
           // Only advance the stuck-anchor counter for NEW frames taken from
           // the buffer — not for pending re-checks of the same early frame.
           // A pending frame is re-examined every DMA callback (~8 ms) while
@@ -460,7 +487,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
             memset(out, 0, samples * channels * sizeof(int16_t));
             return samples;
           }
-        } else if (early_us < -TIMING_THRESHOLD_US) {
+        } else if (early_us < -timing_threshold_us) {
           // Reset consecutive early counter on late/normal frames
           timing->consecutive_early_frames = 0;
 

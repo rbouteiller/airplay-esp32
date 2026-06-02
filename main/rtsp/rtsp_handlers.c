@@ -1429,11 +1429,18 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
     }
   } else if (strstr(req->content_type, "image/jpeg") ||
              strstr(req->content_type, "image/png")) {
+#ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
     // Artwork - log and flag in metadata
     ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
              body_len);
     event_data.metadata.has_artwork = true;
     has_metadata = true;
+#else
+    // Artwork reception disabled — ignore it.  The md txt record already asks
+    // senders not to transmit cover art, but some send it regardless.
+    ESP_LOGD(TAG, "Ignoring artwork (%s, %zu bytes): disabled in config",
+             req->content_type, body_len);
+#endif
   } else if (strstr(req->content_type, "application/x-apple-binary-plist")) {
     if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
       int64_t value;

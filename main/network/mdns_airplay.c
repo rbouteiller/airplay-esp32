@@ -25,6 +25,16 @@ static const char *TAG = "mdns_airplay";
 // Flags: 0x4 = audio receiver
 #define AIRPLAY_FLAGS "0x4"
 
+// Metadata types advertised in the "md" txt record:
+//   0 = artwork (cover art images), 1 = progress, 2 = text (track info).
+// When artwork is disabled, drop "0" so senders do not transmit cover art,
+// which can stall the audio pipeline and cause drop-outs on realtime streams.
+#ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
+#define AIRPLAY_METADATA_TYPES "0,1,2"
+#else
+#define AIRPLAY_METADATA_TYPES "1,2"
+#endif
+
 // Model identifier - AudioAccessory for speaker appearance
 // AppleTV3,2 = Apple TV, AudioAccessory5,1 = HomePod mini (speaker)
 #define AIRPLAY_MODEL "AudioAccessory5,1"
@@ -106,7 +116,7 @@ void mdns_airplay_init(void) {
       {"sv", "false"},                      // Server version (unused)
       {"ek", "1"},                          // Encryption key available
       {"et", "0,1"},                        // Encryption types: none, RSA
-      {"md", "0,1,2"},                      // Metadata types
+      {"md", AIRPLAY_METADATA_TYPES},       // Metadata types
       {"cn", "0,1"},                        // Audio codecs: PCM, ALAC
       {"ch", "2"},                          // Channels
       {"ss", "16"},                         // Sample size (bits)
@@ -121,7 +131,7 @@ void mdns_airplay_init(void) {
       {"da", "true"},        // Digest auth
       {"et", "0,3,5"},       // Encryption types
       {"ft", features_str},  // Features (same as airplay)
-      {"md", "0,1,2"},       // Metadata types
+      {"md", AIRPLAY_METADATA_TYPES}, // Metadata types
       {"pk", pk_str},        // Public key
       {"sf", AIRPLAY_FLAGS}, // Status flags
       {"tp", "UDP"},         // Transport protocol
