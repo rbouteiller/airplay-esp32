@@ -79,13 +79,13 @@ static void buffered_audio_task(void *pvParameters) {
     struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    // Match SO_RCVBUF to lwIP's TCP receive window (set via
-    // CONFIG_LWIP_TCP_WND_DEFAULT, currently 32 KB on dma80).  This is the
-    // socket-level kernel buffer; the in-flight window itself comes from
-    // LWIP_TCP_WND_DEFAULT.  Default LWIP value of 2880 B (= 2*MSS) caps
-    // the iPhone's catchup-backfill rate to ~1.5x realtime on group rejoin
-    // — raise the LWIP window in sdkconfig to actually fix that.
-    int rcvbuf = 65536;
+    // Socket receive buffer: match lwIP's TCP receive window so the kernel
+    // buffer can hold exactly what the TCP window allows in flight.  A larger
+    // SO_RCVBUF (e.g. the old 65536) accumulates stale audio data that must
+    // drain through the RTP gates on every track skip, adding transition
+    // latency.  Keeping it at TCP_WND ties both knobs to a single sdkconfig
+    // value (CONFIG_LWIP_TCP_WND_DEFAULT).
+    int rcvbuf = CONFIG_LWIP_TCP_WND_DEFAULT;
     setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     uint8_t *packet = state->buffered_recv_buffer;

@@ -49,8 +49,26 @@ static const char *TAG = "ptp_clock";
 #define MIN_SAMPLES_FOR_LOCK 4
 #define LOCK_STABLE_TIME_MS  250 // 250ms of stable readings to declare lock
 #define LOCK_TIMEOUT_MS      5000
-#define SAMPLE_BUFFER_SIZE   16         // Ring buffer for median filtering
-#define OUTLIER_THRESHOLD_NS 75000000LL // 75ms - reject samples beyond this
+#define OUTLIER_THRESHOLD_NS 50000000LL // 50ms - reject samples beyond this
+// Asymmetric filter parameters (modeled after nqptp):
+// Network delays only ADD positive bias to the measured offset, so
+//   offset_measured = true_offset - one_way_delay
+// The LARGEST measured offsets correspond to the SHORTEST delays and are
+// therefore the most accurate.  We accept positive jitter (= shorter delay)
+// quickly and dampen negative jitter (= longer delay) heavily.  This causes
+// the filter to converge to the minimum-delay offset, matching the behaviour
+// of nqptp used by shairport-sync and ensuring tight multi-room sync.
+#define SMOOTH_POS_STARTUP_DIV 1   // accept positive jitter fully at start
+#define SMOOTH_POS_STEADY_DIV  16  // later, apply 1/16 of positive jitter
+#define SMOOTH_NEG_DIV         256 // always apply only 1/256 of negative jitter
+#define SMOOTH_NEG_CLAMP_NS    (-2500000LL) // clamp negative jitter at -2.5ms
+#define STARTUP_DURATION_MS    1000 // first second: aggressive positive tracking
+
+// Threshold above which we reset the PTP smoothing filter on resume.
+// E.g. at 50 ppm crystal accuracy, 30 s of pause accumulates ~1.5 ms of drift —
+// large enough to be audible in multi-room but well within the 50 ms outlier
+// window.  Below this threshold the drift is negligible (<0.25 ms at 5 s).
+#define PTP_LONG_PAUSE_THRESHOLD_MS 30000
 
 // PTP state
 static struct {
@@ -68,10 +86,10 @@ static struct {
   int64_t filtered_offset_ns; // PTP_time = local_time + offset
   uint32_t sample_count;
 
-  // Sample ring buffer for median filtering
-  int64_t samples[SAMPLE_BUFFER_SIZE];
-  int sample_index;
-  int sample_fill;
+  // Asymmetric smoothing state (replaces median ring buffer)
+  int64_t previous_offset;
+  uint32_t previous_offset_time_ms; // 0 = no previous sample yet
+  uint32_t mastership_start_ms;     // when continuous tracking began
 
   // Two-step sync tracking
   uint16_t last_sync_seq;
@@ -119,40 +137,30 @@ static inline int64_t get_local_time_ns(void) {
   return (int64_t)esp_timer_get_time() * 1000LL;
 }
 
-// Compare function for qsort
-static int compare_int64(const void *a, const void *b) {
-  int64_t va = *(const int64_t *)a;
-  int64_t vb = *(const int64_t *)b;
-  if (va < vb) {
-    return -1;
-  }
-  if (va > vb) {
-    return 1;
-  }
-  return 0;
-}
-
-// Compute median of samples
-static int64_t compute_median(void) {
-  if (ptp.sample_fill == 0) {
-    return 0;
-  }
-
-  int64_t sorted[SAMPLE_BUFFER_SIZE];
-  memcpy(sorted, ptp.samples, ptp.sample_fill * sizeof(int64_t));
-  qsort(sorted, ptp.sample_fill, sizeof(int64_t), compare_int64);
-
-  return sorted[ptp.sample_fill / 2];
-}
-
-// Update offset with new sample using median filtering
+// Update offset with new sample using asymmetric smoothing (nqptp-style).
+//
+// The key insight from nqptp: since we are a passive PTP listener (no
+// DELAY_REQ/DELAY_RESP), every measured offset contains a one-way network
+// delay bias:  offset_measured = true_offset - delay.
+// LARGER offsets come from SHORTER delays and are MORE accurate.
+//
+// By accepting positive jitter (larger offset = shorter delay) quickly and
+// dampening negative jitter (smaller offset = longer delay) slowly, the
+// filter converges to the offset corresponding to the minimum network
+// delay — the best available approximation of the true clock offset.
 static void update_offset(int64_t new_offset_ns) {
   uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
   ptp.last_sync_ms = now_ms;
   ptp.sample_count++;
 
-  // Reject obvious outliers (more than 50ms from current estimate)
-  if (ptp.sample_fill > 0) {
+  int64_t smoothed_offset;
+
+  if (ptp.previous_offset_time_ms == 0) {
+    // First sample (or after reset): accept unconditionally
+    smoothed_offset = new_offset_ns;
+    ptp.mastership_start_ms = now_ms;
+  } else {
+    // Reject obvious outliers (more than 50ms from current estimate)
     int64_t diff = new_offset_ns - ptp.filtered_offset_ns;
     if (diff < 0) {
       diff = -diff;
@@ -161,33 +169,43 @@ static void update_offset(int64_t new_offset_ns) {
       ptp.outlier_count++;
       return;
     }
+
+    int64_t jitter = new_offset_ns - ptp.previous_offset;
+    uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
+
+    if (jitter >= 0) {
+      // Positive jitter: offset increased → shorter network delay → more
+      // accurate.  Accept quickly, especially during startup.
+      if (mastership_time_ms < STARTUP_DURATION_MS) {
+        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STARTUP_DIV;
+      } else {
+        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STEADY_DIV;
+      }
+    } else {
+      // Negative jitter: offset decreased → longer network delay → less
+      // reliable.  Clamp and apply only a tiny fraction.
+      int64_t clamped_jitter = jitter;
+      if (clamped_jitter < SMOOTH_NEG_CLAMP_NS) {
+        clamped_jitter = SMOOTH_NEG_CLAMP_NS;
+      }
+      smoothed_offset = ptp.previous_offset + clamped_jitter / SMOOTH_NEG_DIV;
+    }
   }
 
-  // Add to ring buffer
-  ptp.samples[ptp.sample_index] = new_offset_ns;
-  ptp.sample_index = (ptp.sample_index + 1) % SAMPLE_BUFFER_SIZE;
-  if (ptp.sample_fill < SAMPLE_BUFFER_SIZE) {
-    ptp.sample_fill++;
-  }
+  ptp.previous_offset = smoothed_offset;
+  ptp.previous_offset_time_ms = now_ms;
+  ptp.filtered_offset_ns = smoothed_offset;
 
-  // Use median for filtered offset (robust to outliers)
-  ptp.filtered_offset_ns = compute_median();
-
-  // Check lock status based on sample variance
-  if (ptp.sample_fill >= MIN_SAMPLES_FOR_LOCK) {
-    // Compute max deviation from median
-    int64_t max_dev = 0;
-    for (int i = 0; i < ptp.sample_fill; i++) {
-      int64_t dev = ptp.samples[i] - ptp.filtered_offset_ns;
-      if (dev < 0) {
-        dev = -dev;
-      }
-      if (dev > max_dev) {
-        max_dev = dev;
-      }
+  // Check lock status: once we have enough samples and the offset is stable,
+  // declare lock.  Use the deviation between the raw sample and the smoothed
+  // value as a stability indicator.
+  if (ptp.sample_count >= MIN_SAMPLES_FOR_LOCK) {
+    int64_t dev = new_offset_ns - smoothed_offset;
+    if (dev < 0) {
+      dev = -dev;
     }
 
-    if (max_dev < LOCK_THRESHOLD_NS) {
+    if (dev < LOCK_THRESHOLD_NS) {
       if (!ptp.locked) {
         if (ptp.lock_candidate_start_ms == 0) {
           ptp.lock_candidate_start_ms = now_ms;
@@ -197,20 +215,21 @@ static void update_offset(int64_t new_offset_ns) {
           ptp.lock_start_ms = now_ms;
           ptp.lock_candidate_start_ms = 0;
           ESP_LOGI(TAG,
-                   "LOCKED: offset=%+lldns max_dev=%lldns samples=%d "
+                   "LOCKED: offset=%+lldns dev=%lldns samples=%lu "
                    "sync=%lu followup=%lu",
-                   (long long)ptp.filtered_offset_ns, (long long)max_dev,
-                   ptp.sample_fill, (unsigned long)ptp.sync_count,
+                   (long long)ptp.filtered_offset_ns, (long long)dev,
+                   (unsigned long)ptp.sample_count,
+                   (unsigned long)ptp.sync_count,
                    (unsigned long)ptp.followup_count);
         }
       }
     } else {
       ptp.lock_candidate_start_ms = 0;
-      if (ptp.locked && max_dev > LOCK_THRESHOLD_NS * 4) {
+      if (ptp.locked && dev > LOCK_THRESHOLD_NS * 4) {
         ptp.locked = false;
         ptp.lock_start_ms = 0;
-        ESP_LOGW(TAG, "LOST LOCK: max_dev=%lldns (threshold=%lldns)",
-                 (long long)max_dev, (long long)(LOCK_THRESHOLD_NS * 4));
+        ESP_LOGW(TAG, "LOST LOCK: dev=%lldns (threshold=%lldns)",
+                 (long long)dev, (long long)(LOCK_THRESHOLD_NS * 4));
       }
     }
   }
@@ -231,6 +250,16 @@ static void process_sync(const uint8_t *data, size_t len, uint16_t seq) {
   if (!two_step && len >= PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE) {
     // One-step sync - timestamp is in the SYNC message
     uint64_t ptp_time_ns = parse_ptp_timestamp_ns(data + PTP_TIMESTAMP_OFFSET);
+    // Apply correctionField for one-step sync as well
+    if (len >= 16) {
+      int64_t correction_field =
+          ((int64_t)data[8] << 56) | ((int64_t)data[9] << 48) |
+          ((int64_t)data[10] << 40) | ((int64_t)data[11] << 32) |
+          ((int64_t)data[12] << 24) | ((int64_t)data[13] << 16) |
+          ((int64_t)data[14] << 8) | (int64_t)data[15];
+      correction_field /= 65536; // convert from 2^-16 ns to ns
+      ptp_time_ns = (uint64_t)((int64_t)ptp_time_ns + correction_field);
+    }
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
     update_offset(offset);
     ptp.awaiting_followup = false;
@@ -253,6 +282,20 @@ static void process_followup(const uint8_t *data, size_t len, uint16_t seq) {
 
   if (len >= PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE) {
     uint64_t ptp_time_ns = parse_ptp_timestamp_ns(data + PTP_TIMESTAMP_OFFSET);
+
+    // Apply correctionField (IEEE 1588 §11.4.4.2.1):
+    // The correctionField accumulates residence time and path delay
+    // corrections from PTP-aware network elements.  It is a signed
+    // 64-bit value in units of 2^-16 nanoseconds.
+    if (len >= 16) {
+      int64_t correction_field =
+          ((int64_t)data[8] << 56) | ((int64_t)data[9] << 48) |
+          ((int64_t)data[10] << 40) | ((int64_t)data[11] << 32) |
+          ((int64_t)data[12] << 24) | ((int64_t)data[13] << 16) |
+          ((int64_t)data[14] << 8) | (int64_t)data[15];
+      correction_field /= 65536; // convert from 2^-16 ns to ns
+      ptp_time_ns = (uint64_t)((int64_t)ptp_time_ns + correction_field);
+    }
 
     // offset = PTP_time - local_time_at_sync_receipt
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
@@ -496,8 +539,9 @@ void ptp_clock_clear(void) {
   ptp.last_sync_ms = 0;
   ptp.filtered_offset_ns = 0;
   ptp.sample_count = 0;
-  ptp.sample_index = 0;
-  ptp.sample_fill = 0;
+  ptp.previous_offset = 0;
+  ptp.previous_offset_time_ms = 0;
+  ptp.mastership_start_ms = 0;
 
   ptp.last_sync_seq = 0;
   ptp.last_sync_local_ns = 0;
@@ -509,6 +553,29 @@ void ptp_clock_clear(void) {
   // Drop the master filter so the next session can lock to whatever master
   // its anchor packet names (which may differ from the previous session).
   ptp.expected_clock_id = 0;
+}
+
+void ptp_clock_notify_resume(uint32_t pause_duration_ms) {
+  if (pause_duration_ms < PTP_LONG_PAUSE_THRESHOLD_MS) {
+    return; // drift too small to matter
+  }
+  // Reset the "previous sample" pointer so the very next PTP FOLLOW_UP is
+  // accepted unconditionally (the first-sample path in update_offset()).
+  // This mirrors what nqptp does on its "B" (begin) signal:
+  //   "when the clock goes from inactive to active, NQPTP resets clock
+  //    smoothing to the new offset" -- nqptp-shm-structures.h
+  //
+  // We keep filtered_offset_ns so that audio_timing can continue to use the
+  // last-known offset until the first new sample arrives (~125 ms away).
+  // We also reset mastership_start_ms so the STARTUP_DURATION_MS aggressive-
+  // positive window kicks in again for a faster upward catch-up.
+  ptp.previous_offset_time_ms = 0;
+  ptp.mastership_start_ms = 0;
+  ESP_LOGI(TAG,
+           "notify_resume: pause=%lu ms, resetting PTP smoothing "
+           "(est. drift %.1f ms @ 50ppm)",
+           (unsigned long)pause_duration_ms,
+           (float)pause_duration_ms * 50.0f / 1000000.0f);
 }
 
 bool ptp_clock_is_locked(void) {
@@ -548,8 +615,9 @@ void ptp_clock_set_master_clock_id(uint64_t clock_id) {
   ptp.lock_start_ms = 0;
   ptp.lock_candidate_start_ms = 0;
   ptp.filtered_offset_ns = 0;
-  ptp.sample_index = 0;
-  ptp.sample_fill = 0;
+  ptp.sample_count = 0;
+  ptp.previous_offset = 0;
+  ptp.previous_offset_time_ms = 0;
   ptp.awaiting_followup = false;
 }
 
@@ -560,11 +628,7 @@ uint64_t ptp_clock_get_master_clock_id(void) {
 void ptp_clock_get_stats(ptp_stats_t *stats) {
   stats->sync_count = ptp.sync_count;
   stats->followup_count = ptp.followup_count;
-  stats->last_offset_ns =
-      ptp.sample_fill > 0
-          ? ptp.samples[(ptp.sample_index + SAMPLE_BUFFER_SIZE - 1) %
-                        SAMPLE_BUFFER_SIZE]
-          : 0;
+  stats->last_offset_ns = ptp.previous_offset;
   stats->filtered_offset_ns = ptp.filtered_offset_ns;
 
   if (ptp.locked && ptp.lock_start_ms > 0) {

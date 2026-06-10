@@ -33,6 +33,11 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
     return false;
   }
 
+  // Blanket gate: reject everything between seek_flush and the next anchor.
+  if (state->discard_all_until_anchor) {
+    return false;
+  }
+
   // Post-seek RTP window gate: discard frames outside [discard_before_rtp,
   // discard_above_rtp].  The TCP socket buffer can hold many seconds of
   // pre-seek audio; both gates together handle both seek directions:

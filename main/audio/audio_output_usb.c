@@ -188,3 +188,8 @@ void audio_output_set_source_rate(int rate) {
     resample_reinit_needed = true;
   }
 }
+
+uint32_t audio_output_get_hardware_latency_us(void) {
+  // USB isochronous audio: ~2ms double-buffered endpoint latency.
+  return 2000;
+}

@@ -19,6 +19,13 @@
 #define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
 #define FRAME_SAMPLES 352
 
+// DMA ring-buffer configuration.  Total DMA latency (in samples) is
+//   I2S_DMA_DESC_NUM × I2S_DMA_FRAME_NUM
+// which at OUTPUT_RATE gives the hardware pipeline delay in µs.
+// Keep these in sync with the i2s_chan_config_t initialisation below.
+#define I2S_DMA_DESC_NUM  8
+#define I2S_DMA_FRAME_NUM 256
+
 /* Max output frames after resampling one input frame */
 #define MAX_RESAMPLE_FRAMES \
   ((size_t)((FRAME_SAMPLES + 2) * ((double)OUTPUT_RATE / 44100) + 16))
@@ -107,8 +114,8 @@ esp_err_t audio_output_init(void) {
 
   i2s_chan_config_t chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  chan_cfg.dma_desc_num = 8;
-  chan_cfg.dma_frame_num = 256;
+  chan_cfg.dma_desc_num = I2S_DMA_DESC_NUM;
+  chan_cfg.dma_frame_num = I2S_DMA_FRAME_NUM;
 
   ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &tx_handle, NULL), TAG,
                       "channel create failed");
@@ -233,4 +240,10 @@ void audio_output_set_source_rate(int rate) {
     source_rate = rate;
     resample_reinit_needed = true;
   }
+}
+
+uint32_t audio_output_get_hardware_latency_us(void) {
+  return (
+      uint32_t)(((uint64_t)I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM * 1000000ULL) /
+                OUTPUT_RATE);
 }

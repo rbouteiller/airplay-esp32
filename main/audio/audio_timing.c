@@ -4,88 +4,45 @@
 
 #include "audio_timing.h"
 
+#include "audio_output.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_BUFFER_LATENCY_US  200000 // 200ms startup jitter buffer
-#define HARDWARE_OUTPUT_LATENCY_US 46000  // ~46ms I2S DMA latency
-// PIPELINE_PROCESSING_LATENCY_US: combined fixed delay between a frame
-// landing on the wire at the phone and entering the sorted jitter buffer
-// on our side.  Breakdown (approximate, measured on a quiet WiFi network):
-//   ~10 ms  AAC decode (1024-sample frame, single-call)
-//   ~ 1 ms  ChaCha20 decrypt
-//   ~ 4 ms  WiFi+TCP receive jitter median
-// Reported to the phone as part of outputLatencyMicros so its scheduler
-// knows the actual end-to-end pipeline depth.  Kept independent of
-// HARDWARE_OUTPUT_LATENCY_US (DMA-side) and DEFAULT_BUFFER_LATENCY_US
-// (jitter-buffer target depth) so each can be tuned in isolation.
-#define PIPELINE_PROCESSING_LATENCY_US 15000
-#define MIN_STARTUP_FRAMES             4
-#define DRIFT_ADJUST_THRESHOLD_FRAMES  2
-#define TIMING_THRESHOLD_US            40000 // 40ms early/late threshold
-// If a frame is late by more than this, flush the whole buffer at once
-// instead of draining one frame per DMA callback (which would cause seconds
-// of silence while thousands of stale frames are individually dropped).
-// Kept independent of DEFAULT_BUFFER_LATENCY_US so reducing the startup
-// buffer doesn't also reduce the late-detection threshold.
-#define BULK_FLUSH_LATE_THRESHOLD_US 2000000 // 2 seconds
-// If a frame is late by more than this, flush the whole buffer at once
-// instead of draining one frame per DMA callback (which would cause seconds
-// of silence while thousands of stale frames are individually dropped).
-// Kept independent of DEFAULT_BUFFER_LATENCY_US so reducing the startup
-// buffer doesn't also reduce the late-detection threshold.
-#define BULK_FLUSH_LATE_THRESHOLD_US 2000000 // 2 seconds
-// MAX_CONSECUTIVE_EARLY: number of consecutive early frames before we conclude
-// the anchor is genuinely stuck/wrong.  At ~8 ms per frame this is ~6 seconds
-// of silence, which is well beyond any normal pre-buffer depth.
-#define MAX_CONSECUTIVE_EARLY 750
-// MAX_CONSECUTIVE_LATE: number of consecutive individually-late frames before
-// we conclude the whole buffer is stale and do a bulk flush.  At ~8 ms/frame
-// this is ~24 ms — just enough to distinguish a genuine stale-buffer from a
-// one-off WiFi jitter spike, without the 20-frame drain+log storm.
-#define MAX_CONSECUTIVE_LATE 3
-// MAX_CONSECUTIVE_LATE: number of consecutive individually-late frames before
-// we conclude the whole buffer is stale and do a bulk flush.  At ~8 ms/frame
-// this is ~24 ms — just enough to distinguish a genuine stale-buffer from a
-// one-off WiFi jitter spike, without the 20-frame drain+log storm.
-#define MAX_CONSECUTIVE_LATE 3
+#define DEFAULT_BUFFER_LATENCY_US 2000 // 2ms startup jitter buffer
+// Additional pipeline latency to account for task scheduling, I2S write
+// blocking, and resampler processing.  Without this, frames pass the
+// timing check "on time" but actually exit the speaker several ms later.
+#define PIPELINE_LATENCY_US           5000 // ~5ms scheduling + write delay
+#define MIN_STARTUP_FRAMES            4
+#define DRIFT_ADJUST_THRESHOLD_FRAMES 2
 
-// POST_FLUSH_STALE_THRESHOLD_US: in post_flush mode the bypass plays frames
-// unconditionally to avoid silence during the phone's pre-buffer window
-// (typically 2–4 s).  Frames that are MORE than this many µs early are from
-// the wrong seek position (old audio still draining through the TCP pipeline)
-// and must be discarded rather than played.  10 s is well above the deepest
-// observed AirPlay 2 pre-buffer depth and well below any real seek delta.
-#define POST_FLUSH_STALE_THRESHOLD_US 10000000LL // 10 seconds
-// POST_FLUSH_LATE_DROP_US: in post_flush, frames whose play time is more
-// than this far in the past are dropped rather than played.  Set above the
-// pre-buffer depth that normal post_flush handles (~200 ms early), but well
-// below the multi-second lateness seen on AP2 group rejoin.
-#define POST_FLUSH_LATE_DROP_US 300000LL // 300 ms
-// POST_FLUSH_TIMEOUT_US: maximum duration of the post_flush bypass.  After a
-// seek/flush the phone's pre-buffer window causes frames to appear hundreds of
-// ms early.  We play them immediately for this duration so the user hears audio
-// right away, then revert to normal timing so the anchor can enforce A/V sync.
-#define POST_FLUSH_TIMEOUT_US 500000LL // 500 ms
+// Early/late threshold: how far a frame may be early (held as pending) or late
+// (dropped) before the timing engine acts.  Buffered AirPlay 2 streams have a
+// deep jitter buffer so a tight threshold keeps sync without drop-outs.
+// Unbuffered realtime streams (ALAC/UDP) have almost no buffer to absorb
+// scheduling hiccups — e.g. when artwork/metadata arrives on the RTSP
+// connection — so they need a much looser threshold to avoid audible
+// drop-outs.  Both are configurable via Kconfig.
+#ifdef CONFIG_AIRPLAY_TIMING_THRESHOLD_MS
+#define TIMING_THRESHOLD_US (CONFIG_AIRPLAY_TIMING_THRESHOLD_MS * 1000)
+#else
+#define TIMING_THRESHOLD_US 10000 // 10ms. early/late threshold (buffered)
+#endif
 
-// Closed-loop fill-depth controller.  Keeps the time-span of buffered audio
-// (newest_play_time − oldest_play_time) close to timing->output_latency_us
-// so the system retains equal jitter margin on both sides.  Without this,
-// any small clock-rate mismatch between the source (phone) and our DAC
-// causes the fill depth to drift monotonically until something catastrophic
-// (underrun or bulk flush) resets it.
-//
-// FILL_DEPTH_DEADBAND_US: corrections only fire outside ±this band around
-// the target.  Wide enough that normal TCP-batch jitter doesn't trigger.
-//
-// MIN_CORRECTION_INTERVAL_FRAMES: at most one correction per N played
-// frames.  At ~23 ms per AAC frame and one frame's worth of skew per
-// correction, N=200 caps effective sample-rate skew at ~0.5 % — well
-// below the threshold of audibility.
-#define FILL_DEPTH_DEADBAND_US         100000 // ±100 ms hysteresis
-#define MIN_CORRECTION_INTERVAL_FRAMES 200
+#ifdef CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS
+#define RT_TIMING_THRESHOLD_US (CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS * 1000)
+#else
+#define RT_TIMING_THRESHOLD_US 50000 // 50ms early/late threshold (realtime)
+#endif
+// MAX_CONSECUTIVE_EARLY: safety valve — counts how many consecutive calls to
+// audio_timing_read returned silence because the pending frame was still too
+// early.  Each call corresponds to one DMA period (~46 ms on I2S at 44100 Hz).
+// 50 calls × 46 ms ≈ 2.3 s: long enough that a legitimate pre-buffer of any
+// realistic depth will never hit it, short enough to detect a genuinely stuck
+// or invalid anchor in a few seconds.
+#define MAX_CONSECUTIVE_EARLY 50
 
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
@@ -161,7 +118,12 @@ static bool compute_early_us(const audio_timing_t *timing,
   }
 
   // Subtract hardware latency to account for I2S DMA delay
-  target_ns -= (int64_t)HARDWARE_OUTPUT_LATENCY_US * 1000LL;
+  // and pipeline latency for task scheduling and write blocking.
+  // The hardware latency is computed from the DMA descriptor/frame
+  // configuration rather than being hard-coded.
+  target_ns -=
+      (int64_t)(audio_output_get_hardware_latency_us() + PIPELINE_LATENCY_US) *
+      1000LL;
 
   int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
   *early_us = (target_ns - now_ns) / 1000LL;
@@ -197,12 +159,9 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
   timing->consecutive_early_frames = 0;
-  timing->consecutive_late_frames = 0;
-  timing->post_flush = false;
-  timing->post_flush_start_us = 0;
+  timing->quick_start = false;
   timing->deferred_flush_pending = false;
   timing->flush_until_ts = 0;
-  timing->frames_since_correction = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -234,7 +193,7 @@ uint32_t audio_timing_get_output_latency(const audio_timing_t *timing) {
 }
 
 uint32_t audio_timing_get_hardware_latency(void) {
-  return HARDWARE_OUTPUT_LATENCY_US;
+  return audio_output_get_hardware_latency_us();
 }
 
 uint32_t audio_timing_get_advertised_latency(const audio_timing_t *timing) {
@@ -243,11 +202,11 @@ uint32_t audio_timing_get_advertised_latency(const audio_timing_t *timing) {
   // schedules sends to land in our sorted buffer at the right time.
   //
   //   output_latency_us         — controller target (jitter-buffer depth)
-  // + HARDWARE_OUTPUT_LATENCY_US — I2S DMA delay (fixed)
-  // + PIPELINE_PROCESSING_LATENCY_US — decrypt + decode + net jitter constant
+  // + audio_output_get_hardware_latency_us() — I2S DMA delay (dynamic)
+  // + PIPELINE_LATENCY_US — scheduling + write delay constant
   uint32_t base =
       timing ? timing->output_latency_us : DEFAULT_BUFFER_LATENCY_US;
-  return base + HARDWARE_OUTPUT_LATENCY_US + PIPELINE_PROCESSING_LATENCY_US;
+  return base + audio_output_get_hardware_latency_us() + PIPELINE_LATENCY_US;
 }
 
 void audio_timing_set_anchor(audio_timing_t *timing,
@@ -269,7 +228,18 @@ void audio_timing_set_anchor(audio_timing_t *timing,
   // Reset frame counters so pre-buffered audio after a pause/resume or
   // track skip does not accumulate into the new anchor's counts.
   timing->consecutive_early_frames = 0;
-  timing->consecutive_late_frames = 0;
+
+  // Compute lead time: how far in the future this anchor's network timestamp
+  // is relative to now.  Negative means the anchor is already in the past
+  // (normal: the phone pre-buffers and the anchor is 200–800 ms old by the
+  // time we receive it).
+  int64_t lead_ms = ((int64_t)network_time_ns -
+                     (int64_t)(ptp_clock_get_offset_ns() + now_ns)) /
+                    1000000LL;
+  ESP_LOGI(
+      TAG,
+      "Anchor set: rtp=%" PRIu32 " lead=%lld ms ptp_locked=%d quick_start=%d",
+      rtp_time, (long long)lead_ms, timing->ptp_locked, timing->quick_start);
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -303,9 +273,24 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   const audio_format_t *format = &stream->format;
   int buffered_frames = audio_buffer_get_frame_count(buffer);
 
-  // Wait for enough buffer before starting
+  // Unbuffered realtime streams (ALAC/UDP) get a looser early/late threshold
+  // than buffered AirPlay 2 streams, because they have little jitter buffer to
+  // absorb scheduling hiccups and would otherwise drop frames (audible
+  // drop-outs) whenever the pipeline stalls — e.g. while artwork/metadata is
+  // received on the RTSP connection.
+  const int64_t timing_threshold_us = audio_stream_uses_buffer(stream->type)
+                                          ? TIMING_THRESHOLD_US
+                                          : RT_TIMING_THRESHOLD_US;
+
+  // Wait for enough buffer before starting.
+  // In quick_start mode (after a seek/skip), start as soon as 1 frame is
+  // available to minimise the gap between tracks.  Anchor-based timing
+  // still applies — if the frame is early, silence is output until its
+  // scheduled play time, just like shairport-sync.
+  // Normal startup waits for target_buffer_frames to build jitter margin.
   if (!timing->playout_started && !timing->pending_valid) {
-    if (buffered_frames < (int)timing->target_buffer_frames) {
+    int required = timing->quick_start ? 1 : (int)timing->target_buffer_frames;
+    if (buffered_frames < required) {
       return 0;
     }
     // Wait for anchor before playing.
@@ -330,40 +315,6 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   } else if (ntp_clock_is_locked()) {
     sync_mode = SYNC_MODE_NTP;
   }
-
-  // ---------- Fill-depth diagnostic (no correction) ----------
-  //
-  // Earlier revisions of this code dropped or padded frames here to keep the
-  // buffer time-span near timing->output_latency_us.  That was misguided:
-  // the buffer time-span reflects the phone's PUSH pattern (TCP bursts and
-  // end-of-track pre-buffer routinely send 1–4 s ahead), not playout drift.
-  // Frames have correct RTP-anchored play times; dropping them just causes
-  // audible skips of legitimately-future audio.  PTP keeps us synced and
-  // the per-frame early-pending / late-drop paths handle transients, so no
-  // depth-based correction is needed.  Memory pressure is handled by the
-  // overflow path in audio_buffer_queue_chunk.
-  //
-  // We still expose the depth as a diagnostic so anomalies (e.g. depth
-  // staying above a couple of seconds for a long stretch, indicating a
-  // sender bug) remain visible in logs without forcing corrective action.
-  if (timing->anchor_valid && timing->playout_started &&
-      format->sample_rate > 0 && timing->nominal_frame_samples > 0 &&
-      buffered_frames >= 2 &&
-      timing->frames_since_correction >= MIN_CORRECTION_INTERVAL_FRAMES) {
-    int64_t depth_us = ((int64_t)buffered_frames *
-                        (int64_t)timing->nominal_frame_samples * 1000000LL) /
-                       (int64_t)format->sample_rate;
-    int64_t target_us = (int64_t)timing->output_latency_us;
-    int64_t excess = depth_us - target_us;
-    if (excess < 0)
-      excess = -excess;
-    if (excess > FILL_DEPTH_DEADBAND_US) {
-      ESP_LOGD(TAG, "fill_depth=%lldms (target=%lldms, frames=%d) — no action",
-               depth_us / 1000LL, target_us / 1000LL, buffered_frames);
-      timing->frames_since_correction = 0;
-    }
-  }
-  // -----------------------------------------------------------
 
   // Drain up to MAX_DRAIN_ATTEMPTS late/invalid frames within a SINGLE
   // DMA callback.  The previous limit of 8 was the root cause of run-away
@@ -456,119 +407,56 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         timing->playout_started = false;
         timing->ready_time_us = 0;
         timing->consecutive_early_frames = 0;
-        timing->consecutive_late_frames = 0;
-        // post_flush = true so the first frame of the next track plays
-        // immediately rather than waiting out the phone's pre-buffer window.
-        timing->post_flush = true;
-        timing->post_flush_start_us = 0;
+        // quick_start so the first frame of the next track starts playing
+        // as soon as 1 frame arrives, with normal anchor timing applied.
+        timing->quick_start = true;
         return 0;
       }
     }
 
     // Handle early/late frames based on anchor timing.
     //
-    // post_flush bypasses ALL timing checks (early and late) and plays every
-    // frame unconditionally.  This mirrors shairport-sync's
-    // first_packet_timestamp==0 path: after a seek or flush, the phone's anchor
-    // may be stale by hundreds of ms (startup buffer fill delay + pre-buffer
-    // depth), so frames appear early or late through no fault of the stream.
-    // Enforcing timing here causes silence or cascading re-flushes.
-    // post_flush clears only when a frame is genuinely on-time, at which point
-    // the anchor has settled and normal timing can re-engage.
+    // After a seek/flush, anchor-based timing is applied immediately from the
+    // first frame — no bypass.  With a stable PTP clock the anchor is
+    // accurate, so early frames are held as pending (silence output) until
+    // their scheduled play time, and late frames are dropped.  This mirrors
+    // shairport-sync's approach and guarantees the first audible sample is
+    // correctly synchronised.
     if (timing->anchor_valid && format->sample_rate > 0) {
       int64_t early_us = 0;
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
-        if (timing->post_flush) {
-          // Bypass: play regardless of early/late — the phone pre-buffers
-          // several seconds ahead of the anchor's current position after a
-          // seek, so frames appear early through no fault of the stream.
-          //
-          // Track the start time so we can exit post_flush after a timeout
-          // rather than requiring early to reach ±TIMING_THRESHOLD_US (which
-          // may never happen if the pre-buffer depth exceeds the threshold).
-          if (timing->post_flush_start_us == 0) {
-            timing->post_flush_start_us = esp_timer_get_time();
-          }
-          int64_t flush_elapsed =
-              esp_timer_get_time() - timing->post_flush_start_us;
-          // Exception: frames that are MORE than POST_FLUSH_STALE_THRESHOLD_US
-          // early are old-position data still draining from the TCP kernel
-          // buffer (e.g. frames from 2:30 after a seek back to 0:00).  Discard
-          // those so the user never hears audio from the wrong position.
-          if (early_us > POST_FLUSH_STALE_THRESHOLD_US) {
-            // This frame is from the wrong seek position — still draining the
-            // TCP kernel buffer from before the flush.  Bulk-flush the entire
-            // ring buffer so all remaining stale (and any already-queued new)
-            // frames are cleared in one shot.  Draining one-by-one takes
-            // hundreds of DMA callbacks (8 frames/callback × hundreds of stale
-            // frames) causing seconds of silent lag that compounds each seek.
-            ESP_LOGW(
-                TAG, "post_flush: bulk flush %d stale frames (%lld s early)",
-                audio_buffer_get_frame_count(buffer), early_us / 1000000LL);
-            if (from_pending) {
-              timing->pending_valid = false;
-              timing->pending_frame_len = 0;
-            } else {
-              audio_buffer_return(buffer, item);
+        if (early_us > timing_threshold_us) {
+          // Only advance the stuck-anchor counter for NEW frames taken from
+          // the buffer — not for pending re-checks of the same early frame.
+          // A pending frame is re-examined every DMA callback (~8 ms) while
+          // we wait for wall-clock to reach its scheduled play time.  Counting
+          // those re-checks would fire the stuck-anchor detector in
+          // (MAX_CONSECUTIVE_EARLY × 8 ms) = 6 s even for a legitimately
+          // early frame that just needs to wait its pre-buffer depth (~1.5 s).
+          if (!from_pending) {
+            timing->consecutive_early_frames++;
+            // Log the first early frame after each anchor set (shows lead
+            // time before audio starts) and every 50 new frames after that
+            // (confirms the counter only counts real buffer reads, not
+            // pending re-checks).
+            if (timing->consecutive_early_frames == 1) {
+              ESP_LOGI(TAG,
+                       "First early frame: rtp=%" PRIu32 " early=%.1f ms"
+                       " quick_start=%d buffered=%d",
+                       hdr->rtp_timestamp, (float)early_us / 1000.0f,
+                       timing->quick_start, buffered_frames);
+            } else if (timing->consecutive_early_frames % 50 == 0) {
+              ESP_LOGD(TAG, "Early counter: %d/%d early=%.1f ms rtp=%" PRIu32,
+                       timing->consecutive_early_frames, MAX_CONSECUTIVE_EARLY,
+                       (float)early_us / 1000.0f, hdr->rtp_timestamp);
             }
-            audio_buffer_flush(buffer);
-            timing->playout_started = false;
-            timing->ready_time_us = 0;
-            timing->consecutive_early_frames = 0;
-            timing->consecutive_late_frames = 0;
-            // Keep post_flush=true so new-position frames that refill the
-            // buffer will play immediately rather than waiting out the anchor.
-            return 0;
           }
-          // Within pre-buffer depth — play and check if we should exit.
-          // Exit post_flush when either:
-          //  1. early is within ±TIMING_THRESHOLD_US (anchor is on-time), or
-          //  2. POST_FLUSH_TIMEOUT_US has elapsed (pre-buffer depth exceeds
-          //     threshold but anchor is stable — let normal timing take over
-          //     so frames are held until their scheduled play point).
-          //
-          // Exception: a frame that is more than POST_FLUSH_LATE_DROP_US in
-          // the past is from a previous play position (typical of an AP2
-          // group-rejoin where the source replays the group's continuous
-          // timeline into our buffer).  Playing it would emit audibly stale
-          // audio; instead drop it and continue draining within post_flush
-          // so we burn through the backlog and reach the live edge.
-          if (early_us < -POST_FLUSH_LATE_DROP_US) {
-            if (timing->consecutive_late_frames == 0) {
-              ESP_LOGW(TAG, "post_flush: dropping stale frame %lld ms late",
-                       -early_us / 1000LL);
-            }
-            timing->consecutive_late_frames++;
-            if (stats) {
-              stats->late_frames++;
-            }
-            if (from_pending) {
-              timing->pending_valid = false;
-              timing->pending_frame_len = 0;
-            } else {
-              audio_buffer_return(buffer, item);
-            }
-            continue;
-          }
-          if ((early_us >= -TIMING_THRESHOLD_US &&
-               early_us <= TIMING_THRESHOLD_US) ||
-              flush_elapsed >= POST_FLUSH_TIMEOUT_US) {
-            ESP_LOGI(TAG, "post_flush done: early=%lld ms, elapsed=%lld ms",
-                     early_us / 1000LL, flush_elapsed / 1000LL);
-            timing->post_flush = false;
-            timing->post_flush_start_us = 0;
-          }
-          timing->consecutive_early_frames = 0;
-          timing->consecutive_late_frames = 0;
-          // Fall through to play the frame.
-        } else if (early_us > TIMING_THRESHOLD_US) {
-          timing->consecutive_early_frames++;
 
           // If we have had an implausibly long run of early frames the anchor
           // is probably stuck or wrong — give up on it so playback can
-          // continue.  This threshold is high enough (~6 s) that it never
-          // fires during normal pre-buffered-audio scenarios.
+          // continue.  This threshold is high enough (~17 s at 23 ms/frame)
+          // that it never fires during normal pre-buffered-audio scenarios.
           if (timing->consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
             ESP_LOGW(TAG,
                      "Invalidating stuck anchor: consecutive=%d, early=%lld ms",
@@ -599,28 +487,15 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
             memset(out, 0, samples * channels * sizeof(int16_t));
             return samples;
           }
-        } else if (early_us < -TIMING_THRESHOLD_US) {
+        } else if (early_us < -timing_threshold_us) {
           // Reset consecutive early counter on late/normal frames
           timing->consecutive_early_frames = 0;
-          timing->consecutive_late_frames++;
 
           // Late frame — drop it and continue draining within the SAME call.
           // The 256-attempt drain loop chews through stale frames at zero
-          // wall-time cost.  We used to bulk-flush the whole buffer on
-          // >2 s late frames as a shortcut, but that path:
-          //  - re-armed post_flush, which then played the very next stale
-          //    frame unconditionally (producing audible jitter), and
-          //  - returned silence to the DMA, burning ~23 ms of wall time
-          //    while RTP didn't advance — each cycle made us more late and
-          //    we could never catch up (observed in AirPlay 2 group rejoin,
-          //    where the source's anchor is set in the past relative to
-          //    current PTP time and frames pour in 1.5–2 s late).
-          // Dropping & continuing lets the drain loop skip past arbitrarily
-          // many stale frames in one call.
-          if (timing->consecutive_late_frames == 1) {
-            ESP_LOGW(TAG, "Dropping late frame(s): %lld ms",
-                     -early_us / 1000LL);
-          }
+          // wall-time cost, skipping past arbitrarily many stale frames in
+          // one pass without the DMA ever idling.
+          ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
           if (stats) {
             stats->late_frames++;
           }
@@ -635,9 +510,8 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       }
     }
 
-    // Frame is on time (or anchor-invalid) — reset counters.
+    // Frame is on time (or anchor-invalid) — reset counter.
     timing->consecutive_early_frames = 0;
-    timing->consecutive_late_frames = 0;
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
@@ -652,11 +526,10 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
 
     if (!timing->playout_started) {
       timing->playout_started = true;
-    }
-
-    // Tick the fill-depth controller's rate limiter once per played frame.
-    if (timing->frames_since_correction < UINT32_MAX) {
-      timing->frames_since_correction++;
+      bool was_quick = timing->quick_start;
+      timing->quick_start = false;
+      ESP_LOGI(TAG, "Playout started%s: rtp=%" PRIu32,
+               was_quick ? " (quick_start)" : "", hdr->rtp_timestamp);
     }
 
     return frame_samples;

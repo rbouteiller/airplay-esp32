@@ -661,6 +661,41 @@ A 320×170 colour TFT display can be connected to show track metadata with a pro
 
 ---
 
+## AirPlay Tuning (Optional)
+
+Advanced timing and metadata options under **AirPlay Receiver → AirPlay Protocol** in `menuconfig`. The defaults are sensible for most setups — only change these if you hear drop-outs or want to control what metadata is received.
+
+### Cover Art / Artwork
+
+Album cover art is **disabled by default**. Most receivers have no screen (or only a small OLED), and receiving artwork images over the RTSP connection can stall the audio pipeline and cause drop-outs — especially on unbuffered AirPlay 1 / realtime streams. When disabled, the receiver removes the artwork type (`0`) from its advertised `md` txt record so senders don't transmit cover art, and ignores any artwork sent anyway. Track title, artist, album and progress metadata are always received.
+
+To enable cover art (e.g. if you have a TFT display):
+
+```bash
+idf.py menuconfig
+# Navigate to: AirPlay Receiver → AirPlay Protocol
+# Enable "Enable cover-art / artwork reception"
+```
+
+Or add to your sdkconfig defaults:
+
+```
+CONFIG_ENABLE_AIRPLAY_ARTWORK=y
+```
+
+### Early/Late Timing Thresholds
+
+The timing engine holds frames that arrive early (outputting silence until their scheduled play time) and drops frames that arrive late. The threshold controls how much slack is allowed before a frame is held or dropped. Buffered AirPlay 2 streams (AAC) have a deep jitter buffer and can use a tight threshold for precise sync; unbuffered realtime streams (ALAC over UDP) have almost no buffer, so a tight threshold causes audible drop-outs when the pipeline stalls (e.g. when metadata arrives).
+
+| Option                                  | Default | Description                                         |
+| --------------------------------------- | ------- | --------------------------------------------------- |
+| `CONFIG_AIRPLAY_TIMING_THRESHOLD_MS`    | 10 ms   | Early/late threshold for buffered streams (AAC)     |
+| `CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS` | 50 ms   | Early/late threshold for unbuffered realtime (ALAC) |
+
+If you still hear drop-outs on AirPlay 1 / realtime playback, increase `CONFIG_AIRPLAY_RT_TIMING_THRESHOLD_MS` (at the cost of slightly looser sync).
+
+---
+
 ## Features
 
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
@@ -675,6 +710,8 @@ A 320×170 colour TFT display can be connected to show track metadata with a pro
 - **OLED display** — optional screen showing track metadata, progress bar, and playback time
 - **ST7789 TFT display** — optional colour TFT showing track metadata on a full-colour background (ESP32-S3)
 - **Hardware buttons** — optional physical buttons for play/pause, volume, and track skip with auto-repeat
+- **Tunable AirPlay timing** — separate early/late thresholds for buffered and realtime streams to avoid drop-outs
+- **Optional cover art** — album artwork reception is off by default (smoother playback, screenless setups) and can be enabled when a display is present
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
 - **Esparagus Audio Brick support** — ESP32 + TAS5825M DAC/amp with on-chip DSP and 15-band EQ
 

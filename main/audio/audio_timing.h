@@ -29,18 +29,13 @@ typedef struct {
   // played.
   int consecutive_early_frames;
   // Late-frame guard: counts consecutive individually-late frames.  When this
-  // exceeds MAX_CONSECUTIVE_LATE the whole buffer is considered stale (e.g.
-  // after a track skip where the anchor network_time has already passed) and a
-  // bulk flush is triggered instead of draining frame-by-frame.
-  int consecutive_late_frames;
-  // Post-seek/skip flag: set by audio_receiver_seek_flush() via
-  // audio_timing_t so that audio_timing_read plays frames immediately rather
-  // than silencing them during the phone's pre-buffer window (which can be
-  // several seconds).  Cleared automatically after POST_FLUSH_TIMEOUT_US of
-  // real-time playback so normal timing re-engages and frames are held until
-  // their scheduled play point.
-  bool post_flush;
-  int64_t post_flush_start_us; // esp_timer_get_time() when post_flush began
+  // Quick-start flag: set after a seek/flush/track-change so that
+  // audio_timing_read starts playback with just 1 buffered frame instead of
+  // waiting for target_buffer_frames.  Anchor-based timing is used from the
+  // very first frame (no bypass) — early frames are held as pending and
+  // silence is output until their scheduled play time, exactly like
+  // shairport-sync.  Cleared once playout_started becomes true.
+  bool quick_start;
   // Deferred flush (AirPlay 2 FLUSHBUFFERED with flushFromSeq present):
   // keep playing until a frame with rtp_timestamp >= flush_until_ts arrives,
   // then bulk-flush and start fresh.  Written by the RTSP task, read by the
@@ -48,11 +43,6 @@ typedef struct {
   // mutex (write flush_until_ts first, arm bool second; read bool first).
   bool deferred_flush_pending;
   uint32_t flush_until_ts;
-  // Closed-loop fill-depth controller state.  Counts how many audio_timing_read
-  // calls have played a real frame since the last drop/pad correction.  Used
-  // to rate-limit corrections so the effective sample-rate skew stays below
-  // the threshold of audibility.
-  uint32_t frames_since_correction;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);

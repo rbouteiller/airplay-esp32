@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -35,8 +36,9 @@ typedef struct __attribute__((packed)) {
 
 #define NTP_STACK_SIZE 3072
 
+// TCB must remain in internal DRAM. NTP is secondary to PTP for AirPlay 2 sync.
 static StaticTask_t s_ntp_tcb;
-static StackType_t s_ntp_stack[NTP_STACK_SIZE / sizeof(StackType_t)];
+static StackType_t *s_ntp_stack;
 
 // Timing state
 static struct {
@@ -263,6 +265,13 @@ esp_err_t ntp_clock_start_client(uint32_t remote_ip, uint16_t remote_port) {
   memset(ntp.dispersions, 0, sizeof(ntp.dispersions));
   ntp.running = true;
 
+  if (!s_ntp_stack) {
+    s_ntp_stack =
+        heap_caps_malloc(NTP_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_ntp_stack) {
+      s_ntp_stack = malloc(NTP_STACK_SIZE);
+    }
+  }
   ntp.task_handle = xTaskCreateStatic(ntp_task, "ntp_clock",
                                       NTP_STACK_SIZE / sizeof(StackType_t),
                                       NULL, 5, s_ntp_stack, &s_ntp_tcb);

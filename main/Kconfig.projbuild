@@ -9,6 +9,22 @@ menu "Airplay ESP Configuration"
             help
                 Brightness level for the status LED (0=off, 255=max).
 
+        config LED_STATUS_INVERT
+            bool "Invert Status LED output (active-low)"
+            default y
+            help
+                If enabled, the status LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
+        config LED_ERROR_INVERT
+            bool "Invert Error LED output (active-low)"
+            default y
+            help
+                If enabled, the error LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
         menu "Status LED Behavior"
             choice LED_STATUS_ON_PLAYING
                 prompt "Status LED when playing"
@@ -352,6 +368,37 @@ menu "Airplay ESP Configuration"
                 audio encryption in this codebase. The receiver will
                 advertise et=0 (no encryption). If iOS refuses to connect,
                 audio encryption support may need to be added.
+
+        config AIRPLAY_TIMING_THRESHOLD_MS
+            int "Early/late timing threshold for buffered streams (ms)"
+            default 10
+            range 2 200
+            help
+                Maximum amount a frame may be early or late (in milliseconds)
+                before the timing engine holds it as pending (early) or drops
+                it (late). Buffered AirPlay 2 streams (AAC, type 103) have a
+                deep jitter buffer, so a tight threshold keeps tight sync
+                without causing drop-outs.
+
+        config AIRPLAY_RT_TIMING_THRESHOLD_MS
+            int "Early/late timing threshold for unbuffered streams (ms)"
+            default 50
+            range 2 500
+            help
+                Same as above but for unbuffered realtime streams (ALAC over
+                UDP, type 96). Realtime streams have little or no jitter
+                buffer to absorb scheduling hiccups (e.g. when image/metadata
+                arrives on the RTSP connection), so a tight threshold causes
+                audible drop-outs. A larger threshold tolerates the jitter at
+                the cost of slightly looser sync. Increase this if you still
+                hear drop-outs on AirPlay 1 / realtime playback.
+
+        config ENABLE_AIRPLAY_ARTWORK
+            bool "Enable cover-art / artwork reception"
+            default n
+            help
+                Receive cover-art images. Enable it only if you have a display
+                cabable of and want album art.
     endmenu
 
     menu "Button Configuration"

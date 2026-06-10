@@ -11,6 +11,19 @@
 
 #include <math.h>
 
+// Convert Kconfig boolean values to C macros
+#ifdef CONFIG_LED_STATUS_INVERT
+#define LED_STATUS_INVERT_VAL 1
+#else
+#define LED_STATUS_INVERT_VAL 0
+#endif
+
+#ifdef CONFIG_LED_ERROR_INVERT
+#define LED_ERROR_INVERT_VAL 1
+#else
+#define LED_ERROR_INVERT_VAL 0
+#endif
+
 static const char *TAG = "led";
 
 // ============================================================================
@@ -95,12 +108,15 @@ static void status_led_set_duty(uint8_t duty) {
   }
   ledc_set_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL);
+  ESP_LOGV(TAG, "Status LED duty set to %d", duty);
 }
 
 static void status_timer_cb(TimerHandle_t xTimer) {
   (void)xTimer;
   s_status_on = !s_status_on;
   status_led_set_duty(s_status_on ? s_status_duty : 0);
+  ESP_LOGD(TAG, "Status LED timer: mode=%d, state=%s", s_status_mode,
+           s_status_on ? "ON" : "OFF");
 
   uint32_t period_ms;
   switch (s_status_mode) {
@@ -121,7 +137,10 @@ static void status_timer_cb(TimerHandle_t xTimer) {
   if (ticks == 0) {
     ticks = 1;
   }
-  xTimerChangePeriod(s_status_timer, ticks, 10);
+  BaseType_t ret = xTimerChangePeriod(s_status_timer, ticks, 10);
+  if (ret != pdPASS) {
+    ESP_LOGW(TAG, "Failed to change timer period: %d", ret);
+  }
 }
 
 static void status_led_init(void) {
@@ -154,15 +173,24 @@ static void status_led_init(void) {
       .gpio_num = s_status_gpio,
       .duty = 0,
       .hpoint = 0,
-      .flags = {.output_invert = true},
+      .flags = {.output_invert = LED_STATUS_INVERT_VAL},
   };
   if (ledc_channel_config(&ch_cfg) != ESP_OK) {
     ESP_LOGE(TAG, "Status LED channel init failed");
     return;
   }
 
+  // Explicitly apply initial duty (off)
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL, 0);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL);
+
   s_status_timer = xTimerCreate("status_led", pdMS_TO_TICKS(500), pdFALSE, NULL,
                                 status_timer_cb);
+  if (s_status_timer == NULL) {
+    ESP_LOGE(TAG, "Failed to create status LED timer");
+    return;
+  }
+
   s_status_enabled = true;
   ESP_LOGI(TAG, "Status LED initialized on GPIO %d", s_status_gpio);
 }
@@ -174,30 +202,48 @@ static void status_led_set_mode(led_mode_t mode) {
   if (mode == s_status_mode) {
     return;
   }
+  ESP_LOGD(TAG, "Status LED mode change: %d -> %d", s_status_mode, mode);
   s_status_mode = mode;
 
   if (s_status_timer && xTimerIsTimerActive(s_status_timer)) {
-    xTimerStop(s_status_timer, 10);
+    BaseType_t ret = xTimerStop(s_status_timer, 10);
+    if (ret != pdPASS) {
+      ESP_LOGW(TAG, "Failed to stop status LED timer: %d", ret);
+    }
   }
 
   switch (mode) {
   case LED_OFF:
+    ESP_LOGD(TAG, "Status LED: OFF");
     status_led_set_duty(0);
     break;
   case LED_STEADY:
+    ESP_LOGD(TAG, "Status LED: STEADY (duty=%d)", s_status_duty);
     status_led_set_duty(s_status_duty);
     break;
   case LED_BLINK_SLOW:
   case LED_BLINK_MEDIUM:
   case LED_BLINK_FAST:
-    s_status_on = true;
-    status_led_set_duty(s_status_duty);
-    if (s_status_timer) {
-      xTimerStart(s_status_timer, 10);
+    // Reset state and turn LED on for first blink cycle
+    s_status_on =
+        false; // Will be toggled to true immediately in first timer callback
+    if (!s_status_timer) {
+      ESP_LOGE(TAG, "Status LED timer not initialized!");
+      break;
+    }
+    BaseType_t ret = xTimerStart(s_status_timer, 10);
+    if (ret != pdPASS) {
+      ESP_LOGE(TAG, "Failed to start status LED timer: %d", ret);
+    } else {
+      ESP_LOGD(TAG, "Status LED: BLINK mode %d started", mode);
+      // Immediately trigger first state to avoid initial delay
+      status_timer_cb(s_status_timer);
     }
     break;
   case LED_VU:
-    // VU mode handled by led_audio_feed
+    ESP_LOGD(TAG, "Status LED: VU mode (initial OFF)");
+    // Initialize to OFF, will be updated by led_audio_feed()
+    status_led_set_duty(0);
     break;
   }
 }
@@ -250,12 +296,17 @@ static void error_led_init(void) {
       .gpio_num = s_error_gpio,
       .duty = 0,
       .hpoint = 0,
-      .flags = {.output_invert = true},
+      .flags = {.output_invert = LED_ERROR_INVERT_VAL},
   };
   if (ledc_channel_config(&ch_cfg) != ESP_OK) {
     ESP_LOGE(TAG, "Error LED channel init failed");
     return;
   }
+
+  // Explicitly apply initial duty (off)
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL, 0);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL);
+
   s_error_enabled = true;
   ESP_LOGI(TAG, "Error LED initialized on GPIO %d", s_error_gpio);
 }
@@ -452,6 +503,8 @@ static void apply_state(led_state_t state) {
   s_prev_state = s_current_state;
   s_current_state = state;
 
+  ESP_LOGI(TAG, "LED state change: %d -> %d", s_prev_state, state);
+
   switch (state) {
   case STATE_PLAYING:
     status_led_set_mode(get_status_mode_playing());
@@ -503,6 +556,7 @@ static void apply_state(led_state_t state) {
 
 static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data) {
+  ESP_LOGD(TAG, "RTSP event: %d", event);
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
     apply_state(STATE_PAUSED);
@@ -588,6 +642,15 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
 // ============================================================================
 
 void led_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+
+  ESP_LOGI(TAG, "Initializing LED subsystem");
+  ESP_LOGI(TAG, "  Status LED GPIO: %d", gpio_cfg.led_status);
+  ESP_LOGI(TAG, "  Error LED GPIO: %d", gpio_cfg.led_error);
+  ESP_LOGI(TAG, "  RGB LED GPIO: %d", gpio_cfg.led_rgb);
+  ESP_LOGI(TAG, "  LED brightness: %d", CONFIG_LED_STATUS_BRIGHTNESS);
+
   status_led_init();
   error_led_init();
   rgb_led_init();
@@ -595,6 +658,7 @@ void led_init(void) {
   rtsp_events_register(on_rtsp_event, NULL);
 
   // Start in standby
+  ESP_LOGI(TAG, "Starting in STANDBY state");
   apply_state(STATE_STANDBY);
 
   ESP_LOGI(TAG, "LED subsystem initialized");

@@ -47,6 +47,22 @@ uint64_t ptp_clock_get_time_ns(void);
 int64_t ptp_clock_get_offset_ns(void);
 
 /**
+ * Notify the PTP clock that playback is resuming after a pause.
+ *
+ * If the pause lasted longer than PTP_LONG_PAUSE_THRESHOLD_MS, this
+ * resets the asymmetric smoothing filter so the next received PTP sample is
+ * accepted unconditionally — mirroring the nqptp "B" (begin) signal behaviour
+ * described in nqptp-shm-structures.h.
+ *
+ * Without this, after a pause long enough for the local crystal to drift,
+ * the 1/256-negative-jitter damping would take several minutes to re-converge,
+ * causing audible multi-room sync loss on resume.
+ *
+ * @param pause_duration_ms  Wall-clock length of the pause in milliseconds.
+ */
+void ptp_clock_notify_resume(uint32_t pause_duration_ms);
+
+/**
  * Get synchronization statistics.
  */
 typedef struct {

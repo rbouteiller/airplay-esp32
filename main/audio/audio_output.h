@@ -48,3 +48,15 @@ void audio_output_set_sample_rate(uint32_t rate);
  * The resampler is re-initialized if the rate changes.
  */
 void audio_output_set_source_rate(int rate);
+
+/**
+ * Return the I2S DMA pipeline latency in microseconds.
+ *
+ * This is computed from the DMA descriptor count and frame count
+ * (both set at init time) divided by the output sample rate — i.e.
+ *   (dma_desc_num × dma_frame_num × 1 000 000) / sample_rate
+ *
+ * Using this value instead of a hard-coded constant means the latency
+ * stays correct if the DMA config or sample rate is ever changed.
+ */
+uint32_t audio_output_get_hardware_latency_us(void);

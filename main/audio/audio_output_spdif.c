@@ -322,3 +322,10 @@ void audio_output_set_source_rate(int rate) {
     resample_reinit_needed = true;
   }
 }
+
+uint32_t audio_output_get_hardware_latency_us(void) {
+  // SPDIF DMA ring: DMA_BUF_COUNT half-blocks, each SPDIF_BLOCK/SPDIF_BUF_DIV
+  // audio samples (= 96 stereo frames per buffer).
+  const uint32_t audio_samples = DMA_BUF_COUNT * (SPDIF_BLOCK / SPDIF_BUF_DIV);
+  return (uint32_t)((uint64_t)audio_samples * 1000000ULL / OUTPUT_RATE);
+}
