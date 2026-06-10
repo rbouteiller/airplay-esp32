@@ -4,6 +4,7 @@
 #include "audio_resample.h"
 #include "led.h"
 #include "settings.h"
+#include "software_eq.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -12,6 +13,7 @@
 #include "rtsp_server.h"
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define TAG           "audio_output"
 #define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
@@ -78,12 +80,14 @@ static void playback_task(void *arg) {
                                               MAX_RESAMPLE_FRAMES);
         play_buf = resample_buf;
       }
+      software_eq_process(play_buf, play_samples);
       apply_volume(play_buf, play_samples * 2);
       led_audio_feed(play_buf, play_samples);
       i2s_channel_write(tx_handle, play_buf, play_samples * 4, &written,
                         portMAX_DELAY);
       taskYIELD();
     } else {
+      software_eq_clear_state();
       led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
@@ -174,6 +178,35 @@ void audio_output_stop(void) {
 }
 
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
+  if (software_eq_is_active() && data && bytes >= 4 && (bytes % 4) == 0) {
+    const uint8_t *src = (const uint8_t *)data;
+    size_t remaining = bytes;
+    int16_t eq_buf[256];
+
+    while (remaining > 0) {
+      size_t chunk = remaining < sizeof(eq_buf) ? remaining : sizeof(eq_buf);
+      chunk -= chunk % 4;
+      if (chunk == 0) {
+        break;
+      }
+
+      memcpy(eq_buf, src, chunk);
+      software_eq_process(eq_buf, chunk / 4);
+
+      size_t written = 0;
+      esp_err_t err =
+          i2s_channel_write(tx_handle, eq_buf, chunk, &written, wait);
+      if (err != ESP_OK) {
+        return err;
+      }
+
+      src += chunk;
+      remaining -= chunk;
+    }
+
+    return ESP_OK;
+  }
+
   size_t written = 0;
   return i2s_channel_write(tx_handle, data, bytes, &written, wait);
 }
@@ -187,10 +220,12 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   i2s_channel_enable(tx_handle);
+  software_eq_set_sample_rate(rate);
 }
 
 void audio_output_flush(void) {
   flush_requested = true;
+  software_eq_clear_state();
 }
 
 void audio_output_set_source_rate(int rate) {

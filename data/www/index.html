@@ -799,6 +799,148 @@ a.btn:hover{transform:translateY(-1px)}
   line-height:1.65;
 }
 
+.eq-panel{
+  overflow:visible;
+}
+
+.eq-toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:14px;
+}
+
+.eq-mode-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  color:var(--accent);
+  background:rgba(122,246,255,0.08);
+  font-size:12px;
+  font-weight:700;
+}
+
+.eq-preset-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+}
+
+.eq-preset-row select{
+  min-height:42px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:0 14px;
+  color:var(--text);
+  background:var(--input-bg);
+  font:inherit;
+  outline:none;
+}
+
+.eq-editor{
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr);
+  gap:10px;
+  align-items:stretch;
+  padding:18px;
+  border:1px solid var(--line);
+  border-radius:22px;
+  background:
+    linear-gradient(90deg, rgba(122,246,255,0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(122,246,255,0.08) 1px, transparent 1px),
+    rgba(255,255,255,0.025);
+  background-size:42px 42px;
+}
+
+.eq-scale{
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  padding:28px 0 26px;
+  color:var(--muted);
+  font-size:11px;
+  text-align:right;
+}
+
+.eq-sliders{
+  display:grid;
+  grid-template-columns:repeat(15,minmax(34px,1fr));
+  gap:8px;
+  min-height:290px;
+  align-items:end;
+}
+
+.eq-band{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+
+.eq-band-value{
+  min-height:18px;
+  color:var(--accent-2);
+  font-size:11px;
+  font-weight:800;
+  white-space:nowrap;
+}
+
+.eq-band input[type=range]{
+  -webkit-appearance:none;
+  appearance:none;
+  writing-mode:vertical-lr;
+  direction:rtl;
+  width:34px;
+  height:210px;
+  background:transparent;
+  cursor:pointer;
+}
+
+.eq-band input[type=range]::-webkit-slider-runnable-track{
+  width:6px;
+  border-radius:999px;
+  background:linear-gradient(180deg,var(--accent-2),var(--accent));
+  box-shadow:0 0 18px rgba(122,246,255,0.28);
+}
+
+.eq-band input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;
+  width:18px;
+  height:18px;
+  margin-left:-6px;
+  border-radius:50%;
+  border:2px solid rgba(255,255,255,0.82);
+  background:var(--accent-2);
+  box-shadow:0 0 18px rgba(255,91,189,0.5);
+}
+
+.eq-band input[type=range]::-moz-range-track{
+  width:6px;
+  border-radius:999px;
+  background:linear-gradient(180deg,var(--accent-2),var(--accent));
+}
+
+.eq-band input[type=range]::-moz-range-thumb{
+  width:16px;
+  height:16px;
+  border:2px solid rgba(255,255,255,0.82);
+  border-radius:50%;
+  background:var(--accent-2);
+}
+
+.eq-band-freq{
+  color:var(--muted);
+  font-size:10px;
+  white-space:nowrap;
+}
+
 .footnote{
   margin-top:18px;
   color:var(--muted);
@@ -822,6 +964,10 @@ a.btn:hover{transform:translateY(-1px)}
   .btn,.btn-block,a.btn{width:100%}
   .btn-row{display:grid}
   .meta-chip{min-width:unset}
+  .eq-toolbar{align-items:stretch}
+  .eq-preset-row,.eq-preset-row select{width:100%}
+  .eq-editor{padding:12px;overflow-x:auto}
+  .eq-sliders{min-width:720px}
 }
 </style>
 </head>
@@ -850,7 +996,7 @@ a.btn:hover{transform:translateY(-1px)}
       <div class="stack" style="margin-top:14px">
         <div class="form-group">
           <label for="wifi-ssid">网络名称 / SSID</label>
-          <input type="text" id="wifi-ssid" placeholder="输入或选择网络">
+          <input type="text" id="wifi-ssid" placeholder="SSID名称">
         </div>
         <div class="form-group">
           <label for="wifi-pass">密码</label>
@@ -879,21 +1025,40 @@ a.btn:hover{transform:translateY(-1px)}
       <div class="btn-row" style="margin-top:14px">
         <button class="btn btn-primary" onclick="saveName()">保存设备名称</button>
       </div>
-      <div class="device-hints">
-        <div class="mini-note">
-          <strong>显示名称</strong>
-          <span>会直接出现在 iPhone、iPad 和 Mac 的 AirPlay 列表中。</span>
-        </div>
-        <div class="mini-note">
-          <strong>保存方式</strong>
-          <span>写入 NVS，重启后广播名称和发现信息一起刷新。</span>
-        </div>
-      </div>
       <div id="name-msg"></div>
     </article>
   </section>
 
   <section class="layout">
+    <article class="card card-wide eq-panel">
+      <div class="card-head">
+        <div>
+          <h2>均衡器</h2>
+          <p>15 段实时均衡调节，普通 I2S 输出使用软件 EQ，TAS58XX 板型继续使用硬件 EQ。</p>
+        </div>
+      </div>
+      <div class="eq-toolbar">
+        <span class="eq-mode-chip" id="eq-mode">软件 EQ</span>
+        <div class="eq-preset-row">
+          <select id="eq-preset" onchange="loadEQPreset(this.value)">
+            <option value="">选择预设</option>
+            <option value="bass_boost">低频增强</option>
+            <option value="treble_boost">高频增强</option>
+            <option value="v_shape">V 型</option>
+            <option value="vocal">人声</option>
+            <option value="loudness">响度</option>
+          </select>
+          <button class="btn btn-secondary" id="eq-flat-btn" onclick="resetEQFlat()">关闭均衡器</button>
+          <button class="btn btn-primary" id="eq-apply-btn" onclick="applyEQ()" disabled>应用均衡器</button>
+        </div>
+      </div>
+      <div class="eq-editor">
+        <div class="eq-scale"><span>+15</span><span>+7</span><span>0</span><span>-7</span><span>-15</span></div>
+        <div class="eq-sliders" id="eq-sliders"></div>
+      </div>
+      <div id="eq-msg"></div>
+    </article>
+
     <article class="card card-wide">
       <div class="card-head">
         <div>
@@ -1080,7 +1245,7 @@ a.btn:hover{transform:translateY(-1px)}
       <div class="card-head">
         <div>
           <h2>系统诊断</h2>
-          <p>无需离开门户即可打开实时日志，并在支持的板型上进入 EQ 控制。</p>
+          <p>无需离开门户即可打开实时日志，检查启动、Wi-Fi 与音频事件。</p>
         </div>
       </div>
       <div class="utility-links">
@@ -1089,17 +1254,25 @@ a.btn:hover{transform:translateY(-1px)}
           <span>通过 WebSocket 查看 ESP 日志输出，检查启动、Wi‑Fi 与音频事件。</span>
           <a href="/logs" class="btn btn-primary">打开日志查看器</a>
         </div>
-        <div class="utility-tile" id="eq-card" style="display:none">
-          <strong>均衡器</strong>
-          <span>在 TAS58xx 路径可用时调整 15 段参数均衡器。</span>
-          <a href="/eq" class="btn btn-primary">打开均衡器</a>
-        </div>
       </div>
     </article>
   </section>
 </div>
 
 <script>
+const eqBands = 15;
+const eqFreqs = [20,31.5,50,80,125,200,315,500,800,'1.25k','2k','3.15k','5k','8k','16k'];
+let eqGains = new Array(eqBands).fill(0);
+let eqDirty = false;
+
+const eqPresets = {
+  bass_boost: [8,6,5,4,2,0,0,0,0,0,0,0,0,0,0],
+  treble_boost: [0,0,0,0,0,0,0,0,0,1,3,4,6,7,7],
+  v_shape: [5,4,2,1,0,-1,-2,-3,-2,0,1,3,4,5,5],
+  vocal: [0,0,0,0,0,1,3,4,4,3,1,0,0,0,0],
+  loudness: [7,5,3,0,-1,-2,-3,-2,0,1,3,4,6,7,5]
+};
+
 const gpioFields = [
   'i2s_sck','i2s_bck','i2s_ws','i2s_do','i2s_gnd','i2s_vcc',
   'dac_i2c_sda','dac_i2c_scl','jack','spkfault','mute',
@@ -1117,6 +1290,129 @@ function msg(id, txt, type) {
   if (!el) return;
   el.innerHTML = '<div class="msg ' + type + '">' + txt + '</div>';
   setTimeout(function() { el.innerHTML = ''; }, 4500);
+}
+
+function formatEQGain(value) {
+  return (value > 0 ? '+' : '') + value;
+}
+
+function markEQDirty(isDirty) {
+  eqDirty = isDirty;
+  var apply = document.getElementById('eq-apply-btn');
+  if (apply) apply.disabled = !eqDirty;
+}
+
+function buildEQSliders() {
+  var container = document.getElementById('eq-sliders');
+  if (!container) return;
+  container.innerHTML = '';
+
+  for (var i = 0; i < eqBands; i++) {
+    var band = document.createElement('div');
+    band.className = 'eq-band';
+
+    var value = document.createElement('div');
+    value.className = 'eq-band-value';
+    value.id = 'eq-value-' + i;
+    value.textContent = formatEQGain(eqGains[i]);
+
+    var slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = -15;
+    slider.max = 15;
+    slider.step = 1;
+    slider.value = eqGains[i];
+    slider.dataset.eqBand = i;
+    slider.addEventListener('input', function(event) {
+      var index = parseInt(event.target.dataset.eqBand, 10);
+      eqGains[index] = parseFloat(event.target.value);
+      document.getElementById('eq-value-' + index).textContent = formatEQGain(eqGains[index]);
+      document.getElementById('eq-preset').value = '';
+      markEQDirty(true);
+    });
+
+    var freq = document.createElement('div');
+    freq.className = 'eq-band-freq';
+    freq.textContent = eqFreqs[i];
+
+    band.appendChild(value);
+    band.appendChild(slider);
+    band.appendChild(freq);
+    container.appendChild(band);
+  }
+}
+
+function updateEQSliders() {
+  for (var i = 0; i < eqBands; i++) {
+    var slider = document.querySelector('[data-eq-band="' + i + '"]');
+    if (slider) slider.value = eqGains[i];
+    var value = document.getElementById('eq-value-' + i);
+    if (value) value.textContent = formatEQGain(eqGains[i]);
+  }
+}
+
+async function loadEQ() {
+  try {
+    var resp = await fetch('/api/eq');
+    var data = await resp.json();
+    if (data.success && data.gains && data.gains.length === eqBands) {
+      eqGains = data.gains.map(function(value) {
+        return Math.max(-15, Math.min(15, Math.round(Number(value) || 0)));
+      });
+      updateEQSliders();
+      markEQDirty(false);
+    }
+  } catch (e) {
+    if (location.protocol !== 'file:') {
+      msg('eq-msg', '读取均衡器设置失败', 'err');
+    }
+  }
+}
+
+async function postEQ(gains, successText) {
+  var apply = document.getElementById('eq-apply-btn');
+  var flat = document.getElementById('eq-flat-btn');
+  if (apply) apply.disabled = true;
+  if (flat) flat.disabled = true;
+
+  try {
+    var resp = await fetch('/api/eq', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({gains: gains})
+    });
+    var data = await resp.json();
+    if (data.success) {
+      markEQDirty(false);
+      msg('eq-msg', successText, 'ok');
+    } else {
+      markEQDirty(true);
+      msg('eq-msg', data.error || '均衡器应用失败', 'err');
+    }
+  } catch (e) {
+    markEQDirty(true);
+    msg('eq-msg', location.protocol === 'file:' ? '本地预览无法应用，烧录后可在设备页面使用。' : '均衡器应用失败', 'err');
+  } finally {
+    if (flat) flat.disabled = false;
+  }
+}
+
+function applyEQ() {
+  postEQ(eqGains, '均衡器已应用');
+}
+
+function resetEQFlat() {
+  eqGains = new Array(eqBands).fill(0);
+  updateEQSliders();
+  document.getElementById('eq-preset').value = '';
+  postEQ(eqGains, '已关闭均衡器');
+}
+
+function loadEQPreset(name) {
+  if (!name || !eqPresets[name]) return;
+  eqGains = eqPresets[name].slice();
+  updateEQSliders();
+  markEQDirty(true);
 }
 
 function formatGPIOValue(value) {
@@ -1785,8 +2081,17 @@ async function loadInfo() {
     document.getElementById('info-phy').textContent = info.wifi_phy || '-';
     document.getElementById('info-bssid').textContent = info.wifi_bssid || '-';
 
-    if (info.eq_supported) {
-      document.getElementById('eq-card').style.display = '';
+    var wifiInput = document.getElementById('wifi-ssid');
+    var displaySSID = info.saved_wifi_ssid || info.wifi_ssid || '';
+    if (wifiInput && displaySSID &&
+        (wifiInput.value === '' || wifiInput.value === wifiInput.dataset.loadedSsid)) {
+      wifiInput.value = displaySSID;
+      wifiInput.dataset.loadedSsid = displaySSID;
+    }
+
+    var eqMode = document.getElementById('eq-mode');
+    if (eqMode) {
+      eqMode.textContent = info.eq_mode === 'hardware' ? '硬件 EQ' : '软件 EQ';
     }
 
     document.getElementById('dev-name').placeholder = info.device_name || '';
@@ -1794,6 +2099,9 @@ async function loadInfo() {
 }
 
 window.onload = function() {
+  buildEQSliders();
+  loadEQ();
+
   document.getElementById('fw-file').onchange = function(event) {
     var file = event.target.files[0];
     setOTASelectionText(file || null);

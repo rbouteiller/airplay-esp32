@@ -18,6 +18,7 @@
 #include "log_stream.h"
 #include "wifi.h"
 #include "spiffs_storage.h"
+#include "software_eq.h"
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
@@ -211,6 +212,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  ESP_ERROR_CHECK(software_eq_init(CONFIG_OUTPUT_SAMPLE_RATE_HZ));
 
   bool power_cycle_wifi_reset = false;
   esp_err_t settings_err =
@@ -224,7 +226,7 @@ void app_main(void) {
              "provisioning mode with cleared WiFi credentials",
              SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD);
   }
-  task_create_spiram(clear_power_cycle_counter_task, "bootcnt_clr", 2048, NULL,
+  task_create_spiram(clear_power_cycle_counter_task, "bootcnt_clr", 4096, NULL,
                      1, NULL, NULL);
 
   spiffs_storage_init();

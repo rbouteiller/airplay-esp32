@@ -35,14 +35,48 @@ static esp_timer_handle_t s_retry_timer = NULL;
 // Saved AP config from init, used to re-enable AP without duplication
 static wifi_config_t s_ap_config;
 
+static void schedule_retry(void);
 static void wifi_select_best_ap(const char *ssid);
 static void scan_and_connect_task(void *arg);
 
+static bool sta_config_has_ssid(void) {
+  wifi_config_t cfg;
+  return esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
+         strlen((char *)cfg.sta.ssid) > 0;
+}
+
+static void wifi_clear_bssid_lock(void) {
+  if (!s_bssid_set) {
+    return;
+  }
+
+  wifi_config_t sta_cfg;
+  if (esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK) {
+    memset(sta_cfg.sta.bssid, 0, sizeof(sta_cfg.sta.bssid));
+    sta_cfg.sta.bssid_set = false;
+    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+  }
+  s_bssid_set = false;
+}
+
+static void start_scan_connect_task(const char *task_name) {
+  if (xTaskCreate(scan_and_connect_task, task_name, 4096, NULL, 3, NULL) !=
+      pdPASS) {
+    ESP_LOGW(TAG, "Failed to create %s task; reconnecting directly",
+             task_name);
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+      ESP_LOGW(TAG, "Direct reconnect failed: %s", esp_err_to_name(err));
+      schedule_retry();
+    }
+  }
+}
+
 static void retry_timer_callback(void *arg) {
   if (!s_sta_connected) {
-    ESP_LOGI(TAG, "Retry timer fired, reconnecting (attempt %d)...",
+    ESP_LOGI(TAG, "Retry timer fired, scanning and reconnecting (attempt %d)...",
              s_retry_num + 1);
-    esp_wifi_connect();
+    start_scan_connect_task("wifi_retry");
   }
 }
 
@@ -57,7 +91,23 @@ static void schedule_retry(void) {
     }
   }
   ESP_LOGI(TAG, "Scheduling retry in %d seconds", delay_s);
-  esp_timer_start_once(s_retry_timer, (uint64_t)delay_s * 1000000);
+  if (esp_timer_is_active(s_retry_timer)) {
+    esp_timer_stop(s_retry_timer);
+  }
+  esp_err_t err =
+      esp_timer_start_once(s_retry_timer, (uint64_t)delay_s * 1000000);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to start retry timer: %s", esp_err_to_name(err));
+  }
+}
+
+static void resume_retry_after_user_scan(bool should_resume) {
+  if (!should_resume || s_sta_connected) {
+    return;
+  }
+
+  ESP_LOGI(TAG, "Resuming STA retry after WiFi scan");
+  schedule_retry();
 }
 
 esp_err_t wifi_enable_ap_mode(void) {
@@ -94,10 +144,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     // Defer scan+connect to a separate task — the blocking scan uses too
     // much stack to run inside the sys_evt event loop (2–4 KB).
-    xTaskCreate(scan_and_connect_task, "wifi_scan", 4096, NULL, 3, NULL);
+    start_scan_connect_task("wifi_start");
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     s_sta_connected = false;
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     wifi_event_sta_disconnected_t *disconnected =
         (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGI(TAG, "Disconnected from AP, reason: %d", disconnected->reason);
@@ -108,7 +159,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
       // Fast retries — reconnect immediately
       ESP_LOGI(TAG, "Retrying connection (%d/%d)...", s_retry_num,
                AP_REENABLE_THRESHOLD);
-      esp_wifi_connect();
+      start_scan_connect_task("wifi_reconn");
     } else {
       if (s_retry_num == AP_REENABLE_THRESHOLD) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
@@ -126,6 +177,8 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     s_retry_num = 0;
     s_sta_connected = true;
+    esp_timer_stop(s_retry_timer);
+    xEventGroupClearBits(s_wifi_event_group, WIFI_FAIL_BIT);
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
     // Disable AP mode when STA connects
@@ -146,13 +199,25 @@ static void scan_and_connect_task(void *arg) {
   if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
       strlen((char *)cfg.sta.ssid) > 0) {
     wifi_select_best_ap((char *)cfg.sta.ssid);
+  } else {
+    ESP_LOGW(TAG, "No saved WiFi SSID, skipping STA connect");
+    vTaskDelete(NULL);
+    return;
   }
-  esp_wifi_connect();
+  esp_err_t err = esp_wifi_connect();
+  if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+    ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
+    if (!s_sta_connected) {
+      schedule_retry();
+    }
+  }
   vTaskDelete(NULL);
 }
 
 // Scan for the best AP matching our SSID and set its BSSID in the STA config
 static void wifi_select_best_ap(const char *ssid) {
+  wifi_clear_bssid_lock();
+
   wifi_scan_config_t scan_config = {
       .ssid = (uint8_t *)ssid,
       .bssid = NULL,
@@ -363,21 +428,14 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  // Stop any pending retry and disconnect cleanly
+  // Stop any pending retry while scanning. Do not disconnect STA here:
+  // in AP+STA provisioning mode a forced STA disconnect can briefly disturb
+  // the SoftAP/captive-portal session and make phones reopen the portal loop.
+  bool resume_retry = !s_sta_connected && sta_config_has_ssid();
   esp_timer_stop(s_retry_timer);
-  esp_wifi_disconnect();
-  vTaskDelay(pdMS_TO_TICKS(100));
 
   // Clear BSSID lock so next connect can use a fresh scan result
-  if (s_bssid_set) {
-    wifi_config_t sta_cfg;
-    if (esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK) {
-      memset(sta_cfg.sta.bssid, 0, sizeof(sta_cfg.sta.bssid));
-      sta_cfg.sta.bssid_set = false;
-      esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-    }
-    s_bssid_set = false;
-  }
+  wifi_clear_bssid_lock();
 
   wifi_scan_config_t scan_config = {
       .ssid = NULL,
@@ -389,6 +447,7 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
   esp_err_t err = esp_wifi_scan_start(&scan_config, true);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+    resume_retry_after_user_scan(resume_retry);
     return err;
   }
 
@@ -396,17 +455,20 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
   err = esp_wifi_scan_get_ap_num(&number);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to get AP count: %s", esp_err_to_name(err));
+    resume_retry_after_user_scan(resume_retry);
     return err;
   }
 
   if (number == 0) {
     *ap_list = NULL;
     *ap_count = 0;
+    resume_retry_after_user_scan(resume_retry);
     return ESP_OK;
   }
 
   wifi_ap_record_t *aps = malloc(sizeof(wifi_ap_record_t) * number);
   if (!aps) {
+    resume_retry_after_user_scan(resume_retry);
     return ESP_ERR_NO_MEM;
   }
 
@@ -414,11 +476,13 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count) {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to get AP records: %s", esp_err_to_name(err));
     free(aps);
+    resume_retry_after_user_scan(resume_retry);
     return err;
   }
 
   *ap_list = aps;
   *ap_count = number;
+  resume_retry_after_user_scan(resume_retry);
   return ESP_OK;
 }
 

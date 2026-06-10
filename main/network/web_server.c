@@ -28,16 +28,17 @@
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "eq_events.h"
 
 #ifdef CONFIG_DAC_TAS58XX
-#include "eq_events.h"
 #include "dac_tas58xx_eq.h"
 #endif
 
 static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
 
-#define SPIFFS_CHUNK_SIZE 1024
+#define SPIFFS_CHUNK_SIZE 4096
+#define STATIC_FILE_BUFFER_MAX (96 * 1024)
 #define JSON_BODY_MAX     2048
 #define AP_IP_ADDR        0x0104A8C0
 #define STORAGE_PARTITION_LABEL "storage"
@@ -45,23 +46,52 @@ static httpd_handle_t s_server = NULL;
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
-  FILE *f = fopen(path, "r");
+  FILE *f = fopen(path, "rb");
   if (!f) {
     ESP_LOGE(TAG, "Failed to open %s", path);
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
     return ESP_FAIL;
   }
   httpd_resp_set_type(req, content_type);
-  char buf[SPIFFS_CHUNK_SIZE];
+
+  struct stat st;
+  if (stat(path, &st) == 0 && st.st_size > 0 &&
+      st.st_size <= STATIC_FILE_BUFFER_MAX) {
+    size_t file_size = (size_t)st.st_size;
+    char *file_buf = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!file_buf) {
+      file_buf = heap_caps_malloc(file_size, MALLOC_CAP_8BIT);
+    }
+    if (file_buf) {
+      size_t read_len = fread(file_buf, 1, file_size, f);
+      fclose(f);
+      esp_err_t err = httpd_resp_send(req, file_buf, read_len);
+      free(file_buf);
+      return err;
+    }
+    ESP_LOGW(TAG, "Falling back to chunked send for %s (%u bytes)", path,
+             (unsigned)file_size);
+  }
+
+  char *buf = heap_caps_malloc(SPIFFS_CHUNK_SIZE, MALLOC_CAP_8BIT);
+  if (!buf) {
+    fclose(f);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Out of memory");
+    return ESP_FAIL;
+  }
+
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+  while ((n = fread(buf, 1, SPIFFS_CHUNK_SIZE, f)) > 0) {
     if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
       fclose(f);
+      free(buf);
       httpd_resp_send_chunk(req, NULL, 0);
       return ESP_FAIL;
     }
   }
   fclose(f);
+  free(buf);
   httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
 }
@@ -251,9 +281,14 @@ static bool update_gpio_field(cJSON *json, const char *key, int *target,
   return true;
 }
 
+static esp_err_t portal_index_handler(httpd_req_t *req) {
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
+}
+
 // API handlers
 static esp_err_t root_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
+  return portal_index_handler(req);
 }
 
 static esp_err_t favicon_handler(httpd_req_t *req) {
@@ -347,31 +382,19 @@ static esp_err_t speedtest_upload_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// Captive portal detection handlers
-// These endpoints are requested by various OS to detect captive portals
-static esp_err_t captive_portal_redirect(httpd_req_t *req) {
-  // Redirect to the configuration page
-  httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
-  httpd_resp_send(req, NULL, 0);
-  return ESP_OK;
-}
-
 // Apple devices (iOS/macOS) check these
 static esp_err_t captive_apple_handler(httpd_req_t *req) {
-  // Apple expects specific response, redirect instead
-  return captive_portal_redirect(req);
+  return portal_index_handler(req);
 }
 
 // Android checks this
 static esp_err_t captive_android_handler(httpd_req_t *req) {
-  // Android expects 204 for no captive portal, anything else triggers portal
-  return captive_portal_redirect(req);
+  return portal_index_handler(req);
 }
 
 // Windows checks this
 static esp_err_t captive_windows_handler(httpd_req_t *req) {
-  return captive_portal_redirect(req);
+  return portal_index_handler(req);
 }
 
 static esp_err_t wifi_scan_handler(httpd_req_t *req) {
@@ -750,6 +773,7 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   char ip_str[16] = {0};
   char mac_str[18] = {0};
   char device_name[65] = {0};
+  char saved_ssid[33] = {0};
   bool wifi_connected = wifi_is_connected();
   bool eth_connected = ethernet_is_connected();
 
@@ -762,10 +786,12 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
     wifi_get_mac_str(mac_str, sizeof(mac_str));
   }
   settings_get_device_name(device_name, sizeof(device_name));
+  settings_get_wifi_ssid(saved_ssid, sizeof(saved_ssid));
 
   cJSON_AddStringToObject(info, "ip", ip_str);
   cJSON_AddStringToObject(info, "mac", mac_str);
   cJSON_AddStringToObject(info, "device_name", device_name);
+  cJSON_AddStringToObject(info, "saved_wifi_ssid", saved_ssid);
   cJSON_AddBoolToObject(info, "wifi_connected", wifi_connected);
   cJSON_AddBoolToObject(info, "eth_connected", eth_connected);
   cJSON_AddNumberToObject(info, "free_heap", esp_get_free_heap_size());
@@ -802,10 +828,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   }
   const esp_app_desc_t *app_desc = esp_app_get_description();
   cJSON_AddStringToObject(info, "firmware_version", app_desc->version);
-#ifdef CONFIG_DAC_TAS58XX
   cJSON_AddBoolToObject(info, "eq_supported", true);
+#ifdef CONFIG_DAC_TAS58XX
+  cJSON_AddStringToObject(info, "eq_mode", "hardware");
 #else
-  cJSON_AddBoolToObject(info, "eq_supported", false);
+  cJSON_AddStringToObject(info, "eq_mode", "software");
 #endif
 
   cJSON_AddItemToObject(json, "info", info);
@@ -1053,10 +1080,8 @@ static esp_err_t fs_list_handler(httpd_req_t *req) {
 }
 
 /* ================================================================== */
-/*  EQ Page + API  (only when TAS58xx DAC is configured)               */
+/*  EQ Page + API                                                      */
 /* ================================================================== */
-
-#ifdef CONFIG_DAC_TAS58XX
 
 static esp_err_t eq_page_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/eq.html", "text/html");
@@ -1143,8 +1168,6 @@ static esp_err_t eq_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-#endif /* CONFIG_DAC_TAS58XX */
-
 esp_err_t web_server_start(uint16_t port) {
   if (s_server) {
     ESP_LOGW(TAG, "Web server already running");
@@ -1160,9 +1183,9 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
-  config.max_uri_handlers = 28;   // Room for captive portal + EQ + GPIO APIs
+  config.max_uri_handlers = 36;   // Room for captive portal + EQ + log stream
   config.max_resp_headers = 8;
-  config.stack_size = 8192;
+  config.stack_size = 12288;
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {
@@ -1297,7 +1320,6 @@ esp_err_t web_server_start(uint16_t port) {
                                  .handler = captive_windows_handler};
   httpd_register_uri_handler(s_server, &windows_captive);
 
-#ifdef CONFIG_DAC_TAS58XX
   httpd_uri_t eq_page_uri = {
       .uri = "/eq", .method = HTTP_GET, .handler = eq_page_handler};
   httpd_register_uri_handler(s_server, &eq_page_uri);
@@ -1309,7 +1331,6 @@ esp_err_t web_server_start(uint16_t port) {
   httpd_uri_t eq_post_uri = {
       .uri = "/api/eq", .method = HTTP_POST, .handler = eq_post_handler};
   httpd_register_uri_handler(s_server, &eq_post_uri);
-#endif
 
   log_stream_register(s_server);
 

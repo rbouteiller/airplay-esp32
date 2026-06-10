@@ -6,7 +6,8 @@
  * Decouples the web interface, NVS persistence, and DAC driver so each
  * can react to EQ changes independently.  Mirrors the RTSP event pattern.
  *
- * Compile-time gated: only available when CONFIG_DAC_TAS58XX is set.
+ * TAS58xx boards consume these events in hardware; other boards use the
+ * software EQ listener.
  */
 
 #include "esp_err.h"
@@ -16,9 +17,7 @@
 #ifdef CONFIG_DAC_TAS58XX
 #include "dac_tas58xx_eq.h"
 #else
-/* Provide the constant even when EQ hardware isn't present so that
-   data structures compile cleanly.  The event system simply won't
-   be active. */
+/* Keep the public event payload shape identical on software-EQ builds. */
 #define TAS58XX_EQ_BANDS 15
 #endif
 
