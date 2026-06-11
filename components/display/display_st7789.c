@@ -20,6 +20,7 @@
  */
 
 #include "display.h"
+#include "playback_control.h"
 #include "rtsp_events.h"
 
 #include "esp_lcd_panel_io.h"
@@ -45,8 +46,8 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-#define DISPLAY_WIDTH      320
-#define DISPLAY_HEIGHT     170
+#define DISPLAY_WIDTH      240
+#define DISPLAY_HEIGHT     240
 #define LCD_HOST           SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
 #define DRAW_BUF_LINES     10
@@ -110,6 +111,7 @@ static lv_image_dsc_t s_bg_dsc;
 static lv_obj_t *s_label_title = NULL;
 static lv_obj_t *s_label_artist = NULL;
 static lv_obj_t *s_label_album = NULL;
+static lv_obj_t *s_label_muted = NULL;
 static lv_obj_t *s_label_status = NULL;
 static lv_obj_t *s_bar_progress = NULL;
 static lv_obj_t *s_label_time_elapsed = NULL;
@@ -214,11 +216,19 @@ static void ui_create(void) {
     lv_obj_align(bg, LV_ALIGN_TOP_LEFT, 0, 0);
   }
 
+  // Muted indicator — top-right corner, red, hidden by default
+  s_label_muted = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_muted, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_muted, lv_color_make(255, 50, 50), 0);
+  lv_obj_align(s_label_muted, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_TITLE);
+  lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(s_label_muted, "MUTED");
+
   // Title — largest font, white, scrolling
   s_label_title = lv_label_create(scr);
   lv_obj_set_width(s_label_title, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(s_label_title, lv_color_white(), 0);
   lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_TITLE);
   lv_label_set_text(s_label_title, "AirPlay Ready");
@@ -227,7 +237,7 @@ static void ui_create(void) {
   s_label_artist = lv_label_create(scr);
   lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_artist, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(s_label_artist, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(s_label_artist, lv_color_make(180, 180, 180), 0);
   lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_ARTIST);
   lv_label_set_text(s_label_artist, "");
@@ -327,6 +337,7 @@ static void ui_update(void) {
     lv_label_set_text(s_label_time_elapsed, "");
     lv_label_set_text(s_label_time_remaining, "");
     lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+    lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
     break;
 
   case DISPLAY_STATE_CONNECTED:
@@ -337,6 +348,7 @@ static void ui_update(void) {
     lv_label_set_text(s_label_time_elapsed, "");
     lv_label_set_text(s_label_time_remaining, "");
     lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+    lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
     break;
 
   case DISPLAY_STATE_PLAYING:
@@ -346,6 +358,13 @@ static void ui_update(void) {
     lv_label_set_text(s_label_album, album[0] ? album : "");
     lv_label_set_text(s_label_status,
                       state == DISPLAY_STATE_PAUSED ? "|| " : "");
+
+    // Muted indicator
+    if (playback_control_is_muted()) {
+      lv_obj_clear_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+    }
 
     uint32_t pos = position_secs;
     if (state == DISPLAY_STATE_PLAYING && sync_time_us > 0) {

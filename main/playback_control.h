@@ -62,3 +62,13 @@ void playback_control_next(void);
  * Skip to previous track.
  */
 void playback_control_prev(void);
+
+/**
+ * Toggle mute/unmute (AirPlay only — mirrors local mute logic from play/pause).
+ */
+void playback_control_toggle_mute(void);
+
+/**
+ * Check if currently muted.
+ */
+bool playback_control_is_muted(void);

@@ -1,14 +1,16 @@
 #include "audio_output.h"
+#include "rtsp_server.h"
 
-#include "audio_receiver.h"
+#include "iot_board.h"
 #include "audio_resample.h"
+#include "dac.h"
 #include "led.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "rtsp_server.h"
+#include "audio_receiver.h"
 #include <inttypes.h>
 #include <stdlib.h>
 
@@ -89,6 +91,7 @@ static void playback_task(void *arg) {
     }
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
+      ESP_LOGD(TAG, "Read %u samples from receiver", (unsigned int)samples);
       int16_t *play_buf = pcm;
       size_t play_samples = samples;
       if (audio_resample_is_active()) {
@@ -96,12 +99,15 @@ static void playback_task(void *arg) {
                                               MAX_RESAMPLE_FRAMES);
         play_buf = resample_buf;
       }
+      ESP_LOGD(TAG, "Resampled to %u samples", (unsigned int)play_samples);
       apply_volume(play_buf, play_samples * 2);
       led_audio_feed(play_buf, play_samples);
       i2s_channel_write(tx_handle, play_buf, play_samples * 4, &written,
                         portMAX_DELAY);
+      ESP_LOGD(TAG, "I2S write: %u bytes written", (unsigned int)written);
       taskYIELD();
     } else {
+      //ESP_LOGW(TAG, "Receiver underflow - playing silence");
       led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
@@ -127,7 +133,7 @@ esp_err_t audio_output_init(void) {
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(OUTPUT_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                      I2S_SLOT_MODE_STEREO),
+                                                        I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
               .mclk = I2S_SCK_PIN,
@@ -152,8 +158,13 @@ esp_err_t audio_output_init(void) {
                       "std mode init failed");
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
+  ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d", (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
+
+  // MCLK is now running — tell the DAC to reconfigure its clock chain and unmute.
+  dac_set_power_mode(DAC_POWER_ON);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
+  init_gpio7();
 
   return ESP_OK;
 }

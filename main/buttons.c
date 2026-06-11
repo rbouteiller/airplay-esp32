@@ -21,16 +21,18 @@
 #include "board_common.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/timers.h"
 
 static const char *TAG = "buttons";
 
-#define DEBOUNCE_MS        50  // Stable period before accepting state change
-#define REPEAT_DELAY_MS    500 // Hold duration before auto-repeat starts
-#define REPEAT_INTERVAL_MS 200 // Auto-repeat interval for volume buttons
-#define ACTION_QUEUE_LEN   8
+#define DEBOUNCE_MS      50   // Stable period before accepting state change
+#define REPEAT_DELAY_MS  500  // Hold duration before auto-repeat starts
+#define REPEAT_INTERVAL  200  // Auto-repeat interval for volume buttons
+#define LONG_PRESS_MS    3000 // Play/pause long press for deep sleep
+#define ACTION_QUEUE_LEN 8
 
 typedef enum {
   BTN_PLAY_PAUSE,
@@ -38,15 +40,17 @@ typedef enum {
   BTN_VOLUME_DOWN,
   BTN_NEXT,
   BTN_PREV,
+  BTN_LONG_PRESS,
   BTN_COUNT
 } button_id_t;
 
 typedef struct {
   int gpio;
-  bool pressed;    // Debounced state
-  bool repeatable; // Supports auto-repeat (volume buttons)
+  bool pressed;           // Debounced state
+  bool repeatable;        // Supports auto-repeat (volume buttons)
   TimerHandle_t debounce_timer;
-  TimerHandle_t repeat_timer; // Only created for repeatable buttons
+  TimerHandle_t repeat_timer;   // Only created for repeatable buttons
+  TimerHandle_t long_press_timer; // Only created for play/pause button
 } button_state_t;
 
 static button_state_t buttons[BTN_COUNT];
@@ -82,6 +86,12 @@ static void button_action_task(void *pvParameters) {
       case BTN_PREV:
         playback_control_prev();
         break;
+      case BTN_LONG_PRESS:
+        // Deep sleep — this is handled in the timer callback; just log
+        // in case the action fires (shouldn't normally happen since
+        // long_press_timer_cb calls esp_deep_sleep_start immediately)
+        ESP_LOGW(TAG, "Long press action received (deep sleep already attempted)");
+        break;
       default:
         break;
       }
@@ -100,7 +110,7 @@ static void repeat_timer_cb(TimerHandle_t timer) {
 
   post_button_action((button_id_t)id);
   // After the initial REPEAT_DELAY_MS, switch to the faster interval
-  xTimerChangePeriod(btn->repeat_timer, pdMS_TO_TICKS(REPEAT_INTERVAL_MS), 0);
+  xTimerChangePeriod(btn->repeat_timer, pdMS_TO_TICKS(REPEAT_INTERVAL), 0);
 }
 
 // Called when debounce timer expires (runs in timer daemon task)
@@ -110,6 +120,10 @@ static void debounce_timer_cb(TimerHandle_t timer) {
 
   // Read settled GPIO state (active low)
   bool now_pressed = (gpio_get_level(btn->gpio) == 0);
+
+  if (btn->gpio == 7) {
+    ESP_LOGI(TAG, "GPIO Pin 7 state change detected. Pressed: %s", now_pressed ? "True" : "False");
+  }
 
   if (now_pressed == btn->pressed) {
     return; // No actual state change after debounce
@@ -125,12 +139,31 @@ static void debounce_timer_cb(TimerHandle_t timer) {
     if (btn->repeatable && btn->repeat_timer) {
       xTimerChangePeriod(btn->repeat_timer, pdMS_TO_TICKS(REPEAT_DELAY_MS), 0);
     }
+
+    // Start long-press timer for play/pause button
+    if (btn->long_press_timer) {
+      xTimerStart(btn->long_press_timer, 0);
+    }
   } else {
-    // Button just released — stop repeat
+    // Button just released — stop repeat and long-press timers
     if (btn->repeat_timer) {
       xTimerStop(btn->repeat_timer, 0);
     }
+    if (btn->long_press_timer) {
+      xTimerStop(btn->long_press_timer, 0);
+    }
   }
+}
+
+// Long-press timer callback — triggers deep sleep on play/pause
+static void long_press_timer_cb(TimerHandle_t timer) {
+  (void)timer;
+  ESP_LOGI(TAG, "Long press detected — entering deep sleep");
+  // Enable wakeup on play/pause button (active low)
+  gpio_deep_sleep_hold_en();
+  gpio_wakeup_enable(CONFIG_BTN_PLAY_PAUSE_GPIO, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  esp_deep_sleep_start();
 }
 
 // GPIO ISR — just resets the debounce timer. Each new edge restarts the
@@ -165,6 +198,13 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
     buttons[id].repeat_timer = xTimerCreate(
         "btn_rpt", pdMS_TO_TICKS(REPEAT_DELAY_MS), pdFALSE, // one-shot
         (void *)(intptr_t)id, repeat_timer_cb);
+  }
+
+  // Create one-shot long-press timer for play/pause button
+  if (id == BTN_PLAY_PAUSE) {
+    buttons[id].long_press_timer = xTimerCreate(
+        "btn_lp", pdMS_TO_TICKS(LONG_PRESS_MS), pdFALSE, // one-shot
+        (void *)(intptr_t)id, long_press_timer_cb);
   }
 
   // GPIOs 34-39 on ESP32 are input-only and lack internal pull-ups.

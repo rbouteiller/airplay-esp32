@@ -219,6 +219,10 @@ void app_main(void) {
   display_init(iot_board_get_handle(BOARD_I2C_DISP_ID));
 #endif
 
+  // Initialize LVGL-dependent board resources (e.g., touch input) after
+  // display/LVGL port is ready.
+  iot_board_init_lvgl_resources();
+
   // Pre-allocate audio task stacks while internal heap is still unfragmented.
   // WiFi/TCP/TLS allocations fragment the heap, making large contiguous
   // allocations unreliable later.

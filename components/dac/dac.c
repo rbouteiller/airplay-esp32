@@ -5,6 +5,8 @@
  * When no driver is registered, all functions are no-ops.
  */
 
+#include <stdbool.h>
+#include <stddef.h>
 #include "dac.h"
 
 static const dac_ops_t *s_ops = NULL;
