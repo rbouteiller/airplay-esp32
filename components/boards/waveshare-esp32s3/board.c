@@ -63,6 +63,24 @@ void init_gpio7(void) {
   set_gpio7_level(true);
 }
 
+// Battery power latch (GPIO2 / BAT_EN). The board powers up momentarily when
+// KEY_PWR (GPIO5) is pressed; firmware must drive BAT_EN HIGH to hold the
+// latch closed so the board keeps running on battery after USB is removed.
+// Driving it LOW opens the latch and powers the board off.
+#define BAT_EN_GPIO ((gpio_num_t)2)
+
+void board_power_latch_init(void) {
+  gpio_reset_pin(BAT_EN_GPIO);
+  gpio_set_direction(BAT_EN_GPIO, GPIO_MODE_OUTPUT);
+  gpio_set_level(BAT_EN_GPIO, 1);
+  ESP_LOGI(TAG, "Battery power latch held (GPIO2 HIGH)");
+}
+
+void board_power_off(void) {
+  ESP_LOGI(TAG, "Powering off — releasing battery latch (GPIO2 LOW)");
+  gpio_set_level(BAT_EN_GPIO, 0);
+}
+
 #ifdef CONFIG_MUTE_GPIO
 static esp_err_t init_mute_gpio(void) {
   if (CONFIG_MUTE_GPIO < 0) {
@@ -268,7 +286,10 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
- init_gpio7();
+  // Hold the battery power latch closed first so the board survives USB removal.
+  board_power_latch_init();
+
+  init_gpio7();
 #ifdef CONFIG_MUTE_GPIO
   init_mute_gpio();
 #endif

@@ -155,15 +155,19 @@ static void debounce_timer_cb(TimerHandle_t timer) {
   }
 }
 
-// Long-press timer callback — triggers deep sleep on play/pause
+// Long-press timer callback — powers the board off on play/pause.
+// On boards with a battery power latch (Waveshare ESP32-S3-Touch-LCD-1.54)
+// this cuts power entirely; on others board_power_off() falls back to deep
+// sleep with wakeup on the play/pause button.
 static void long_press_timer_cb(TimerHandle_t timer) {
   (void)timer;
-  ESP_LOGI(TAG, "Long press detected — entering deep sleep");
-  // Enable wakeup on play/pause button (active low)
+  ESP_LOGI(TAG, "Long press detected — powering off");
+  // Arm play/pause as the deep-sleep wakeup source for boards that fall back
+  // to deep sleep (no-op effect on latch boards, which lose power instead).
   gpio_deep_sleep_hold_en();
   gpio_wakeup_enable(CONFIG_BTN_PLAY_PAUSE_GPIO, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
-  esp_deep_sleep_start();
+  board_power_off();
 }
 
 // GPIO ISR — just resets the debounce timer. Each new edge restarts the

@@ -65,3 +65,12 @@ const char *iot_board_get_info(void);
  * this is a no-op.
  */
 void iot_board_init_lvgl_resources(void);
+
+/**
+ * @brief Power the board off.
+ *
+ * On boards with a software power latch (e.g. Waveshare ESP32-S3-Touch-LCD-1.54
+ * with a battery), this releases the latch and cuts power. The default
+ * implementation falls back to deep sleep on boards without a latch.
+ */
+void board_power_off(void);
