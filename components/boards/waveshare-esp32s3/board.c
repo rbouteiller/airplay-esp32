@@ -13,6 +13,9 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -79,6 +82,95 @@ void board_power_latch_init(void) {
 void board_power_off(void) {
   ESP_LOGI(TAG, "Powering off — releasing battery latch (GPIO2 LOW)");
   gpio_set_level(BAT_EN_GPIO, 0);
+}
+
+// ============================================================================
+// Battery monitor (GPIO1 ADC via a 1:2 divider, GPIO3 charge status)
+// ============================================================================
+// Ported from the Waveshare bsp_power_manager: the battery rail is read on
+// ADC1 channel 0 (GPIO1) through a 2:1 divider, so the measured voltage is
+// multiplied by 2 (using a 3.0 scale to match the reference).
+
+#define BAT_ADC_CHANNEL  ADC_CHANNEL_0  // GPIO1
+#define BAT_CHG_GPIO     ((gpio_num_t)3) // CHG_STAT, active low = charging
+
+static adc_oneshot_unit_handle_t s_bat_adc = NULL;
+static adc_cali_handle_t s_bat_cali = NULL;
+static bool s_bat_calibrated = false;
+
+static void board_battery_init(void) {
+  // Charge-status input
+  gpio_config_t chg_cfg = {
+      .intr_type = GPIO_INTR_DISABLE,
+      .mode = GPIO_MODE_INPUT,
+      .pin_bit_mask = 1ULL << BAT_CHG_GPIO,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+  };
+  gpio_config(&chg_cfg);
+
+  adc_oneshot_unit_init_cfg_t unit_cfg = {.unit_id = ADC_UNIT_1};
+  if (adc_oneshot_new_unit(&unit_cfg, &s_bat_adc) != ESP_OK) {
+    ESP_LOGW(TAG, "Battery ADC init failed");
+    s_bat_adc = NULL;
+    return;
+  }
+  adc_oneshot_chan_cfg_t chan_cfg = {
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+      .atten = ADC_ATTEN_DB_12,
+  };
+  adc_oneshot_config_channel(s_bat_adc, BAT_ADC_CHANNEL, &chan_cfg);
+
+  adc_cali_curve_fitting_config_t cali_cfg = {
+      .unit_id = ADC_UNIT_1,
+      .chan = BAT_ADC_CHANNEL,
+      .atten = ADC_ATTEN_DB_12,
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+  };
+  s_bat_calibrated =
+      (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_bat_cali) == ESP_OK);
+  ESP_LOGI(TAG, "Battery monitor initialized (cali=%s)",
+           s_bat_calibrated ? "yes" : "no");
+}
+
+static float board_battery_voltage(void) {
+  if (!s_bat_adc || !s_bat_calibrated) {
+    return -1.0f;
+  }
+  int raw = 0;
+  if (adc_oneshot_read(s_bat_adc, BAT_ADC_CHANNEL, &raw) != ESP_OK) {
+    return -1.0f;
+  }
+  int mv = 0;
+  if (adc_cali_raw_to_voltage(s_bat_cali, raw, &mv) != ESP_OK) {
+    return -1.0f;
+  }
+  return (mv / 1000.0f) * 3.0f; // divider compensation (matches BSP)
+}
+
+bool board_battery_read(int *percent, bool *charging) {
+  if (!s_bat_adc) {
+    return false;
+  }
+  float v = board_battery_voltage();
+  if (v < 0.0f) {
+    return false;
+  }
+
+  if (percent) {
+    int pct;
+    if (v < 3.52f)      pct = 5;
+    else if (v < 3.64f) pct = 20;
+    else if (v < 3.76f) pct = 40;
+    else if (v < 3.88f) pct = 60;
+    else if (v < 4.00f) pct = 80;
+    else                pct = 100;
+    *percent = pct;
+  }
+  if (charging) {
+    *charging = (gpio_get_level(BAT_CHG_GPIO) == 0);
+  }
+  return true;
 }
 
 #ifdef CONFIG_MUTE_GPIO
@@ -288,6 +380,7 @@ esp_err_t iot_board_init(void) {
 
   // Hold the battery power latch closed first so the board survives USB removal.
   board_power_latch_init();
+  board_battery_init();
 
   init_gpio7();
 #ifdef CONFIG_MUTE_GPIO

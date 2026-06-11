@@ -33,3 +33,10 @@ __attribute__((weak)) const char *iot_board_get_info(void) {
 __attribute__((weak)) void board_power_off(void) {
   esp_deep_sleep_start();
 }
+
+// Default: no battery monitor. Boards with a battery override this.
+__attribute__((weak)) bool board_battery_read(int *percent, bool *charging) {
+  (void)percent;
+  (void)charging;
+  return false;
+}

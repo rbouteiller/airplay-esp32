@@ -20,6 +20,7 @@
  */
 
 #include "display.h"
+#include "board_common.h"
 #include "playback_control.h"
 #include "rtsp_events.h"
 
@@ -66,6 +67,7 @@ static const char *TAG = "display_st7789";
 #define Y_ALBUM    69
 #define Y_PROGRESS 114
 #define Y_TIME     132
+#define Y_STATUS   210  // Battery + volume status row near the bottom
 #define BAR_HEIGHT 12
 
 // ============================================================================
@@ -116,6 +118,8 @@ static lv_obj_t *s_label_status = NULL;
 static lv_obj_t *s_bar_progress = NULL;
 static lv_obj_t *s_label_time_elapsed = NULL;
 static lv_obj_t *s_label_time_remaining = NULL;
+static lv_obj_t *s_label_battery = NULL;
+static lv_obj_t *s_label_volume = NULL;
 
 // ============================================================================
 // Background loading
@@ -287,6 +291,54 @@ static void ui_create(void) {
                               lv_color_make(150, 150, 150), 0);
   lv_obj_align(s_label_time_remaining, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_TIME);
   lv_label_set_text(s_label_time_remaining, "");
+
+  // Volume — status row, bottom-left
+  s_label_volume = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_volume, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_volume, lv_color_make(150, 150, 150), 0);
+  lv_obj_align(s_label_volume, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_STATUS);
+  lv_label_set_text(s_label_volume, "");
+
+  // Battery — status row, bottom-right
+  s_label_battery = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_battery, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_battery, lv_color_make(150, 150, 150), 0);
+  lv_obj_align(s_label_battery, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_STATUS);
+  lv_label_set_text(s_label_battery, "");
+}
+
+// Update the battery + volume status row. Called from ui_update() with the
+// LVGL port lock already held.
+static void ui_update_status_row(void) {
+  // Volume — show as percentage
+  char vol_str[16];
+  snprintf(vol_str, sizeof(vol_str), LV_SYMBOL_VOLUME_MAX " %d%%",
+           playback_control_get_volume_percent());
+  lv_label_set_text(s_label_volume, vol_str);
+
+  // Battery — only if the board reports one
+  int pct = 0;
+  bool charging = false;
+  if (board_battery_read(&pct, &charging)) {
+    const char *icon;
+    if (charging)      icon = LV_SYMBOL_CHARGE;
+    else if (pct >= 80) icon = LV_SYMBOL_BATTERY_FULL;
+    else if (pct >= 60) icon = LV_SYMBOL_BATTERY_3;
+    else if (pct >= 40) icon = LV_SYMBOL_BATTERY_2;
+    else if (pct >= 20) icon = LV_SYMBOL_BATTERY_1;
+    else                icon = LV_SYMBOL_BATTERY_EMPTY;
+
+    char bat_str[16];
+    snprintf(bat_str, sizeof(bat_str), "%s %d%%", icon, pct);
+    lv_label_set_text(s_label_battery, bat_str);
+
+    // Tint red when low and not charging
+    lv_color_t color = (!charging && pct <= 20) ? lv_color_make(255, 60, 60)
+                                                : lv_color_make(150, 150, 150);
+    lv_obj_set_style_text_color(s_label_battery, color, 0);
+  } else {
+    lv_label_set_text(s_label_battery, "");
+  }
 }
 
 // ============================================================================
@@ -396,6 +448,8 @@ static void ui_update(void) {
     break;
   }
   }
+
+  ui_update_status_row();
 
   lvgl_port_unlock();
 }
@@ -514,6 +568,18 @@ static void display_task(void *pvParameters) {
         (now - last_progress_update) >= pdMS_TO_TICKS(1000)) {
       last_progress_update = now;
       ui_update();
+    }
+
+    // Refresh battery + volume periodically even when idle. These are not tied
+    // to RTSP events, so poll them on a slower cadence.
+    static TickType_t last_status_update = 0;
+    if (!need_update &&
+        (now - last_status_update) >= pdMS_TO_TICKS(5000)) {
+      last_status_update = now;
+      if (lvgl_port_lock(100)) {
+        ui_update_status_row();
+        lvgl_port_unlock();
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(30));

@@ -74,3 +74,13 @@ void iot_board_init_lvgl_resources(void);
  * implementation falls back to deep sleep on boards without a latch.
  */
 void board_power_off(void);
+
+/**
+ * @brief Read battery state.
+ *
+ * @param[out] percent  Battery charge 0..100 (may be NULL).
+ * @param[out] charging True if the battery is currently charging (may be NULL).
+ * @return true if the board has a battery and the reading is valid, false
+ *         otherwise (the default for boards without a battery monitor).
+ */
+bool board_battery_read(int *percent, bool *charging);

@@ -244,3 +244,14 @@ void playback_control_toggle_mute(void) {
 bool playback_control_is_muted(void) {
   return s_muted;
 }
+
+int playback_control_get_volume_percent(void) {
+  if (s_muted) {
+    return 0;
+  }
+  float db;
+  if (settings_get_volume(&db) != ESP_OK) {
+    db = -15.0f;
+  }
+  return (int)(db_to_dacp_percent(clamp_volume(db)) + 0.5f);
+}
