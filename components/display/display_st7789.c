@@ -67,7 +67,10 @@ static const char *TAG = "display_st7789";
 #define Y_ALBUM    69
 #define Y_PROGRESS 114
 #define Y_TIME     132
-#define Y_STATUS   210  // Battery + volume status row near the bottom
+// Battery + volume row at the bottom. The panel's set_gap(0,35) offset means
+// the usable LVGL Y range bottoms out near ~204, so 188 keeps a 14px line just
+// inside the visible area while freeing the upper rows for scrolling text.
+#define Y_STATUS   188
 #define BAR_HEIGHT 12
 
 // ============================================================================

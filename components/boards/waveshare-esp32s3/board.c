@@ -17,6 +17,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -73,6 +74,9 @@ void init_gpio7(void) {
 #define BAT_EN_GPIO ((gpio_num_t)2)
 
 void board_power_latch_init(void) {
+  // A prior power-off may have left the pin held LOW across deep sleep; release
+  // the hold before re-driving it so the latch can close again.
+  gpio_hold_dis(BAT_EN_GPIO);
   gpio_reset_pin(BAT_EN_GPIO);
   gpio_set_direction(BAT_EN_GPIO, GPIO_MODE_OUTPUT);
   gpio_set_level(BAT_EN_GPIO, 1);
@@ -81,7 +85,18 @@ void board_power_latch_init(void) {
 
 void board_power_off(void) {
   ESP_LOGI(TAG, "Powering off — releasing battery latch (GPIO2 LOW)");
+  // Release the latch and hold the pin LOW so it survives the transition.
   gpio_set_level(BAT_EN_GPIO, 0);
+  gpio_hold_en(BAT_EN_GPIO);
+  gpio_deep_sleep_hold_en();
+
+  // Halt the CPU in deep sleep so it stops drawing current and cannot
+  // re-latch. On battery the rail now collapses and the board powers off
+  // cleanly; if USB is still supplying the rail, the board stays in deep
+  // sleep (screen off) until USB is removed or it is reset. Without this the
+  // rail sags just far enough to trip the brownout reset, which reboots and
+  // re-drives the latch HIGH — the board appears to "blink off and restart".
+  esp_deep_sleep_start();
 }
 
 // ============================================================================
