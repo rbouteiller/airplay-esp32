@@ -53,6 +53,7 @@ static volatile bool playback_running = false;
 static TaskHandle_t playback_task_handle = NULL;
 static volatile int source_rate = 44100;
 static volatile bool resample_reinit_needed = false;
+static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_STEREO;
 
 static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
@@ -61,6 +62,22 @@ static void apply_volume(int16_t *buf, size_t n) {
     buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15);
   }
 #endif
+}
+
+// Apply the selected channel mode to an interleaved stereo buffer (L,R,...).
+// LEFT/RIGHT route the chosen source channel to BOTH outputs so the selected
+// track is heard from both speakers; STEREO leaves the buffer untouched.
+static void apply_channel_mode(int16_t *buf, size_t frames) {
+  audio_channel_mode_t mode = channel_mode;
+  if (mode == AUDIO_CHANNEL_STEREO) {
+    return;
+  }
+  size_t src = (mode == AUDIO_CHANNEL_RIGHT) ? 1 : 0;
+  for (size_t i = 0; i < frames; i++) {
+    int16_t s = buf[i * 2 + src];
+    buf[i * 2] = s;
+    buf[i * 2 + 1] = s;
+  }
 }
 
 static void playback_task(void *arg) {
@@ -101,6 +118,7 @@ static void playback_task(void *arg) {
       }
       ESP_LOGD(TAG, "Resampled to %u samples", (unsigned int)play_samples);
       apply_volume(play_buf, play_samples * 2);
+      apply_channel_mode(play_buf, play_samples);
       led_audio_feed(play_buf, play_samples);
       i2s_channel_write(tx_handle, play_buf, play_samples * 4, &written,
                         portMAX_DELAY);
@@ -226,4 +244,23 @@ uint32_t audio_output_get_hardware_latency_us(void) {
   return (
       uint32_t)(((uint64_t)I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM * 1000000ULL) /
                 OUTPUT_RATE);
+}
+
+audio_channel_mode_t audio_output_cycle_channel_mode(void) {
+  audio_channel_mode_t next;
+  switch (channel_mode) {
+  case AUDIO_CHANNEL_STEREO: next = AUDIO_CHANNEL_LEFT; break;
+  case AUDIO_CHANNEL_LEFT:   next = AUDIO_CHANNEL_RIGHT; break;
+  default:                   next = AUDIO_CHANNEL_STEREO; break;
+  }
+  channel_mode = next;
+  ESP_LOGI(TAG, "Channel mode: %s",
+           next == AUDIO_CHANNEL_LEFT    ? "LEFT only"
+           : next == AUDIO_CHANNEL_RIGHT ? "RIGHT only"
+                                         : "STEREO");
+  return next;
+}
+
+audio_channel_mode_t audio_output_get_channel_mode(void) {
+  return channel_mode;
 }

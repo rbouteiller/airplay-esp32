@@ -5,6 +5,16 @@
 #include "freertos/FreeRTOS.h"
 
 /**
+ * Output channel mode. LEFT/RIGHT route the chosen source channel to both
+ * speakers; STEREO (default) plays the normal left/right mix.
+ */
+typedef enum {
+  AUDIO_CHANNEL_STEREO = 0,
+  AUDIO_CHANNEL_LEFT,
+  AUDIO_CHANNEL_RIGHT,
+} audio_channel_mode_t;
+
+/**
  * Initialize the audio output backend (I2S / SPDIF / USB UAC).
  */
 esp_err_t audio_output_init(void);
@@ -60,3 +70,14 @@ void audio_output_set_source_rate(int rate);
  * stays correct if the DMA config or sample rate is ever changed.
  */
 uint32_t audio_output_get_hardware_latency_us(void);
+
+/**
+ * Cycle the output channel mode: STEREO -> LEFT -> RIGHT -> STEREO.
+ * @return the new mode after cycling.
+ */
+audio_channel_mode_t audio_output_cycle_channel_mode(void);
+
+/**
+ * Get the current output channel mode.
+ */
+audio_channel_mode_t audio_output_get_channel_mode(void);

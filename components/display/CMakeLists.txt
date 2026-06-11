@@ -31,6 +31,7 @@ if(CONFIG_DISPLAY_ENABLED)
 
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${PROJECT_DIR}/main/rtsp"
+        "${PROJECT_DIR}/main/audio"
         "${PROJECT_DIR}/main"
         "${PROJECT_DIR}/components/boards"
         "${PROJECT_DIR}/components/board_utils"

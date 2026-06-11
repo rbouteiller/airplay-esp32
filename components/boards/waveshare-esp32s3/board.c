@@ -173,13 +173,34 @@ bool board_battery_read(int *percent, bool *charging) {
   }
 
   if (percent) {
+    // Piecewise-linear interpolation over a single-cell LiPo discharge curve.
+    // Smooths the reading instead of jumping in coarse 20% steps.
+    static const struct {
+      float v;
+      int pct;
+    } curve[] = {
+        {3.30f, 0},  {3.50f, 10}, {3.60f, 20}, {3.68f, 35}, {3.74f, 50},
+        {3.82f, 65}, {3.92f, 80}, {4.02f, 90}, {4.12f, 98}, {4.20f, 100},
+    };
+    const size_t n = sizeof(curve) / sizeof(curve[0]);
+
     int pct;
-    if (v < 3.52f)      pct = 5;
-    else if (v < 3.64f) pct = 20;
-    else if (v < 3.76f) pct = 40;
-    else if (v < 3.88f) pct = 60;
-    else if (v < 4.00f) pct = 80;
-    else                pct = 100;
+    if (v <= curve[0].v) {
+      pct = curve[0].pct;
+    } else if (v >= curve[n - 1].v) {
+      pct = curve[n - 1].pct;
+    } else {
+      pct = curve[n - 1].pct;
+      for (size_t i = 1; i < n; i++) {
+        if (v < curve[i].v) {
+          float span = curve[i].v - curve[i - 1].v;
+          float frac = (v - curve[i - 1].v) / span;
+          pct = curve[i - 1].pct +
+                (int)(frac * (curve[i].pct - curve[i - 1].pct) + 0.5f);
+          break;
+        }
+      }
+    }
     *percent = pct;
   }
   if (charging) {

@@ -20,6 +20,7 @@
  */
 
 #include "display.h"
+#include "audio_output.h"
 #include "board_common.h"
 #include "playback_control.h"
 #include "rtsp_events.h"
@@ -65,12 +66,12 @@ static const char *TAG = "display_st7789";
 #define Y_TITLE    10
 #define Y_ARTIST   44
 #define Y_ALBUM    69
-#define Y_PROGRESS 114
-#define Y_TIME     132
-// Battery + volume row at the bottom. The panel's set_gap(0,35) offset means
-// the usable LVGL Y range bottoms out near ~204, so 188 keeps a 14px line just
-// inside the visible area while freeing the upper rows for scrolling text.
-#define Y_STATUS   188
+// Progress bar + time sit near the bottom, just above the status icon row,
+// leaving rows ~83-148 free for the scrolling title/artist/album text.
+// The panel's set_gap(0,35) offset bottoms the usable LVGL Y range near ~204.
+#define Y_PROGRESS 148
+#define Y_TIME     166
+#define Y_STATUS   188  // Battery + volume icon row at the very bottom
 #define BAR_HEIGHT 12
 
 // ============================================================================
@@ -313,10 +314,16 @@ static void ui_create(void) {
 // Update the battery + volume status row. Called from ui_update() with the
 // LVGL port lock already held.
 static void ui_update_status_row(void) {
-  // Volume — show as percentage
-  char vol_str[16];
-  snprintf(vol_str, sizeof(vol_str), LV_SYMBOL_VOLUME_MAX " %d%%",
-           playback_control_get_volume_percent());
+  // Volume — show as percentage, with the channel mode (L+R / L / R)
+  const char *chan;
+  switch (audio_output_get_channel_mode()) {
+  case AUDIO_CHANNEL_LEFT:  chan = "L"; break;
+  case AUDIO_CHANNEL_RIGHT: chan = "R"; break;
+  default:                  chan = "L+R"; break;
+  }
+  char vol_str[24];
+  snprintf(vol_str, sizeof(vol_str), LV_SYMBOL_VOLUME_MAX " %d%%  %s",
+           playback_control_get_volume_percent(), chan);
   lv_label_set_text(s_label_volume, vol_str);
 
   // Battery — only if the board reports one
@@ -324,7 +331,7 @@ static void ui_update_status_row(void) {
   bool charging = false;
   if (board_battery_read(&pct, &charging)) {
     const char *icon;
-    if (charging)      icon = LV_SYMBOL_CHARGE;
+    if (charging)       icon = LV_SYMBOL_USB; // plugged into USB / charging
     else if (pct >= 80) icon = LV_SYMBOL_BATTERY_FULL;
     else if (pct >= 60) icon = LV_SYMBOL_BATTERY_3;
     else if (pct >= 40) icon = LV_SYMBOL_BATTERY_2;
@@ -573,11 +580,12 @@ static void display_task(void *pvParameters) {
       ui_update();
     }
 
-    // Refresh battery + volume periodically even when idle. These are not tied
-    // to RTSP events, so poll them on a slower cadence.
+    // Refresh battery + volume + channel mode periodically even when idle.
+    // These are not tied to RTSP events; poll at 1s so an interactive change
+    // (volume, double-click channel toggle) shows up promptly.
     static TickType_t last_status_update = 0;
     if (!need_update &&
-        (now - last_status_update) >= pdMS_TO_TICKS(5000)) {
+        (now - last_status_update) >= pdMS_TO_TICKS(1000)) {
       last_status_update = now;
       if (lvgl_port_lock(100)) {
         ui_update_status_row();

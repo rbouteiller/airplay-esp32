@@ -15,6 +15,7 @@
  */
 
 #include "buttons.h"
+#include "audio_output.h"
 #include "playback_control.h"
 #include "spiram_task.h"
 
@@ -32,6 +33,7 @@ static const char *TAG = "buttons";
 #define REPEAT_DELAY_MS  500  // Hold duration before auto-repeat starts
 #define REPEAT_INTERVAL  200  // Auto-repeat interval for volume buttons
 #define LONG_PRESS_MS    3000 // Play/pause long press for deep sleep
+#define DOUBLE_CLICK_MS  350  // Window to detect a second play/pause press
 #define ACTION_QUEUE_LEN 8
 
 typedef enum {
@@ -41,6 +43,8 @@ typedef enum {
   BTN_NEXT,
   BTN_PREV,
   BTN_LONG_PRESS,
+  // Actions below are dispatched directly (not 1:1 with a GPIO button)
+  BTN_CHANNEL_CYCLE,
   BTN_COUNT
 } button_id_t;
 
@@ -51,6 +55,8 @@ typedef struct {
   TimerHandle_t debounce_timer;
   TimerHandle_t repeat_timer;   // Only created for repeatable buttons
   TimerHandle_t long_press_timer; // Only created for play/pause button
+  TimerHandle_t click_timer;      // Double-click window (play/pause only)
+  int click_count;                // Presses seen within the double-click window
 } button_state_t;
 
 static button_state_t buttons[BTN_COUNT];
@@ -92,6 +98,9 @@ static void button_action_task(void *pvParameters) {
         // long_press_timer_cb calls esp_deep_sleep_start immediately)
         ESP_LOGW(TAG, "Long press action received (deep sleep already attempted)");
         break;
+      case BTN_CHANNEL_CYCLE:
+        audio_output_cycle_channel_mode();
+        break;
       default:
         break;
       }
@@ -132,8 +141,17 @@ static void debounce_timer_cb(TimerHandle_t timer) {
   btn->pressed = now_pressed;
 
   if (now_pressed) {
-    // Button just pressed — fire action via dedicated task
-    post_button_action((button_id_t)id);
+    if (btn->click_timer) {
+      // Play/pause button: defer the action so we can tell a single click
+      // (play/pause) from a double click (cycle channel mode). Count the
+      // press and (re)start the double-click window; the click_timer_cb
+      // dispatches the right action when the window expires.
+      btn->click_count++;
+      xTimerChangePeriod(btn->click_timer, pdMS_TO_TICKS(DOUBLE_CLICK_MS), 0);
+    } else {
+      // Other buttons — fire immediately via the dedicated task
+      post_button_action((button_id_t)id);
+    }
 
     // Start repeat timer for volume buttons (initial delay)
     if (btn->repeatable && btn->repeat_timer) {
@@ -161,11 +179,35 @@ static void debounce_timer_cb(TimerHandle_t timer) {
 // collapses cleanly. On boards without a latch the weak default just enters
 // deep sleep; arm the play/pause button as the wakeup source for those.
 static void long_press_timer_cb(TimerHandle_t timer) {
-  (void)timer;
+  int id = (int)(intptr_t)pvTimerGetTimerID(timer);
+  button_state_t *btn = &buttons[id];
+
+  // Cancel any pending click so we don't also play/pause or cycle channels.
+  if (btn->click_timer) {
+    xTimerStop(btn->click_timer, 0);
+    btn->click_count = 0;
+  }
+
   ESP_LOGI(TAG, "Long press detected — powering off");
   gpio_wakeup_enable(CONFIG_BTN_PLAY_PAUSE_GPIO, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   board_power_off();
+}
+
+// Double-click window expired — dispatch based on how many presses we saw.
+// 1 press  -> play/pause; 2 presses -> cycle channel mode (L/R/stereo).
+static void click_timer_cb(TimerHandle_t timer) {
+  int id = (int)(intptr_t)pvTimerGetTimerID(timer);
+  button_state_t *btn = &buttons[id];
+
+  int count = btn->click_count;
+  btn->click_count = 0;
+
+  if (count >= 2) {
+    post_button_action(BTN_CHANNEL_CYCLE);
+  } else if (count == 1) {
+    post_button_action(BTN_PLAY_PAUSE);
+  }
 }
 
 // GPIO ISR — just resets the debounce timer. Each new edge restarts the
@@ -185,6 +227,8 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
   buttons[id].pressed = false;
   buttons[id].debounce_timer = NULL;
   buttons[id].repeat_timer = NULL;
+  buttons[id].click_timer = NULL;
+  buttons[id].click_count = 0;
 
   if (gpio < 0) {
     return;
@@ -202,11 +246,14 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
         (void *)(intptr_t)id, repeat_timer_cb);
   }
 
-  // Create one-shot long-press timer for play/pause button
+  // Create one-shot long-press and double-click timers for play/pause button
   if (id == BTN_PLAY_PAUSE) {
     buttons[id].long_press_timer = xTimerCreate(
         "btn_lp", pdMS_TO_TICKS(LONG_PRESS_MS), pdFALSE, // one-shot
         (void *)(intptr_t)id, long_press_timer_cb);
+    buttons[id].click_timer = xTimerCreate(
+        "btn_clk", pdMS_TO_TICKS(DOUBLE_CLICK_MS), pdFALSE, // one-shot
+        (void *)(intptr_t)id, click_timer_cb);
   }
 
   // GPIOs 34-39 on ESP32 are input-only and lack internal pull-ups.
