@@ -131,11 +131,6 @@ static void debounce_timer_cb(TimerHandle_t timer) {
   // Read settled GPIO state (active low)
   bool now_pressed = (gpio_get_level(btn->gpio) == 0);
 
-  if (btn->gpio == 7) {
-    ESP_LOGI(TAG, "GPIO Pin 7 state change detected. Pressed: %s",
-             now_pressed ? "True" : "False");
-  }
-
   if (now_pressed == btn->pressed) {
     return; // No actual state change after debounce
   }
@@ -172,6 +167,16 @@ static void debounce_timer_cb(TimerHandle_t timer) {
     if (btn->long_press_timer) {
       xTimerStop(btn->long_press_timer, 0);
     }
+
+#if CONFIG_BTN_PLAY_PAUSE_DOUBLE_CLICK
+    // If the click window expired while the button was still held, dispatch
+    // play/pause on release (not on the timer — that would fire mid-hold).
+    if (btn->click_timer && btn->click_count == 1 &&
+        xTimerIsTimerActive(btn->click_timer) == pdFALSE) {
+      btn->click_count = 0;
+      post_button_action(BTN_PLAY_PAUSE);
+    }
+#endif
   }
 }
 
@@ -203,13 +208,15 @@ static void click_timer_cb(TimerHandle_t timer) {
   button_state_t *btn = &buttons[id];
 
   int count = btn->click_count;
-  btn->click_count = 0;
 
   if (count >= 2) {
+    btn->click_count = 0;
     post_button_action(BTN_CHANNEL_CYCLE);
-  } else if (count == 1) {
+  } else if (count == 1 && !btn->pressed) {
+    btn->click_count = 0;
     post_button_action(BTN_PLAY_PAUSE);
   }
+  // count == 1 && still pressed: long-press hold — defer play/pause to release
 }
 
 // GPIO ISR — just resets the debounce timer. Each new edge restarts the

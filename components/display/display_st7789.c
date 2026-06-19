@@ -232,10 +232,14 @@ static void ui_create(void) {
   lv_label_set_text(s_label_muted, "MUTED");
 
   // Title — largest font, white, scrolling
+  const lv_font_t *title_font =
+      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_24;
+  const lv_font_t *artist_font =
+      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_16;
   s_label_title = lv_label_create(scr);
   lv_obj_set_width(s_label_title, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(s_label_title, title_font, 0);
   lv_obj_set_style_text_color(s_label_title, lv_color_white(), 0);
   lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_TITLE);
   lv_label_set_text(s_label_title, "AirPlay Ready");
@@ -244,7 +248,7 @@ static void ui_create(void) {
   s_label_artist = lv_label_create(scr);
   lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_artist, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(s_label_artist, artist_font, 0);
   lv_obj_set_style_text_color(s_label_artist, lv_color_make(180, 180, 180), 0);
   lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_ARTIST);
   lv_label_set_text(s_label_artist, "");
