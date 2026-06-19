@@ -48,3 +48,10 @@ esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count);
  * Disconnect and stop WiFi
  */
 void wifi_stop(void);
+
+/**
+ * Set the DHCP hostname from the given device name.
+ * Sanitizes to a valid DNS label (lowercase, hyphens for spaces/symbols).
+ * Takes effect on the next DHCP transaction.
+ */
+void wifi_set_hostname(const char *device_name);

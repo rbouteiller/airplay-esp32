@@ -261,11 +261,13 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
     } else {
       int64_t elapsed_us = esp_timer_get_time() -
                            (receiver.timing.anchor_local_time_ns / 1000LL);
-      if (elapsed_us < 0)
+      if (elapsed_us < 0) {
         elapsed_us = 0;
+      }
       // Cap elapsed to prevent int64 overflow on very long pauses.
-      if (elapsed_us > 600000000LL)
+      if (elapsed_us > 600000000LL) {
         elapsed_us = 600000000LL;
+      }
       int32_t elapsed_samples =
           (int32_t)((elapsed_us * (int64_t)sample_rate) / 1000000LL);
       reference_rtp =
@@ -364,14 +366,17 @@ void audio_receiver_set_playing(bool playing) {
     // pre-buffered frames end up far ahead of the unwanted new anchor.
     if (receiver.timing.anchor_valid && receiver.stream) {
       int sample_rate = receiver.stream->format.sample_rate;
-      if (sample_rate <= 0)
+      if (sample_rate <= 0) {
         sample_rate = 44100;
+      }
       int64_t elapsed_us = esp_timer_get_time() -
                            (receiver.timing.anchor_local_time_ns / 1000LL);
-      if (elapsed_us < 0)
+      if (elapsed_us < 0) {
         elapsed_us = 0;
-      if (elapsed_us > 600000000LL)
+      }
+      if (elapsed_us > 600000000LL) {
         elapsed_us = 600000000LL;
+      }
       int32_t elapsed_samples =
           (int32_t)((elapsed_us * (int64_t)sample_rate) / 1000000LL);
       receiver.paused_rtp =
