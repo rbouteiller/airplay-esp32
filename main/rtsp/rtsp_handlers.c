@@ -945,6 +945,12 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "SETUP: has_streams=%d, stream_count=%zu", request_has_streams,
            stream_count);
 
+  // AirPlay v1 stream SETUP is identified by a Transport header and no bplist
+  // streams array. Classify it before opening AirPlay 2-only resources.
+  bool is_v1_transport_setup =
+      !request_has_streams && raw &&
+      strcasestr((const char *)raw, "Transport:") != NULL;
+
   if (body && body_len > 0 && is_bplist && request_has_streams) {
     conn->protocol_version = 2;
     for (size_t i = 0; i < stream_count; i++) {
@@ -1059,7 +1065,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   }
 
   // Create event port if needed
-  if (conn->event_port == 0) {
+  if (!is_v1_transport_setup && conn->event_port == 0) {
     conn->event_socket = rtsp_create_event_socket(&conn->event_port);
     if (conn->event_socket >= 0) {
       if (rtsp_start_event_port_task(conn->event_socket) == ESP_OK) {
@@ -1081,7 +1087,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     // Detected by request shape (Transport: header present); AirPlay 2's
     // initial SETUP has neither streams nor a Transport header. RTSP header
     // names are case-insensitive (RFC 2326 §12), so use strcasestr.
-    if (raw && strcasestr((const char *)raw, "Transport:")) {
+    if (is_v1_transport_setup) {
       ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
       conn->protocol_version = 1;
       int64_t stream_type = 96; // RTP
