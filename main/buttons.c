@@ -253,9 +253,11 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
     buttons[id].long_press_timer = xTimerCreate(
         "btn_lp", pdMS_TO_TICKS(LONG_PRESS_MS), pdFALSE, // one-shot
         (void *)(intptr_t)id, long_press_timer_cb);
+#if CONFIG_BTN_PLAY_PAUSE_DOUBLE_CLICK
     buttons[id].click_timer = xTimerCreate(
         "btn_clk", pdMS_TO_TICKS(DOUBLE_CLICK_MS), pdFALSE, // one-shot
         (void *)(intptr_t)id, click_timer_cb);
+#endif
   }
 
   // GPIOs 34-39 on ESP32 are input-only and lack internal pull-ups.
@@ -281,6 +283,10 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
 }
 
 esp_err_t buttons_init(void) {
+  // Action-only IDs — not backed by GPIO
+  buttons[BTN_LONG_PRESS].gpio = -1;
+  buttons[BTN_CHANNEL_CYCLE].gpio = -1;
+
   // Ensure the shared GPIO ISR service is installed (idempotent)
   esp_err_t err = board_gpio_isr_init();
   if (err != ESP_OK) {
@@ -295,7 +301,7 @@ esp_err_t buttons_init(void) {
   configure_button(BTN_PREV, CONFIG_BTN_PREV_GPIO, false);
 
   bool any_configured = false;
-  for (int i = 0; i < BTN_COUNT; i++) {
+  for (int i = BTN_PLAY_PAUSE; i <= BTN_PREV; i++) {
     if (buttons[i].gpio >= 0) {
       any_configured = true;
       break;

@@ -479,5 +479,13 @@ menu "Airplay ESP Configuration"
             help
                 GPIO pin for the previous track button (active-low, internal pull-up).
                 Set to -1 to disable.
+
+        config BTN_PLAY_PAUSE_DOUBLE_CLICK
+            bool "Play/Pause double-click cycles channel mode"
+            default n
+            help
+                When enabled, a single play/pause press is deferred until the
+                double-click window expires. Two presses within that window
+                cycle the audio channel mode instead of play/pause.
     endmenu
 endmenu

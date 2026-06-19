@@ -8,8 +8,10 @@
 
 #include "iot_board.h"
 
+#include "dac.h"
 #include "dac_es8311.h"
 #include "playback_control.h"
+#include "settings.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -477,6 +479,12 @@ esp_err_t iot_board_init(void) {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize ES8311 DAC: %s", esp_err_to_name(err));
     return err;
+  }
+
+  // Restore saved volume (ES8311 boots at 0 dB until programmed)
+  float vol_db;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    dac_set_volume(vol_db);
   }
 
   // Initialize CST816S touch controller hardware (I2C device, GPIO, registers)
