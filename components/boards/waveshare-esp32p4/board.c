@@ -9,6 +9,7 @@
 #include "iot_board.h"
 
 #include "driver/gpio.h"
+#include "esp_check.h"
 #include "esp_log.h"
 
 static const char TAG[] = "Waveshare-ESP32P4-DEV-KIT";

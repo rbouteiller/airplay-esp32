@@ -178,9 +178,10 @@ esp_err_t audio_output_init(void) {
   ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d",
            (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
 
-  // MCLK is now running — tell the DAC to reconfigure its clock chain and
-  // unmute.
-  dac_set_power_mode(DAC_POWER_ON);
+  // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
+  // clock setup; amplifiers that manage power from board RTSP events can ignore
+  // the hook.
+  dac_on_i2s_started();
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 

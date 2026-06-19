@@ -35,8 +35,9 @@ static i2c_master_bus_handle_t s_i2c_dac_bus_handle = NULL;
 
 // CST816S touch controller (I2C addr 0x15)
 #define CST816S_ADDR             0x15
-#define CST816S_REG_STATUS       0x00
-#define CST816S_REG_XY           0x03
+#define CST816S_REG_GESTURE_ID   0x01
+#define CST816S_REG_FINGER_NUM   0x02
+#define CST816S_REG_XPOS_H       0x03
 #define CST816S_REG_CHIP_STATUS  0xA7
 #define CST816S_CHIP_ID          0xB4
 #define CST816S_REG_CONFIG_START 0x5D
@@ -245,6 +246,7 @@ static esp_err_t init_mute_gpio(void) {
 static bool cst816s_i2c_write_reg(i2c_master_bus_handle_t bus,
                                   i2c_master_dev_handle_t dev, uint8_t reg,
                                   uint8_t val, int timeout_ms) {
+  (void)bus;
   uint8_t buf[2] = {reg, val};
   return i2c_master_transmit(dev, buf, 2, timeout_ms) == ESP_OK;
 }
@@ -252,13 +254,27 @@ static bool cst816s_i2c_write_reg(i2c_master_bus_handle_t bus,
 static bool cst816s_read_reg(i2c_master_bus_handle_t bus,
                              i2c_master_dev_handle_t dev, uint8_t reg,
                              uint8_t *val, size_t len, int timeout_ms) {
+  (void)bus;
   // I2C register read: write register address, then read data
   return i2c_master_transmit_receive(dev, &reg, 1, val, len, timeout_ms) ==
          ESP_OK;
 }
 
+static void cst816s_reset(void) {
+#if BOARD_I2C_TOUCH_RST_GPIO >= 0
+  gpio_reset_pin((gpio_num_t)BOARD_I2C_TOUCH_RST_GPIO);
+  gpio_set_direction((gpio_num_t)BOARD_I2C_TOUCH_RST_GPIO, GPIO_MODE_OUTPUT);
+  gpio_set_level((gpio_num_t)BOARD_I2C_TOUCH_RST_GPIO, 0);
+  vTaskDelay(pdMS_TO_TICKS(10));
+  gpio_set_level((gpio_num_t)BOARD_I2C_TOUCH_RST_GPIO, 1);
+  vTaskDelay(pdMS_TO_TICKS(50));
+#endif
+}
+
 static esp_err_t init_touch_controller(void) {
   const int timeout_ms = 100;
+
+  cst816s_reset();
 
   // Register CST816S on I2C bus
   i2c_device_config_t dev_cfg = {
@@ -315,7 +331,7 @@ static esp_err_t init_touch_controller(void) {
 
   // Clear any pending interrupts by reading status register
   uint8_t status = 0;
-  cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev, CST816S_REG_STATUS,
+  cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev, CST816S_REG_GESTURE_ID,
                    &status, 1, timeout_ms);
 
   ESP_LOGI(TAG, "CST816S touch controller initialized");
@@ -331,31 +347,30 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 
   const int timeout_ms = 10;
 
-  // Read touch status (number of touch points)
-  uint8_t status = 0;
-  if (!cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev, CST816S_REG_STATUS,
-                        &status, 1, timeout_ms)) {
+  // Read number of active fingers.
+  uint8_t touch_count = 0;
+  if (!cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev,
+                        CST816S_REG_FINGER_NUM, &touch_count, 1, timeout_ms)) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
 
-  uint8_t touch_count = status & 0x0F;
+  touch_count &= 0x0F;
   if (touch_count == 0) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
 
-  // Read touch coordinates (register 0x03):
-  // Response: [0]=touch_count, [1]=X_H, [2]=X_L, [3]=Y_H, [4]=Y_L
-  uint8_t xybuf[5] = {0};
-  if (!cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev, CST816S_REG_XY,
-                        xybuf, 5, timeout_ms)) {
+  // Read touch coordinates from XPOSH, XPOSL, YPOSH, YPOSL.
+  uint8_t xybuf[4] = {0};
+  if (!cst816s_read_reg(s_i2c_dac_bus_handle, s_cst816s_dev, CST816S_REG_XPOS_H,
+                        xybuf, sizeof(xybuf), timeout_ms)) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
 
-  uint16_t x = (xybuf[1] & 0x0F) << 8 | xybuf[2];
-  uint16_t y = (xybuf[3] & 0x0F) << 8 | xybuf[4];
+  uint16_t x = (uint16_t)(((xybuf[0] & 0x0F) << 8) | xybuf[1]);
+  uint16_t y = (uint16_t)(((xybuf[2] & 0x0F) << 8) | xybuf[3]);
 
   // Apply swap and mirror to match display orientation
   if (TOUCH_SWAP_XY) {
@@ -491,7 +506,12 @@ void iot_board_init_lvgl_resources(void) {
     return;
   }
 
-  if (lvgl_port_lock(1000)) {
+  for (int attempt = 0; attempt < 5; attempt++) {
+    if (!lvgl_port_lock(1000)) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
     esp_err_t err = init_lvgl_touch();
     if (err != ESP_OK) {
       ESP_LOGW(TAG, "LVGL touch init failed, continuing without touch");
@@ -499,11 +519,11 @@ void iot_board_init_lvgl_resources(void) {
       ESP_LOGI(TAG, "Deferred LVGL touch init complete");
     }
     lvgl_port_unlock();
-  } else {
-    ESP_LOGW(TAG, "Failed to acquire LVGL lock — touch init skipped");
-    // Keep s_touch_deferred = true so we retry next time
-    s_touch_deferred = true;
+    return;
   }
+
+  ESP_LOGW(TAG, "Failed to acquire LVGL lock — touch init skipped");
+  s_touch_deferred = true;
 }
 
 esp_err_t iot_board_deinit(void) {

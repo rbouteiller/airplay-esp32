@@ -66,10 +66,11 @@ static const char *TAG = "display_st7789";
 #define Y_TITLE    10
 #define Y_ARTIST   44
 #define Y_ALBUM    69
-// Progress bar + time sit near the bottom, just above the status icon row.
-#define Y_PROGRESS 148
-#define Y_TIME     166
-#define Y_STATUS   188 // Battery + volume icon row at the very bottom
+// Keep the status controls on-screen for both the original 320x170 ST7789
+// layout and the Waveshare 240x240 panel.
+#define Y_PROGRESS ((DISPLAY_HEIGHT >= 220) ? 148 : 114)
+#define Y_TIME     (Y_PROGRESS + 18)
+#define Y_STATUS   ((DISPLAY_HEIGHT >= 220) ? 188 : (DISPLAY_HEIGHT - 18))
 #define BAR_HEIGHT 12
 
 // ============================================================================

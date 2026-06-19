@@ -364,9 +364,10 @@ static void es8311_set_volume(float volume_airplay_db) {
     volume_airplay_db = -30.0f;
   }
 
-  // Map AirPlay -30..0 dB → ES8311 -60..0 dB (2× expansion gives extra range)
-  // ES8311: reg = 0xBF + round(db / 0.5 dB_per_step) = 0xBF + round(db * 2)
-  float db = volume_airplay_db * 2.0f; // expand to -60..0 dB
+  // Map AirPlay -30..0 dB below the configured codec ceiling. For example,
+  // max=-60 maps AirPlay 0 dB to -60 dB and AirPlay -30 dB to -120 dB
+  // before clamping to the ES8311 register range.
+  float db = (float)CONFIG_ES8311_MAX_VOLUME + (volume_airplay_db * 2.0f);
   if (db < -95.5f) {
     db = -95.5f;
   }
@@ -382,6 +383,10 @@ static void es8311_set_volume(float volume_airplay_db) {
 
   es8311_reg_write(ES8311_REG32_DAC_VOL, reg_val);
   xSemaphoreGive(s_dac_mutex);
+}
+
+static void es8311_on_i2s_started(void) {
+  es8311_set_power_mode(DAC_POWER_ON);
 }
 
 static void es8311_enable_speaker(bool enable) {
@@ -406,6 +411,7 @@ const dac_ops_t dac_es8311_ops = {
     .deinit = es8311_deinit,
     .set_volume = es8311_set_volume,
     .set_power_mode = es8311_set_power_mode,
+    .on_i2s_started = es8311_on_i2s_started,
     .enable_speaker = es8311_enable_speaker,
     .enable_line_out = es8311_enable_line_out,
 };

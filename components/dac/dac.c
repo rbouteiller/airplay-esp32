@@ -35,6 +35,12 @@ void dac_set_power_mode(dac_power_mode_t mode) {
   }
 }
 
+void dac_on_i2s_started(void) {
+  if (s_ops && s_ops->on_i2s_started) {
+    s_ops->on_i2s_started();
+  }
+}
+
 void dac_enable_speaker(bool enable) {
   if (s_ops && s_ops->enable_speaker) {
     s_ops->enable_speaker(enable);
