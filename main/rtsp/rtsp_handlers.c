@@ -431,6 +431,10 @@ static const char *parse_raw_header(const uint8_t *raw, size_t raw_len,
   return NULL;
 }
 
+static bool request_uses_rtsp(const rtsp_request_t *req) {
+  return req && strncasecmp(req->protocol, "RTSP/", 5) == 0;
+}
+
 int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
                   size_t raw_len) {
   rtsp_request_t req;
@@ -471,8 +475,13 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
   }
 
   ESP_LOGW(TAG, "Unknown method: %s", req.method);
-  rtsp_send_http_response(socket, conn, 501, "Not Implemented", "text/plain",
-                          "Not Implemented", 15);
+  if (request_uses_rtsp(&req)) {
+    rtsp_send_response(socket, conn, 501, "Not Implemented", req.cseq,
+                       "Content-Type: text/plain\r\n", "Not Implemented", 15);
+  } else {
+    rtsp_send_http_response(socket, conn, 501, "Not Implemented", "text/plain",
+                            "Not Implemented", 15);
+  }
   return 0;
 }
 
@@ -528,14 +537,38 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     // Build info response
     char device_id[18];
     char device_name[65];
-    static char body[4096];
-    plist_t p;
 
     rtsp_get_device_id(device_id, sizeof(device_id));
     settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
     uint64_t features =
         ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
+
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+    int64_t protocol_version = 1;
+#else
+    int64_t protocol_version = 2;
+#endif
+
+    if (request_uses_rtsp(req)) {
+      static uint8_t body[1024];
+      size_t body_len =
+          bplist_build_info_response(body, sizeof(body), device_id, device_name,
+                                     pk, 32, features, protocol_version);
+      if (body_len == 0) {
+        ESP_LOGE(TAG, "Failed to build binary /info response");
+        rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                           NULL, 0);
+        return;
+      }
+      rtsp_send_response(socket, conn, 200, "OK", req->cseq,
+                         "Content-Type: application/x-apple-binary-plist\r\n",
+                         (const char *)body, body_len);
+      return;
+    }
+
+    static char body[4096];
+    plist_t p;
 
     plist_init(&p, body, sizeof(body));
     plist_begin(&p);
@@ -546,11 +579,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_string(&p, "model", "AudioAccessory5,1");
     plist_dict_string(&p, "protovers", "1.1");
     plist_dict_string(&p, "srcvers", "377.40.00");
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-    plist_dict_int(&p, "vv", 1);
-#else
-    plist_dict_int(&p, "vv", 2);
-#endif
+    plist_dict_int(&p, "vv", protocol_version);
     plist_dict_int(&p, "statusFlags", 4);
     plist_dict_data(&p, "pk", pk, 32);
     plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
@@ -594,8 +623,13 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
                             body, body_len);
   } else {
     ESP_LOGW(TAG, "Unknown GET path: %s", req->path);
-    rtsp_send_http_response(socket, conn, 404, "Not Found", "text/plain",
-                            "Not Found", 9);
+    if (request_uses_rtsp(req)) {
+      rtsp_send_response(socket, conn, 404, "Not Found", req->cseq,
+                         "Content-Type: text/plain\r\n", "Not Found", 9);
+    } else {
+      rtsp_send_http_response(socket, conn, 404, "Not Found", "text/plain",
+                              "Not Found", 9);
+    }
   }
 }
 

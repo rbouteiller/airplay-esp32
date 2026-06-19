@@ -15,6 +15,7 @@
 typedef struct {
   char method[32];
   char path[256];
+  char protocol[16];
   int cseq;
   char content_type[64];
   size_t content_length;
