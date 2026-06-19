@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,3 +30,13 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples);
  * Clears automatically on next playback state change.
  */
 void led_set_error(bool error);
+
+/**
+ * Set LED brightness (0–255). Persists to NVS and takes effect immediately.
+ */
+esp_err_t led_set_brightness(uint8_t brightness);
+
+/**
+ * Get current LED brightness (0–255).
+ */
+uint8_t led_get_brightness(void);

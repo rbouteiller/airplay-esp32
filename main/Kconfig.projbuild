@@ -348,15 +348,21 @@ menu "Airplay ESP Configuration"
 
     menu "AirPlay Protocol"
         config AIRPLAY_FORCE_V1
-            bool "Force AirPlay v1 (classic) protocol"
+            bool "Legacy mode: advertise AirPlay v1 (classic) only"
             default n
             help
-                Force the receiver to advertise as an AirPlay v1 (classic)
-                device only. This disables AirPlay 2 features (HomeKit
-                pairing, encrypted transport) but enables DACP remote
-                control — iOS sends DACP-ID and Active-Remote headers in
-                AirPlay v1 mode, allowing hardware buttons to control
-                playback on the source device.
+                By default the receiver accepts BOTH AirPlay 1 (classic
+                RAOP, used by TuneBlade, AirMusic, shairtunes2, older iOS
+                fallback) and AirPlay 2 (HomeKit pairing, HAP-encrypted
+                transport, used by current iOS). Protocol selection is
+                automatic based on the request shape.
+
+                Enable this option only if AirPlay 2 advertisement causes
+                problems on your network (e.g. iOS preferring AirPlay 2
+                with broken FairPlay verification). It hides the
+                _airplay._tcp service entirely, leaving only _raop._tcp
+                for classic RAOP clients. iOS will fall back to AirPlay 1
+                with DACP remote control.
 
                 When disabled (default), the receiver advertises as an
                 AirPlay 2 device. Modern iOS uses the MRP (Media Remote

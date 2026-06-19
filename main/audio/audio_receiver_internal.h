@@ -14,7 +14,6 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
-#include "spiram_task.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
 
@@ -40,7 +39,6 @@ typedef struct {
   int buffered_client_socket;
   uint16_t buffered_port;
   TaskHandle_t buffered_task_handle;
-  spiram_task_mem_t buffered_task_mem;
   uint8_t *buffered_recv_buffer;
 
   uint8_t *decrypt_buffer;
@@ -53,6 +51,10 @@ typedef struct {
   struct sockaddr_in client_control_addr; // Client's control address for NACKs
   bool retransmit_enabled;                // True when client address is set
   int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
+  bool rtp_sequence_valid;
+  uint16_t resend_window_first;
+  uint64_t resend_missing_mask;
+  int64_t resend_last_request_time_us;
 
   // Post-seek RTP gates: together they form a window [discard_before_rtp,
   // discard_above_rtp] around the new anchor.  Frames outside the window are

@@ -126,11 +126,16 @@ void mdns_airplay_init(void) {
       {"txtvers", "1"},               // TXT record version
   };
 #else
+  // Dual-mode: include et=1 (RSA) so RAOP-only clients (TuneBlade, AirMusic,
+  // shairtunes2, etc.) accept the advertisement, while keeping et=3,5 for
+  // AirPlay 2 FairPlay/MFi-SAP. ek=1 advertises that an RSA-encrypted key
+  // can be supplied via SDP rsaaeskey: at ANNOUNCE time.
   mdns_txt_item_t raop_txt[] = {
       {"am", AIRPLAY_MODEL},
       {"cn", "0,1,2,3"},              // Audio codecs: PCM, ALAC, AAC, AAC-ELD
       {"da", "true"},                 // Digest auth
-      {"et", "0,3,5"},                // Encryption types
+      {"ek", "1"},                    // Encryption key available (RSA)
+      {"et", "0,1,3,5"},              // Encryption types
       {"ft", features_str},           // Features (same as airplay)
       {"md", AIRPLAY_METADATA_TYPES}, // Metadata types
       {"pk", pk_str},                 // Public key

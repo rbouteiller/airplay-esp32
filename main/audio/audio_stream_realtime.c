@@ -16,12 +16,13 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE         12
-#define AUDIO_RECV_STACK_SIZE   12288
-#define AUDIO_CTRL_STACK_SIZE   4096
-#define STACK_LOG_INTERVAL_US   5000000
-#define RESEND_ERROR_BACKOFF_US 100000 // 100ms backoff after sendto failure
-#define MAX_RESEND_GAP          100 // Don't request retransmit for gaps > 100
+#define RTP_HEADER_SIZE          12
+#define AUDIO_RECV_STACK_SIZE    12288
+#define AUDIO_CTRL_STACK_SIZE    4096
+#define RESEND_WINDOW_BITS       64
+#define RESEND_RETRY_INTERVAL_US 250000 // Match common RAOP resend cadence
+#define RESEND_ERROR_BACKOFF_US  300000 // Backoff after sendto failure
+#define MAX_RESEND_GAP           RESEND_WINDOW_BITS
 
 #if CONFIG_FREERTOS_UNICORE
 #define AUDIO_TASK_CORE 0
@@ -29,39 +30,13 @@
 #define AUDIO_TASK_CORE 1
 #endif
 
-// Pre-allocated task resources — only one connection at a time, so these
-// are allocated once and reused across connections to avoid fragmentation.
-// TCBs are static BSS (small). Stacks are pre-allocated from internal heap
-// at startup (via audio_realtime_preallocate) before WiFi fragments the
-// heap. Packet buffers are allocated on first use from SPIRAM.
-static StaticTask_t s_recv_task_tcb;
-static StackType_t *s_recv_task_stack;
+// Packet buffers are allocated once from SPIRAM. Tasks are created dynamically:
+// restartable static TCBs can be corrupted if a new task reuses the TCB before
+// the idle task has removed the old self-deleted task from FreeRTOS lists.
 static uint8_t *s_recv_packet_buf;
-
-static StaticTask_t s_ctrl_task_tcb;
-static StackType_t *s_ctrl_task_stack;
 static uint8_t *s_ctrl_packet_buf;
 
 static const char *TAG = "audio_rt";
-
-esp_err_t audio_realtime_preallocate(void) {
-  if (!s_recv_task_stack) {
-    s_recv_task_stack = heap_caps_malloc(AUDIO_RECV_STACK_SIZE,
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
-  if (!s_ctrl_task_stack) {
-    s_ctrl_task_stack = heap_caps_malloc(AUDIO_CTRL_STACK_SIZE,
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
-  if (!s_recv_task_stack || !s_ctrl_task_stack) {
-    ESP_LOGE(TAG, "Failed to pre-allocate audio stacks (need %d+%d bytes)",
-             AUDIO_RECV_STACK_SIZE, AUDIO_CTRL_STACK_SIZE);
-    return ESP_ERR_NO_MEM;
-  }
-  ESP_LOGI(TAG, "Pre-allocated audio stacks (%d+%d bytes from internal heap)",
-           AUDIO_RECV_STACK_SIZE, AUDIO_CTRL_STACK_SIZE);
-  return ESP_OK;
-}
 
 typedef struct __attribute__((packed)) {
   uint8_t flags;
@@ -108,27 +83,111 @@ static const uint8_t *parse_rtp(const uint8_t *packet, size_t len,
   return packet + header_len;
 }
 
-/* Send an AirPlay NACK (retransmission request) for missing sequence numbers.
-   Packet format: 0x80 0xD5 <seq_count_minus_1:u16> <first_seq:u16> <count:u16>
-   Sent to the client's control port via our control socket. */
-static void send_resend_request(audio_receiver_state_t *state,
-                                uint16_t first_seq, uint16_t count) {
-  if (!state->retransmit_enabled || state->control_socket <= 0) {
+static uint64_t resend_mask_for_count(uint16_t count) {
+  return count >= RESEND_WINDOW_BITS ? UINT64_MAX : ((1ULL << count) - 1ULL);
+}
+
+static void resend_slide_window(audio_receiver_state_t *state) {
+  while (state->resend_missing_mask != 0 &&
+         (state->resend_missing_mask & 1ULL) == 0) {
+    state->resend_missing_mask >>= 1;
+    state->resend_window_first++;
+  }
+
+  if (state->resend_missing_mask == 0) {
+    state->resend_last_request_time_us = 0;
+  }
+}
+
+static bool resend_mark_received(audio_receiver_state_t *state, uint16_t seq) {
+  if (state->resend_missing_mask == 0) {
+    return false;
+  }
+
+  uint16_t offset = (uint16_t)(seq - state->resend_window_first);
+  if (offset >= RESEND_WINDOW_BITS) {
+    return false;
+  }
+
+  uint64_t bit = 1ULL << offset;
+  if ((state->resend_missing_mask & bit) == 0) {
+    return false;
+  }
+
+  state->resend_missing_mask &= ~bit;
+  resend_slide_window(state);
+  return true;
+}
+
+static void resend_track_missing(audio_receiver_state_t *state,
+                                 uint16_t first_seq, uint16_t count) {
+  if (count == 0 || count > MAX_RESEND_GAP) {
     return;
+  }
+
+  if (state->resend_missing_mask == 0) {
+    state->resend_window_first = first_seq;
+    state->resend_missing_mask = resend_mask_for_count(count);
+    return;
+  }
+
+  uint16_t offset = (uint16_t)(first_seq - state->resend_window_first);
+  if (offset >= RESEND_WINDOW_BITS || offset + count > RESEND_WINDOW_BITS) {
+    // A newer gap is outside the small recovery window; abandon stale holes.
+    state->resend_window_first = first_seq;
+    state->resend_missing_mask = resend_mask_for_count(count);
+    return;
+  }
+
+  state->resend_missing_mask |= resend_mask_for_count(count) << offset;
+}
+
+static bool resend_next_range(const audio_receiver_state_t *state,
+                              uint16_t *first_seq, uint16_t *count) {
+  if (state->resend_missing_mask == 0 || !first_seq || !count) {
+    return false;
+  }
+
+  uint64_t mask = state->resend_missing_mask;
+  uint16_t first = state->resend_window_first;
+  while ((mask & 1ULL) == 0) {
+    mask >>= 1;
+    first++;
+  }
+
+  uint16_t range_count = 0;
+  while ((mask & 1ULL) != 0 && range_count < RESEND_WINDOW_BITS) {
+    range_count++;
+    mask >>= 1;
+  }
+
+  *first_seq = first;
+  *count = range_count;
+  return range_count > 0;
+}
+
+/* Send an AirTunes retransmission request for missing sequence numbers.
+   AirPlay 1 docs describe this as an RTP header without SSRC; in practice
+   (and in Shairport) the RTP timestamp word is split into first_seq/count:
+   0x80 0xD5 <rtp_seq=1:u16> <first_seq:u16> <count:u16>. */
+static bool send_resend_request(audio_receiver_state_t *state,
+                                uint16_t first_seq, uint16_t count) {
+  if (!state->retransmit_enabled || state->control_socket <= 0 || count == 0) {
+    return false;
   }
 
   /* Backoff: skip if we recently had a sendto error */
   int64_t now = esp_timer_get_time();
   if (state->last_resend_error_time_us > 0 &&
       (now - state->last_resend_error_time_us) < RESEND_ERROR_BACKOFF_US) {
-    return;
+    return false;
   }
 
   uint8_t nack[8];
   nack[0] = 0x80;
   nack[1] = 0xD5;
-  nack[2] = (uint8_t)((count - 1) >> 8);
-  nack[3] = (uint8_t)((count - 1) & 0xFF);
+  nack[2] = 0;
+  nack[3] = 1; // Shairport sends a fixed RTP sequence number for resend asks.
   nack[4] = (uint8_t)(first_seq >> 8);
   nack[5] = (uint8_t)(first_seq & 0xFF);
   nack[6] = (uint8_t)(count >> 8);
@@ -140,10 +199,71 @@ static void send_resend_request(audio_receiver_state_t *state,
   if (ret < 0) {
     state->last_resend_error_time_us = now;
     ESP_LOGD(TAG, "NACK sendto failed: %d", errno);
+    return false;
   } else {
     state->last_resend_error_time_us = 0;
     ESP_LOGD(TAG, "NACK sent: seq=%u count=%u", first_seq, count);
+    return true;
   }
+}
+
+static void resend_request_range(audio_receiver_state_t *state,
+                                 uint16_t first_seq, uint16_t count) {
+  if (send_resend_request(state, first_seq, count)) {
+    state->resend_last_request_time_us = esp_timer_get_time();
+  }
+}
+
+static void resend_retry_if_due(audio_receiver_state_t *state) {
+  uint16_t first_seq = 0;
+  uint16_t count = 0;
+  if (!resend_next_range(state, &first_seq, &count)) {
+    return;
+  }
+
+  int64_t now = esp_timer_get_time();
+  if (state->resend_last_request_time_us == 0 ||
+      (now - state->resend_last_request_time_us) >= RESEND_RETRY_INTERVAL_US) {
+    resend_request_range(state, first_seq, count);
+  }
+}
+
+static bool track_regular_rtp_sequence(audio_receiver_state_t *state,
+                                       uint16_t seq) {
+  if (!state->rtp_sequence_valid) {
+    state->rtp_sequence_valid = true;
+    state->stats.last_seq = seq;
+    return true;
+  }
+
+  uint16_t expected_seq = (uint16_t)(state->stats.last_seq + 1);
+  int16_t delta = (int16_t)(seq - expected_seq);
+  if (delta == 0) {
+    state->stats.last_seq = seq;
+    return true;
+  }
+
+  if (delta > 0) {
+    uint16_t gap = (uint16_t)delta;
+    if (gap <= MAX_RESEND_GAP) {
+      state->stats.packets_dropped += gap;
+      resend_track_missing(state, expected_seq, gap);
+      resend_request_range(state, expected_seq, gap);
+    } else {
+      ESP_LOGD(TAG, "RTP gap too large for resend: seq=%u expected=%u gap=%u",
+               seq, expected_seq, gap);
+    }
+    state->stats.last_seq = seq;
+    return true;
+  }
+
+  if (resend_mark_received(state, seq)) {
+    return true;
+  }
+
+  ESP_LOGD(TAG, "Dropping stale RTP packet seq=%u expected=%u", seq,
+           expected_seq);
+  return false;
 }
 
 static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
@@ -155,6 +275,7 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
                          (struct sockaddr *)src_addr, addr_len);
   if (len < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      resend_retry_if_due(state);
       return true;
     }
     if (stream->running) {
@@ -172,9 +293,10 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   const uint8_t *rtp_data = packet;
   size_t rtp_len = (size_t)len;
 
-  /* Retransmit packets (type 0x56) have a 4-byte outer header before the
-     inner RTP packet. Strip it and parse the inner RTP normally. */
-  bool is_retransmit = (rtp_len >= 16 && rtp_data[1] == 0x56);
+  /* Retransmit packets (payload type 0x56, usually marker 0xD6) have a
+     4-byte outer header before the inner RTP packet. Strip it and parse the
+     inner RTP normally. */
+  bool is_retransmit = (rtp_len >= 16 && (rtp_data[1] & 0x7F) == 0x56);
   if (is_retransmit) {
     rtp_data += 4;
     rtp_len -= 4;
@@ -191,25 +313,17 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
     return true;
   }
 
-  /* Skip gap detection and sequence tracking for retransmits — their seq
-     is old and would corrupt last_seq, causing spurious NACKs. */
-  if (!is_retransmit) {
-    if (state->stats.packets_decoded > 0) {
-      uint16_t expected_seq = (state->stats.last_seq + 1) & 0xFFFF;
-      if (seq != expected_seq) {
-        int gap = (int)seq - (int)expected_seq;
-        if (gap < 0) {
-          gap += 65536;
-        }
-        if (gap > 0 && gap < MAX_RESEND_GAP) {
-          state->stats.packets_dropped += gap;
-          send_resend_request(state, expected_seq, (uint16_t)gap);
-        }
-      }
+  if (is_retransmit) {
+    if (!resend_mark_received(state, seq)) {
+      ESP_LOGD(TAG, "Dropping stale retransmit seq=%u", seq);
+      return true;
     }
-
-    state->stats.last_seq = seq;
+    resend_retry_if_due(state);
+  } else if (!track_regular_rtp_sequence(state, seq)) {
+    return true;
+  } else {
     state->stats.last_timestamp = timestamp;
+    resend_retry_if_due(state);
   }
 
   state->blocks_read++;
@@ -321,11 +435,10 @@ static void control_receiver_task(void *pvParameters) {
       continue;
     }
 
-    uint8_t packet_type = packet[1];
+    uint8_t packet_type = packet[1] & 0x7F;
 
     switch (packet_type) {
-    case 0xD4: // AirPlay 1 sync packet (NTP timing)
-    case 0x54: // Same as 0xD4 but without extension bit
+    case 0x54: // AirPlay 1 sync packet (NTP timing)
       // Layout (per shairport-sync / Apple protocol documentation):
       //   [4-7]  rtp_timestamp_less_latency  — the RTP frame PLAYING at the
       //          NTP time in [8-15].  This is the correct anchor RTP.
@@ -344,7 +457,7 @@ static void control_receiver_task(void *pvParameters) {
       }
       break;
 
-    case 0xD7: // AirPlay 2 anchor timing packet (PTP timing)
+    case 0x57: // AirPlay 2 anchor timing packet (PTP timing)
       // Format: [4] RTP frame, [8] PTP time ns, [16] RTP frame 2, [20] clock ID
       // The RTP timestamp at [4] is the frame that should play at the
       // PTP time — use it directly (matching the NTP anchor path).
@@ -358,7 +471,7 @@ static void control_receiver_task(void *pvParameters) {
       }
       break;
 
-    case 0xD6: { // Retransmit response — forward inner RTP to data socket
+    case 0x56: { // Retransmit response — forward inner RTP to data socket
       if (len < 8 || state->data_socket <= 0) {
         break;
       }
@@ -389,6 +502,15 @@ static void control_receiver_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool realtime_wait_for_tasks_stopped(audio_receiver_state_t *state,
+                                            int timeout_ticks) {
+  while ((state->task_handle || state->control_task_handle) &&
+         timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return state->task_handle == NULL && state->control_task_handle == NULL;
+}
+
 static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   audio_receiver_state_t *state = audio_stream_state(stream);
   if (stream->running) {
@@ -396,12 +518,23 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
              state->data_port);
     return ESP_OK;
   }
+  if (state->task_handle || state->control_task_handle) {
+    ESP_LOGW(TAG, "Audio receiver task still stopping, waiting");
+    if (!realtime_wait_for_tasks_stopped(state, 20)) {
+      ESP_LOGW(TAG, "Audio receiver task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
+  }
 
   uint16_t bound_port = port;
   state->data_socket = socket_utils_bind_udp(port, 1, 131072, &bound_port);
   if (state->data_socket < 0) {
     return ESP_FAIL;
   }
+  // Keep the receive loop awake so resend_retry_if_due() can repeat NACKs
+  // even when no fresh RTP packets arrive.
+  struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+  setsockopt(state->data_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   state->data_port = bound_port;
 
   if (state->control_port > 0) {
@@ -423,16 +556,11 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
            (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-  if (!s_recv_task_stack) {
-    ESP_LOGE(TAG, "Receiver stack not pre-allocated — call "
-                  "audio_realtime_preallocate() at startup");
-    stream->running = false;
-    return ESP_FAIL;
-  }
-  state->task_handle = xTaskCreateStaticPinnedToCore(
-      receiver_task, "audio_recv", AUDIO_RECV_STACK_SIZE / sizeof(StackType_t),
-      stream, 8, s_recv_task_stack, &s_recv_task_tcb, AUDIO_TASK_CORE);
-  if (!state->task_handle) {
+  state->task_handle = NULL;
+  BaseType_t task_ret = xTaskCreatePinnedToCore(
+      receiver_task, "audio_recv", AUDIO_RECV_STACK_SIZE, stream, 8,
+      &state->task_handle, AUDIO_TASK_CORE);
+  if (task_ret != pdPASS || !state->task_handle) {
     ESP_LOGE(TAG, "Failed to create receiver task");
     if (state->control_socket > 0) {
       close(state->control_socket);
@@ -445,18 +573,19 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   }
 
   if (state->control_socket > 0) {
-    state->control_task_handle =
-        s_ctrl_task_stack
-            ? xTaskCreateStaticPinnedToCore(
-                  control_receiver_task, "ctrl_recv",
-                  AUDIO_CTRL_STACK_SIZE / sizeof(StackType_t), stream, 7,
-                  s_ctrl_task_stack, &s_ctrl_task_tcb, AUDIO_TASK_CORE)
-            : NULL;
-    if (!state->control_task_handle) {
-      ESP_LOGE(TAG, "Failed to create control receiver task%s",
-               s_ctrl_task_stack ? "" : " — stack not pre-allocated");
+    state->control_task_handle = NULL;
+    task_ret = xTaskCreatePinnedToCore(
+        control_receiver_task, "ctrl_recv", AUDIO_CTRL_STACK_SIZE, stream, 7,
+        &state->control_task_handle, AUDIO_TASK_CORE);
+    if (task_ret != pdPASS || !state->control_task_handle) {
+      ESP_LOGE(TAG, "Failed to create control receiver task");
       close(state->control_socket);
       state->control_socket = 0;
+      stream->running = false;
+      close(state->data_socket);
+      state->data_socket = 0;
+      realtime_wait_for_tasks_stopped(state, 20);
+      return ESP_FAIL;
     }
   }
 
@@ -465,7 +594,7 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
 
 static void realtime_stop(audio_stream_t *stream) {
   audio_receiver_state_t *state = audio_stream_state(stream);
-  if (!stream->running) {
+  if (!stream->running && !state->task_handle && !state->control_task_handle) {
     return;
   }
 
@@ -480,13 +609,8 @@ static void realtime_stop(audio_stream_t *stream) {
     state->control_socket = 0;
   }
 
-  if (state->task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(200));
-    state->task_handle = NULL;
-  }
-  if (state->control_task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-    state->control_task_handle = NULL;
+  if (!realtime_wait_for_tasks_stopped(state, 20)) {
+    ESP_LOGW(TAG, "Audio receiver task did not exit within timeout");
   }
 }
 
@@ -505,6 +629,11 @@ static void realtime_destroy(audio_stream_t *stream) {
   }
 
   realtime_stop(stream);
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  if (state->task_handle || state->control_task_handle) {
+    ESP_LOGW(TAG, "Leaking realtime stream because task shutdown timed out");
+    return;
+  }
   free(stream);
 }
 

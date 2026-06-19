@@ -29,14 +29,16 @@ static esp_err_t init_mute_gpio(void) {
       .intr_type = GPIO_INTR_DISABLE,
   };
   esp_err_t err = gpio_config(&io_conf);
-  //ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure mute GPIO");
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure mute GPIO: %s", esp_err_to_name(err));
+    return err;
+  }
 
   // Initialize to unmuted state — set opposite of active level
   gpio_set_level(CONFIG_MUTE_GPIO, !CONFIG_MUTE_GPIO_LEVEL);
 
   ESP_LOGI(TAG, "Mute GPIO %d initialized (active %s, init %s)",
-           CONFIG_MUTE_GPIO,
-           CONFIG_MUTE_GPIO_LEVEL ? "high" : "low",
+           CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL ? "high" : "low",
            CONFIG_MUTE_GPIO_LEVEL ? "low" : "high");
   return ESP_OK;
 }
@@ -62,7 +64,10 @@ esp_err_t iot_board_init(void) {
   }
 
 #ifdef CONFIG_MUTE_GPIO
-  init_mute_gpio();
+  esp_err_t err = init_mute_gpio();
+  if (err != ESP_OK) {
+    return err;
+  }
 #endif
 
   s_board_initialized = true;

@@ -28,6 +28,9 @@ __attribute__((weak)) const char *iot_board_get_info(void) {
   return "Unknown Board";
 }
 
+__attribute__((weak)) void iot_board_init_lvgl_resources(void) {
+}
+
 // Default: boards without a power latch enter deep sleep instead of cutting
 // power. The Waveshare board overrides this to release its battery latch.
 __attribute__((weak)) void board_power_off(void) {

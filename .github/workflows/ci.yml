@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+
+      - name: Install clang-format
+        run: |
+          python3 -m pip install --user -r requirements-dev.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check formatting
+        run: scripts/format.sh --check
+
+  lint-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+
+      - name: Build and generate compile_commands.json
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32s3
+          command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3" build
+
+      - name: Install clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy
+
+      - name: Run clang-tidy
+        run: |
+          COMPILE_DB="build"
+          WARNINGS=0
+          while IFS= read -r -d '' file; do
+            echo "Checking $file..."
+            OUTPUT=$(clang-tidy -p "$COMPILE_DB" "$file" 2>&1 || true)
+            FILTERED=$(echo "$OUTPUT" | grep -v "file not found \[clang-diagnostic" || true)
+            if echo "$FILTERED" | grep -q ": warning:"; then
+              echo "$FILTERED" | grep -E "(: warning:|: note:)"
+              WARNINGS=1
+            fi
+          done < <(find main components -path components/u8g2 -prune -o \( -name "*.c" -o -name "*.h" \) -print0)
+          if [ "$WARNINGS" -ne 0 ]; then
+            echo ""
+            echo "clang-tidy found issues"
+            exit 1
+          fi
+          echo "All files pass clang-tidy checks"
+
+  build:
+    needs: [format-check, lint-check]
+    uses: ./.github/workflows/build.yml

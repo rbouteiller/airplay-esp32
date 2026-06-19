@@ -49,4 +49,3 @@
 #define BOARD_I2C_SCL_GPIO CONFIG_DAC_I2C_SCL
 
 // Battery monitoring
-void init_gpio7(void);

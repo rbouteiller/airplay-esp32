@@ -37,13 +37,9 @@ static int server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
 static bool server_running = false;
 
-// Static task memory for client tasks (one per slot)
-static StaticTask_t s_client_tcb[2];
-static StackType_t s_client_stack[2][CLIENT_STACK_SIZE / sizeof(StackType_t)];
-
-// Static task memory for server task
-static StaticTask_t s_server_tcb;
-static StackType_t s_server_stack[SERVER_STACK_SIZE / sizeof(StackType_t)];
+// RTSP tasks are restartable. Use dynamic TCB allocation so
+// reconnect/start-stop paths cannot reuse static task memory before FreeRTOS
+// idle finishes deletion.
 
 // Client slot for tracking connections
 typedef struct {
@@ -269,77 +265,82 @@ cleanup:
   audio_output_flush();
   ntp_clock_stop();
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1 grace period: iOS sends TEARDOWN + TCP close for both pause
-  // and genuine disconnect. Wait briefly and probe DACP mDNS to tell them
-  // apart. Emit PAUSED immediately so listeners (e.g. BT switching) don't
-  // act on the disconnect prematurely.
-  if (!slot->should_stop) {
-    s_resume_requested = false;
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+  bool has_dacp_remote = conn && conn->protocol_version == 1 &&
+                         conn->dacp_id[0] != '\0' &&
+                         conn->active_remote[0] != '\0';
 
-    // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
-    for (int i = 0; i < 6 && !slot->should_stop; i++) {
-      vTaskDelay(pdMS_TO_TICKS(500));
-      if (s_resume_requested) {
-        ESP_LOGI(TAG, "Resume requested during Phase 1 — skipping to Phase 2");
-        break;
-      }
-    }
-
-    // Phase 2: wait for reconnect as long as DACP service is advertised.
-    // Re-probe every ~5 s. The phone unadvertises the service when the
-    // user switches away, so disappearance = genuine disconnect.
+  // iOS v1 pause handling needs DACP to distinguish pause from disconnect.
+  // Third-party RAOP clients often have no DACP remote; disconnect them
+  // immediately instead of delaying slot cleanup with an iOS-only grace path.
+  if (has_dacp_remote) {
     if (!slot->should_stop) {
-      bool stay = dacp_probe_service() || s_resume_requested;
-      if (s_resume_requested) {
-        s_resume_requested = false;
-        ESP_LOGI(TAG, "Resume requested via button — waiting for reconnect");
-        stay = true;
-      }
-      if (stay) {
-        ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
-      }
-      while (stay && !slot->should_stop) {
-        // Wait 5 s between probes (10 × 500 ms), checking flags each tick
-        for (int i = 0; i < 10 && !slot->should_stop; i++) {
-          vTaskDelay(pdMS_TO_TICKS(500));
-          if (s_resume_requested) {
-            s_resume_requested = false;
-            ESP_LOGI(TAG,
-                     "Resume requested via button — extending grace period");
-          }
-        }
-        if (slot->should_stop) {
+      s_resume_requested = false;
+      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+
+      // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
+      for (int i = 0; i < 6 && !slot->should_stop; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_resume_requested) {
+          ESP_LOGI(TAG,
+                   "Resume requested during Phase 1 — skipping to Phase 2");
           break;
         }
-        // Re-probe: still advertised?
-        stay = dacp_probe_service();
+      }
+
+      // Phase 2: wait for reconnect as long as DACP service is advertised.
+      // Re-probe every ~5 s. The phone unadvertises the service when the
+      // user switches away, so disappearance = genuine disconnect.
+      if (!slot->should_stop) {
+        bool stay = dacp_probe_service() || s_resume_requested;
+        if (s_resume_requested) {
+          s_resume_requested = false;
+          ESP_LOGI(TAG, "Resume requested via button — waiting for reconnect");
+          stay = true;
+        }
         if (stay) {
-          ESP_LOGD(TAG, "DACP still advertised — continuing wait");
-        } else {
-          ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
+          ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
+        }
+        while (stay && !slot->should_stop) {
+          // Wait 5 s between probes (10 × 500 ms), checking flags each tick
+          for (int i = 0; i < 10 && !slot->should_stop; i++) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            if (s_resume_requested) {
+              s_resume_requested = false;
+              ESP_LOGI(TAG,
+                       "Resume requested via button — extending grace period");
+            }
+          }
+          if (slot->should_stop) {
+            break;
+          }
+          // Re-probe: still advertised?
+          stay = dacp_probe_service();
+          if (stay) {
+            ESP_LOGD(TAG, "DACP still advertised — continuing wait");
+          } else {
+            ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
+          }
         }
       }
-    }
 
-    if (slot->is_old) {
-      // New client connected during grace period — treat as reconnect
-      ESP_LOGI(TAG, "Client reconnected during grace period");
+      if (slot->is_old) {
+        // New client connected during grace period — treat as reconnect
+        ESP_LOGI(TAG, "Client reconnected during grace period");
+      } else {
+        ESP_LOGI(TAG, "Grace period expired — full disconnect");
+        dacp_clear_session();
+        rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      }
     } else {
-      ESP_LOGI(TAG, "Grace period expired — full disconnect");
+      // Forcefully stopped (server shutdown or replaced by new client)
       dacp_clear_session();
       rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
     }
   } else {
-    // Forcefully stopped (server shutdown or replaced by new client)
+    // v2 / unknown — no grace period, clear immediately.
     dacp_clear_session();
     rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
   }
-#else
-  dacp_clear_session();
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-#endif
 
   // When being replaced by a new client (is_old), skip global state changes —
   // the new session's SETUP already manages PTP and the event port task.
@@ -405,6 +406,7 @@ static void server_task(void *pvParameters) {
   server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (server_socket < 0) {
     ESP_LOGE(TAG, "Failed to create socket: %d", errno);
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -422,6 +424,7 @@ static void server_task(void *pvParameters) {
     ESP_LOGE(TAG, "Failed to bind: %d", errno);
     close(server_socket);
     server_socket = -1;
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -430,6 +433,7 @@ static void server_task(void *pvParameters) {
     ESP_LOGE(TAG, "Failed to listen: %d", errno);
     close(server_socket);
     server_socket = -1;
+    server_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -478,12 +482,12 @@ static void server_task(void *pvParameters) {
     clients[new_slot].should_stop = false;
     clients[new_slot].is_old = false;
 
-    // Start new client task immediately (static allocation)
-    clients[new_slot].task = xTaskCreateStatic(
-        client_task, "rtsp_client", CLIENT_STACK_SIZE / sizeof(StackType_t),
-        (void *)(intptr_t)new_slot, 5, s_client_stack[new_slot],
-        &s_client_tcb[new_slot]);
-    if (clients[new_slot].task == NULL) {
+    // Start new client task immediately.
+    clients[new_slot].task = NULL;
+    BaseType_t task_ret =
+        xTaskCreate(client_task, "rtsp_client", CLIENT_STACK_SIZE,
+                    (void *)(intptr_t)new_slot, 5, &clients[new_slot].task);
+    if (task_ret != pdPASS || clients[new_slot].task == NULL) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);
       clients[new_slot].socket = -1;
@@ -509,18 +513,33 @@ static void server_task(void *pvParameters) {
     server_socket = -1;
   }
 
+  server_task_handle = NULL;
   vTaskDelete(NULL);
+}
+
+static bool rtsp_server_wait_for_task_stopped(int timeout_ticks) {
+  while (server_task_handle != NULL && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return server_task_handle == NULL;
 }
 
 esp_err_t rtsp_server_start(void) {
   if (server_task_handle != NULL) {
-    return ESP_ERR_INVALID_STATE;
+    if (server_running) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(TAG, "RTSP server task still stopping, waiting");
+    if (!rtsp_server_wait_for_task_stopped(40)) {
+      ESP_LOGE(TAG, "Previous RTSP server task did not stop");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
 
-  server_task_handle = xTaskCreateStatic(
-      server_task, "rtsp_server", SERVER_STACK_SIZE / sizeof(StackType_t), NULL,
-      5, s_server_stack, &s_server_tcb);
-  if (server_task_handle == NULL) {
+  BaseType_t task_ret =
+      xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,
+                  &server_task_handle);
+  if (task_ret != pdPASS || server_task_handle == NULL) {
     return ESP_FAIL;
   }
 
@@ -537,7 +556,8 @@ void rtsp_server_stop(void) {
   }
 
   if (server_task_handle != NULL) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-    server_task_handle = NULL;
+    if (!rtsp_server_wait_for_task_stopped(40)) {
+      ESP_LOGW(TAG, "RTSP server task did not exit within timeout");
+    }
   }
 }

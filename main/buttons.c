@@ -50,10 +50,10 @@ typedef enum {
 
 typedef struct {
   int gpio;
-  bool pressed;           // Debounced state
-  bool repeatable;        // Supports auto-repeat (volume buttons)
+  bool pressed;    // Debounced state
+  bool repeatable; // Supports auto-repeat (volume buttons)
   TimerHandle_t debounce_timer;
-  TimerHandle_t repeat_timer;   // Only created for repeatable buttons
+  TimerHandle_t repeat_timer;     // Only created for repeatable buttons
   TimerHandle_t long_press_timer; // Only created for play/pause button
   TimerHandle_t click_timer;      // Double-click window (play/pause only)
   int click_count;                // Presses seen within the double-click window
@@ -96,7 +96,8 @@ static void button_action_task(void *pvParameters) {
         // Deep sleep — this is handled in the timer callback; just log
         // in case the action fires (shouldn't normally happen since
         // long_press_timer_cb calls esp_deep_sleep_start immediately)
-        ESP_LOGW(TAG, "Long press action received (deep sleep already attempted)");
+        ESP_LOGW(TAG,
+                 "Long press action received (deep sleep already attempted)");
         break;
       case BTN_CHANNEL_CYCLE:
         audio_output_cycle_channel_mode();
@@ -131,7 +132,8 @@ static void debounce_timer_cb(TimerHandle_t timer) {
   bool now_pressed = (gpio_get_level(btn->gpio) == 0);
 
   if (btn->gpio == 7) {
-    ESP_LOGI(TAG, "GPIO Pin 7 state change detected. Pressed: %s", now_pressed ? "True" : "False");
+    ESP_LOGI(TAG, "GPIO Pin 7 state change detected. Pressed: %s",
+             now_pressed ? "True" : "False");
   }
 
   if (now_pressed == btn->pressed) {

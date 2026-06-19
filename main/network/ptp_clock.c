@@ -62,7 +62,7 @@ static const char *TAG = "ptp_clock";
 #define SMOOTH_POS_STEADY_DIV  16  // later, apply 1/16 of positive jitter
 #define SMOOTH_NEG_DIV         256 // always apply only 1/256 of negative jitter
 #define SMOOTH_NEG_CLAMP_NS    (-2500000LL) // clamp negative jitter at -2.5ms
-#define STARTUP_DURATION_MS    1000 // first second: aggressive positive tracking
+#define STARTUP_DURATION_MS 1000 // first second: aggressive positive tracking
 
 // Threshold above which we reset the PTP smoothing filter on resume.
 // E.g. at 50 ppm crystal accuracy, 30 s of pause accumulates ~1.5 ms of drift —

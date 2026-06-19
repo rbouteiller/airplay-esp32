@@ -138,6 +138,8 @@ pio run -e esp32s3 -t upload
 # 4. (Optional) Watch serial output for debugging
 pio run -e esp32s3 -t monitor
 ```
+> **Note:** On first setup the [SPIFFS Filesystem](#spiffs-filesystem) needs to be flashed via `pio run -e esp32s3 -t monitor` [[details](#flashing-the-spiffs-image)].
+
 
 ### Option C — ESP-IDF
 

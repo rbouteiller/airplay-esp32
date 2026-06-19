@@ -1,7 +1,6 @@
 #include "audio_output.h"
 #include "rtsp_server.h"
 
-#include "iot_board.h"
 #include "audio_resample.h"
 #include "dac.h"
 #include "led.h"
@@ -125,7 +124,7 @@ static void playback_task(void *arg) {
       ESP_LOGD(TAG, "I2S write: %u bytes written", (unsigned int)written);
       taskYIELD();
     } else {
-      //ESP_LOGW(TAG, "Receiver underflow - playing silence");
+      // ESP_LOGW(TAG, "Receiver underflow - playing silence");
       led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         pdMS_TO_TICKS(10));
@@ -151,7 +150,7 @@ esp_err_t audio_output_init(void) {
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(OUTPUT_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                        I2S_SLOT_MODE_STEREO),
+                                                      I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
               .mclk = I2S_SCK_PIN,
@@ -176,13 +175,14 @@ esp_err_t audio_output_init(void) {
                       "std mode init failed");
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
-  ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d", (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
+  ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d",
+           (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
 
-  // MCLK is now running — tell the DAC to reconfigure its clock chain and unmute.
+  // MCLK is now running — tell the DAC to reconfigure its clock chain and
+  // unmute.
   dac_set_power_mode(DAC_POWER_ON);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
-  init_gpio7();
 
   return ESP_OK;
 }
@@ -249,9 +249,15 @@ uint32_t audio_output_get_hardware_latency_us(void) {
 audio_channel_mode_t audio_output_cycle_channel_mode(void) {
   audio_channel_mode_t next;
   switch (channel_mode) {
-  case AUDIO_CHANNEL_STEREO: next = AUDIO_CHANNEL_LEFT; break;
-  case AUDIO_CHANNEL_LEFT:   next = AUDIO_CHANNEL_RIGHT; break;
-  default:                   next = AUDIO_CHANNEL_STEREO; break;
+  case AUDIO_CHANNEL_STEREO:
+    next = AUDIO_CHANNEL_LEFT;
+    break;
+  case AUDIO_CHANNEL_LEFT:
+    next = AUDIO_CHANNEL_RIGHT;
+    break;
+  default:
+    next = AUDIO_CHANNEL_STEREO;
+    break;
   }
   channel_mode = next;
   ESP_LOGI(TAG, "Channel mode: %s",

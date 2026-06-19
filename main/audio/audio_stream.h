@@ -34,7 +34,3 @@ audio_stream_t *audio_stream_create_realtime(void);
 audio_stream_t *audio_stream_create_buffered(void);
 void audio_stream_destroy(audio_stream_t *stream);
 bool audio_stream_uses_buffer(audio_stream_type_t type);
-
-// Pre-allocate audio task stacks from internal heap. Call early in app_main()
-// before WiFi/ethernet init to avoid heap fragmentation issues.
-esp_err_t audio_realtime_preallocate(void);

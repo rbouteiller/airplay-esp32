@@ -71,7 +71,7 @@ static const char *TAG = "display_st7789";
 // The panel's set_gap(0,35) offset bottoms the usable LVGL Y range near ~204.
 #define Y_PROGRESS 148
 #define Y_TIME     166
-#define Y_STATUS   188  // Battery + volume icon row at the very bottom
+#define Y_STATUS   188 // Battery + volume icon row at the very bottom
 #define BAR_HEIGHT 12
 
 // ============================================================================
@@ -317,9 +317,15 @@ static void ui_update_status_row(void) {
   // Volume — show as percentage, with the channel mode (L+R / L / R)
   const char *chan;
   switch (audio_output_get_channel_mode()) {
-  case AUDIO_CHANNEL_LEFT:  chan = "L"; break;
-  case AUDIO_CHANNEL_RIGHT: chan = "R"; break;
-  default:                  chan = "L+R"; break;
+  case AUDIO_CHANNEL_LEFT:
+    chan = "L";
+    break;
+  case AUDIO_CHANNEL_RIGHT:
+    chan = "R";
+    break;
+  default:
+    chan = "L+R";
+    break;
   }
   char vol_str[24];
   snprintf(vol_str, sizeof(vol_str), LV_SYMBOL_VOLUME_MAX " %d%%  %s",
@@ -331,12 +337,19 @@ static void ui_update_status_row(void) {
   bool charging = false;
   if (board_battery_read(&pct, &charging)) {
     const char *icon;
-    if (charging)       icon = LV_SYMBOL_USB; // plugged into USB / charging
-    else if (pct >= 80) icon = LV_SYMBOL_BATTERY_FULL;
-    else if (pct >= 60) icon = LV_SYMBOL_BATTERY_3;
-    else if (pct >= 40) icon = LV_SYMBOL_BATTERY_2;
-    else if (pct >= 20) icon = LV_SYMBOL_BATTERY_1;
-    else                icon = LV_SYMBOL_BATTERY_EMPTY;
+    if (charging) {
+      icon = LV_SYMBOL_USB; // plugged into USB / charging
+    } else if (pct >= 80) {
+      icon = LV_SYMBOL_BATTERY_FULL;
+    } else if (pct >= 60) {
+      icon = LV_SYMBOL_BATTERY_3;
+    } else if (pct >= 40) {
+      icon = LV_SYMBOL_BATTERY_2;
+    } else if (pct >= 20) {
+      icon = LV_SYMBOL_BATTERY_1;
+    } else {
+      icon = LV_SYMBOL_BATTERY_EMPTY;
+    }
 
     char bat_str[16];
     snprintf(bat_str, sizeof(bat_str), "%s %d%%", icon, pct);
@@ -584,8 +597,7 @@ static void display_task(void *pvParameters) {
     // These are not tied to RTSP events; poll at 1s so an interactive change
     // (volume, double-click channel toggle) shows up promptly.
     static TickType_t last_status_update = 0;
-    if (!need_update &&
-        (now - last_status_update) >= pdMS_TO_TICKS(1000)) {
+    if (!need_update && (now - last_status_update) >= pdMS_TO_TICKS(1000)) {
       last_status_update = now;
       if (lvgl_port_lock(100)) {
         ui_update_status_row();

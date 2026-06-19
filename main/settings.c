@@ -12,10 +12,11 @@ static const char *TAG = "settings";
 #ifdef CONFIG_BT_A2DP_ENABLE
 #define NVS_KEY_BT_VOLUME "bt_vol"
 #endif
-#define NVS_KEY_WIFI_SSID     "wifi_ssid"
-#define NVS_KEY_WIFI_PASSWORD "wifi_pass"
-#define NVS_KEY_DEVICE_NAME   "device_name"
-#define NVS_KEY_EQ_GAINS      "eq_gains"
+#define NVS_KEY_WIFI_SSID      "wifi_ssid"
+#define NVS_KEY_WIFI_PASSWORD  "wifi_pass"
+#define NVS_KEY_DEVICE_NAME    "device_name"
+#define NVS_KEY_EQ_GAINS       "eq_gains"
+#define NVS_KEY_LED_BRIGHTNESS "led_bright"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -306,6 +307,48 @@ esp_err_t settings_set_device_name(const char *name) {
     ESP_LOGE(TAG, "Failed to save device name: %s", esp_err_to_name(err));
   }
 
+  return err;
+}
+
+/* ================================================================== */
+/*  LED Brightness                                                     */
+/* ================================================================== */
+
+esp_err_t settings_get_led_brightness(uint8_t *brightness) {
+  if (!brightness) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  err = nvs_get_u8(nvs, NVS_KEY_LED_BRIGHTNESS, brightness);
+  nvs_close(nvs);
+  return err;
+}
+
+esp_err_t settings_set_led_brightness(uint8_t brightness) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_LED_BRIGHTNESS, brightness);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved LED brightness: %d", brightness);
+  } else {
+    ESP_LOGE(TAG, "Failed to save LED brightness: %s", esp_err_to_name(err));
+  }
   return err;
 }
 

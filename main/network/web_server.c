@@ -13,6 +13,7 @@
 #include "esp_wifi.h"
 
 #include "settings.h"
+#include "led.h"
 #include "wifi.h"
 #include "ethernet.h"
 #include "ota.h"
@@ -84,22 +85,24 @@ static esp_err_t speedtest_ping_handler(httpd_req_t *req) {
 
 // Streams `bytes` octets of filler data so the browser can measure DL speed.
 // Capped to avoid pathological requests starving audio.
-#define SPEEDTEST_MAX_BYTES (16 * 1024 * 1024)
+#define SPEEDTEST_MAX_BYTES ((size_t)16 * 1024 * 1024)
 #define SPEEDTEST_CHUNK     2048
 
 static esp_err_t speedtest_download_handler(httpd_req_t *req) {
-  size_t bytes = 1024 * 1024;
+  size_t bytes = (size_t)1024 * 1024;
   char qbuf[64];
   if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
     char val[16];
     if (httpd_query_key_value(qbuf, "bytes", val, sizeof(val)) == ESP_OK) {
       long v = strtol(val, NULL, 10);
-      if (v > 0)
+      if (v > 0) {
         bytes = (size_t)v;
+      }
     }
   }
-  if (bytes > SPEEDTEST_MAX_BYTES)
+  if (bytes > SPEEDTEST_MAX_BYTES) {
     bytes = SPEEDTEST_MAX_BYTES;
+  }
 
   // Reuse a single buffer of filler bytes. Static so we don't repeatedly
   // hammer the heap; content is irrelevant but non-zero to thwart any
@@ -107,8 +110,9 @@ static esp_err_t speedtest_download_handler(httpd_req_t *req) {
   static uint8_t filler[SPEEDTEST_CHUNK];
   static bool filler_init = false;
   if (!filler_init) {
-    for (size_t i = 0; i < sizeof(filler); i++)
+    for (size_t i = 0; i < sizeof(filler); i++) {
       filler[i] = (uint8_t)(i * 37);
+    }
     filler_init = true;
   }
 
@@ -117,11 +121,12 @@ static esp_err_t speedtest_download_handler(httpd_req_t *req) {
 
   size_t remaining = bytes;
   while (remaining > 0) {
-    size_t n = remaining < SPEEDTEST_CHUNK ? remaining : SPEEDTEST_CHUNK;
+    ssize_t n =
+        remaining < SPEEDTEST_CHUNK ? (ssize_t)remaining : SPEEDTEST_CHUNK;
     if (httpd_resp_send_chunk(req, (const char *)filler, n) != ESP_OK) {
       return ESP_FAIL;
     }
-    remaining -= n;
+    remaining -= (size_t)n;
   }
   httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
@@ -134,12 +139,14 @@ static esp_err_t speedtest_upload_handler(httpd_req_t *req) {
   uint8_t buf[SPEEDTEST_CHUNK];
   while (got < total) {
     size_t want = total - got;
-    if (want > sizeof(buf))
+    if (want > sizeof(buf)) {
       want = sizeof(buf);
+    }
     int r = httpd_req_recv(req, (char *)buf, want);
     if (r <= 0) {
-      if (r == HTTPD_SOCK_ERR_TIMEOUT)
+      if (r == HTTPD_SOCK_ERR_TIMEOUT) {
         continue;
+      }
       return ESP_FAIL;
     }
     got += (size_t)r;
@@ -284,6 +291,8 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
     const char *name = cJSON_GetStringValue(name_json);
     esp_err_t err = settings_set_device_name(name);
     if (err == ESP_OK) {
+      wifi_set_hostname(name);
+      ethernet_set_hostname(name);
       cJSON_AddBoolToObject(response, "success", true);
     } else {
       cJSON_AddBoolToObject(response, "success", false);
@@ -301,6 +310,65 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
 
+  return ESP_OK;
+}
+
+static esp_err_t led_brightness_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddNumberToObject(json, "brightness", led_get_brightness());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t led_brightness_post_handler(httpd_req_t *req) {
+  char content[64];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *val = cJSON_GetObjectItem(json, "brightness");
+  if (val && cJSON_IsNumber(val)) {
+    int b = (int)val->valuedouble;
+    if (b < 0) {
+      b = 0;
+    }
+    if (b > 255) {
+      b = 255;
+    }
+    esp_err_t err = led_set_brightness((uint8_t)b);
+    if (err == ESP_OK) {
+      cJSON_AddBoolToObject(response, "success", true);
+    } else {
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+    }
+  } else {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error",
+                            "Expected {\"brightness\": 0-255}");
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
   return ESP_OK;
 }
 
@@ -363,8 +431,9 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
       char ssid_buf[33];
       size_t slen = strnlen((const char *)ap.ssid, sizeof(ap.ssid));
-      if (slen > sizeof(ssid_buf) - 1)
+      if (slen > sizeof(ssid_buf) - 1) {
         slen = sizeof(ssid_buf) - 1;
+      }
       memcpy(ssid_buf, ap.ssid, slen);
       ssid_buf[slen] = '\0';
       char bssid_buf[18];
@@ -372,14 +441,15 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
                ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
                ap.bssid[5]);
       const char *phy = "?";
-      if (ap.phy_11n)
+      if (ap.phy_11n) {
         phy = "11n";
-      else if (ap.phy_11g)
+      } else if (ap.phy_11g) {
         phy = "11g";
-      else if (ap.phy_11b)
+      } else if (ap.phy_11b) {
         phy = "11b";
-      else if (ap.phy_lr)
+      } else if (ap.phy_lr) {
         phy = "LR";
+      }
       cJSON_AddStringToObject(info, "wifi_ssid", ssid_buf);
       cJSON_AddStringToObject(info, "wifi_bssid", bssid_buf);
       cJSON_AddNumberToObject(info, "wifi_rssi", ap.rssi);
@@ -695,7 +765,8 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
-  config.max_uri_handlers = 24;   // Room for captive portal + EQ + speedtest
+  config.max_uri_handlers =
+      28; // Room for captive portal + EQ + speedtest + brightness
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -752,6 +823,17 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
   httpd_register_uri_handler(s_server, &device_name_uri);
+
+  httpd_uri_t led_brightness_get_uri = {.uri = "/api/led/brightness",
+                                        .method = HTTP_GET,
+                                        .handler = led_brightness_get_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_get_uri);
+
+  httpd_uri_t led_brightness_post_uri = {.uri = "/api/led/brightness",
+                                         .method = HTTP_POST,
+                                         .handler =
+                                             led_brightness_post_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_post_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,

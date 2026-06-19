@@ -1,0 +1,49 @@
+name: Build
+
+# Reusable firmware build. Single source of truth for the target matrix,
+# called by both ci.yml (pull requests / main) and release.yml (tags).
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: esp32s3
+            target: esp32s3
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3"
+          - name: esp32s2
+            target: esp32s2
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s2"
+          - name: squeezeamp-bt
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp;sdkconfig.defaults.bt"
+          - name: squeezeamp-4m
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp-4m"
+          - name: esparagus-audio-brick-bt
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esparagus-audio-brick;sdkconfig.defaults.bt"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+
+      - name: Build ${{ matrix.name }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: ${{ matrix.target }}
+          command: >
+            idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build &&
+            cd build &&
+            esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
+            cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: firmware-${{ matrix.name }}
+          path: airplay2-receiver-${{ matrix.name }}.bin

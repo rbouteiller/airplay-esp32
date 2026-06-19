@@ -35,8 +35,7 @@ static esp_err_t init_mute_gpio(void) {
   gpio_set_level(CONFIG_MUTE_GPIO, !CONFIG_MUTE_GPIO_LEVEL);
 
   ESP_LOGI(TAG, "Mute GPIO %d initialized (active %s, init %s)",
-           CONFIG_MUTE_GPIO,
-           CONFIG_MUTE_GPIO_LEVEL ? "high" : "low",
+           CONFIG_MUTE_GPIO, CONFIG_MUTE_GPIO_LEVEL ? "high" : "low",
            CONFIG_MUTE_GPIO_LEVEL ? "low" : "high");
   return ESP_OK;
 }

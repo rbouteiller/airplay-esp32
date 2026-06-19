@@ -9,11 +9,11 @@ typedef void *board_res_handle_t;
 
 typedef enum {
   NULL_RESOURCE = 0,
-  BOARD_I2C_DAC_ID,  ///< I2C master bus used by the DAC
-  BOARD_I2C_TOUCH_ID,///< I2C master bus shared by touch controller
-  BOARD_I2C_DISP_ID, ///< I2C master bus used by the display
-  BOARD_SPI_ETH_ID,  ///< SPI host used by the Ethernet controller
-  BOARD_SPI_DISP_ID, ///< SPI host used by the display
+  BOARD_I2C_DAC_ID,   ///< I2C master bus used by the DAC
+  BOARD_I2C_TOUCH_ID, ///< I2C master bus shared by touch controller
+  BOARD_I2C_DISP_ID,  ///< I2C master bus used by the display
+  BOARD_SPI_ETH_ID,   ///< SPI host used by the Ethernet controller
+  BOARD_SPI_DISP_ID,  ///< SPI host used by the display
 } board_res_id_t;
 
 /**
@@ -61,8 +61,8 @@ const char *iot_board_get_info(void);
 /**
  * @brief Complete deferred initialization of board resources that require LVGL.
  *
- * Must be called after display_init() completes. If no deferred init is pending,
- * this is a no-op.
+ * Must be called after display_init() completes. If no deferred init is
+ * pending, this is a no-op.
  */
 void iot_board_init_lvgl_resources(void);
 

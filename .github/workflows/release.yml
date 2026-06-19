@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  validate-release-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches version.txt
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use vMAJOR.MINOR.PATCH format, got '$tag'"
+            exit 1
+          fi
+
+          tag_version="${tag#v}"
+          file_version="$(tr -d '[:space:]' < version.txt)"
+
+          if [[ ! "$file_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version.txt must contain MAJOR.MINOR.PATCH, got '$file_version'"
+            exit 1
+          fi
+
+          if [[ "$tag_version" != "$file_version" ]]; then
+            echo "::error::Release tag '$tag' does not match version.txt '$file_version'"
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          release_commit="$(git rev-list -n 1 "$tag")"
+          if ! git merge-base --is-ancestor "$release_commit" origin/main; then
+            echo "::error::Release tag '$tag' must point to a commit on main"
+            exit 1
+          fi
+
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate-release-version
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: [validate-release-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-artifacts
+          pattern: firmware-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.validate-release-version.outputs.version }}
+          name: v${{ needs.validate-release-version.outputs.version }}
+          files: release-artifacts/*.bin
+          make_latest: true
+          generate_release_notes: true

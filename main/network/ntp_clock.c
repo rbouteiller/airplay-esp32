@@ -4,7 +4,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -35,10 +34,6 @@ typedef struct __attribute__((packed)) {
 #define TIMING_INTERVAL_MS  3000 // Send request every 3 seconds
 
 #define NTP_STACK_SIZE 3072
-
-// TCB must remain in internal DRAM. NTP is secondary to PTP for AirPlay 2 sync.
-static StaticTask_t s_ntp_tcb;
-static StackType_t *s_ntp_stack;
 
 // Timing state
 static struct {
@@ -202,8 +197,8 @@ static void ntp_task(void *pvParameters) {
 
     // Check for response (with short timeout)
     addr_len = sizeof(src_addr);
-    int len = recvfrom(ntp.socket, packet, sizeof(packet), 0,
-                       (struct sockaddr *)&src_addr, &addr_len);
+    ssize_t len = recvfrom(ntp.socket, packet, sizeof(packet), 0,
+                           (struct sockaddr *)&src_addr, &addr_len);
 
     if (len < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -229,6 +224,13 @@ static void ntp_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool ntp_wait_for_task_stopped(int timeout_ticks) {
+  while (ntp.task_handle != NULL && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return ntp.task_handle == NULL;
+}
+
 esp_err_t ntp_clock_start_client(uint32_t remote_ip, uint16_t remote_port) {
   if (ntp.running) {
     // If already running to same target, keep going
@@ -238,6 +240,17 @@ esp_err_t ntp_clock_start_client(uint32_t remote_ip, uint16_t remote_port) {
     }
     // Stop existing and restart with new target
     ntp_clock_stop();
+    if (!ntp_wait_for_task_stopped(20)) {
+      ESP_LOGE(TAG, "Previous NTP task did not stop");
+      return ESP_ERR_INVALID_STATE;
+    }
+  }
+  if (ntp.task_handle != NULL) {
+    ESP_LOGW(TAG, "NTP task still stopping, waiting");
+    if (!ntp_wait_for_task_stopped(20)) {
+      ESP_LOGE(TAG, "NTP task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
 
   ntp.socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -265,17 +278,10 @@ esp_err_t ntp_clock_start_client(uint32_t remote_ip, uint16_t remote_port) {
   memset(ntp.dispersions, 0, sizeof(ntp.dispersions));
   ntp.running = true;
 
-  if (!s_ntp_stack) {
-    s_ntp_stack =
-        heap_caps_malloc(NTP_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_ntp_stack) {
-      s_ntp_stack = malloc(NTP_STACK_SIZE);
-    }
-  }
-  ntp.task_handle = xTaskCreateStatic(ntp_task, "ntp_clock",
-                                      NTP_STACK_SIZE / sizeof(StackType_t),
-                                      NULL, 5, s_ntp_stack, &s_ntp_tcb);
-  if (ntp.task_handle == NULL) {
+  ntp.task_handle = NULL;
+  BaseType_t task_ret = xTaskCreate(ntp_task, "ntp_clock", NTP_STACK_SIZE, NULL,
+                                    5, &ntp.task_handle);
+  if (task_ret != pdPASS || ntp.task_handle == NULL) {
     ESP_LOGE(TAG, "Failed to create NTP task");
     close(ntp.socket);
     ntp.socket = -1;
@@ -302,9 +308,8 @@ void ntp_clock_stop(void) {
   }
 
   if (ntp.task_handle) {
-    // Wait for task to finish
-    for (int i = 0; i < 20 && ntp.task_handle != NULL; i++) {
-      vTaskDelay(pdMS_TO_TICKS(50));
+    if (!ntp_wait_for_task_stopped(20)) {
+      ESP_LOGW(TAG, "NTP task did not exit within timeout");
     }
   }
 

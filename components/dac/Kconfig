@@ -23,7 +23,7 @@ menu "DAC Configuration"
 
     config DAC_CONTROLS_VOLUME
         bool
-        default y if DAC_TAS57XX || DAC_TAS58XX
+        default y if DAC_TAS57XX || DAC_TAS58XX || DAC_ES8311
         help
             Hidden option. Set automatically when a hardware DAC driver is enabled.
             When true, the DAC handles volume control and software attenuation
