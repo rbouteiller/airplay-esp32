@@ -238,7 +238,7 @@ menu "Airplay ESP Configuration"
                 config DISPLAY_DRIVER_SH1107
                     bool "SH1107 (128x128) OLED"
                 config DISPLAY_DRIVER_ST7789
-                    bool "ST7789 TFT (320x170 landscape)"
+                    bool "ST7789 TFT"
             endchoice
 
             choice DISPLAY_HEIGHT
@@ -329,6 +329,36 @@ menu "Airplay ESP Configuration"
                     help
                         GPIO pin for the display backlight.
                         Set to -1 if not used or always on.
+
+                config DISPLAY_ST7789_WIDTH
+                    int "ST7789 display width"
+                    default 320
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Horizontal resolution exposed to LVGL after panel
+                        rotation/mirroring.
+
+                config DISPLAY_ST7789_HEIGHT
+                    int "ST7789 display height"
+                    default 170
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Vertical resolution exposed to LVGL after panel
+                        rotation/mirroring.
+
+                config DISPLAY_ST7789_GAP_X
+                    int "ST7789 panel X gap"
+                    default 0
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        X offset passed to esp_lcd_panel_set_gap().
+
+                config DISPLAY_ST7789_GAP_Y
+                    int "ST7789 panel Y gap"
+                    default 35
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Y offset passed to esp_lcd_panel_set_gap().
             endif
 
             config DISPLAY_FLIP

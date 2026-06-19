@@ -9,6 +9,7 @@
 #include "iot_board.h"
 
 #include "driver/gpio.h"
+#include "esp_check.h"
 #include "esp_log.h"
 
 static const char TAG[] = "ESP32-Generic";
@@ -61,7 +62,10 @@ esp_err_t iot_board_init(void) {
   }
 
 #ifdef CONFIG_MUTE_GPIO
-  init_mute_gpio();
+  esp_err_t err = init_mute_gpio();
+  if (err != ESP_OK) {
+    return err;
+  }
 #endif
 
   s_board_initialized = true;

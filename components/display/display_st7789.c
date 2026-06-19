@@ -48,8 +48,8 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-#define DISPLAY_WIDTH      240
-#define DISPLAY_HEIGHT     240
+#define DISPLAY_WIDTH      CONFIG_DISPLAY_ST7789_WIDTH
+#define DISPLAY_HEIGHT     CONFIG_DISPLAY_ST7789_HEIGHT
 #define LCD_HOST           SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
 #define DRAW_BUF_LINES     10
@@ -66,9 +66,7 @@ static const char *TAG = "display_st7789";
 #define Y_TITLE    10
 #define Y_ARTIST   44
 #define Y_ALBUM    69
-// Progress bar + time sit near the bottom, just above the status icon row,
-// leaving rows ~83-148 free for the scrolling title/artist/album text.
-// The panel's set_gap(0,35) offset bottoms the usable LVGL Y range near ~204.
+// Progress bar + time sit near the bottom, just above the status icon row.
 #define Y_PROGRESS 148
 #define Y_TIME     166
 #define Y_STATUS   188 // Battery + volume icon row at the very bottom
@@ -729,7 +727,8 @@ void display_init(void *bus) {
   // the ST7789 MADCTL register during display registration.
   ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
   ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-  ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
+  ESP_ERROR_CHECK(esp_lcd_panel_set_gap(
+      panel_handle, CONFIG_DISPLAY_ST7789_GAP_X, CONFIG_DISPLAY_ST7789_GAP_Y));
 
   // Acquire the LVGL port mutex before touching LVGL widgets. The port task
   // is already running at this point, so we must wait on the lock rather

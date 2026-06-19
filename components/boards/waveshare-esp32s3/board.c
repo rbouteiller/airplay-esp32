@@ -381,9 +381,8 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 }
 
 static esp_err_t init_lvgl_touch(void) {
-  esp_err_t err = init_touch_controller();
-  if (err != ESP_OK) {
-    return err;
+  if (s_touch_indev != NULL) {
+    return ESP_OK;
   }
 
   // Create LVGL input device
