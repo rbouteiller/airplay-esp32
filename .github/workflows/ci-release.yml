@@ -72,6 +72,9 @@ jobs:
           - name: esp32s3
             target: esp32s3
             sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3"
+          - name: esp32s2
+            target: esp32s2
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s2"
           - name: squeezeamp-bt
             target: esp32
             sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp;sdkconfig.defaults.bt"
