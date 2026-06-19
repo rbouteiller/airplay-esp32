@@ -231,10 +231,17 @@ static void event_port_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool event_port_wait_for_task_stopped(int timeout_ticks) {
+  while (event_task_handle != NULL && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return event_task_handle == NULL;
+}
+
 esp_err_t rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
     rtsp_stop_event_port_task();
-    if (event_task_handle != NULL) {
+    if (!event_port_wait_for_task_stopped(20)) {
       ESP_LOGE(TAG, "Previous event port task did not stop");
       return ESP_ERR_INVALID_STATE;
     }
@@ -273,13 +280,7 @@ void rtsp_stop_event_port_task(void) {
     shutdown(event_listen_socket, SHUT_RDWR);
   }
 
-  // Wait for task to exit
-  int timeout = 20;
-  while (event_task_handle != NULL && timeout > 0) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-    timeout--;
-  }
-  if (event_task_handle != NULL) {
+  if (!event_port_wait_for_task_stopped(20)) {
     ESP_LOGW(TAG, "Event port task did not exit within timeout");
   }
 }
@@ -351,24 +352,50 @@ static const rtsp_method_handler_t method_handlers[] = {
 static const char *parse_raw_header(const uint8_t *raw, size_t raw_len,
                                     const char *name) {
   static char value_buf[64];
-  const char *hdr = strcasestr((const char *)raw, name);
-  if (!hdr || (size_t)(hdr - (const char *)raw) >= raw_len) {
+  if (!raw || !name) {
     return NULL;
   }
-  hdr += strlen(name);
-  // Skip optional whitespace
-  while (*hdr == ' ' || *hdr == '\t') {
-    hdr++;
+
+  const uint8_t *header_end = rtsp_find_header_end(raw, raw_len);
+  if (!header_end) {
+    return NULL;
   }
-  // Copy until CR/LF
-  size_t i = 0;
-  while (i < sizeof(value_buf) - 1 && hdr[i] && hdr[i] != '\r' &&
-         hdr[i] != '\n') {
-    value_buf[i] = hdr[i];
-    i++;
+
+  const char *line = (const char *)raw;
+  const char *end = (const char *)header_end;
+  size_t name_len = strlen(name);
+
+  while (line < end) {
+    const char *line_end = line;
+    while (line_end < end && *line_end != '\r' && *line_end != '\n') {
+      line_end++;
+    }
+
+    if ((size_t)(line_end - line) >= name_len &&
+        strncasecmp(line, name, name_len) == 0) {
+      const char *hdr = line + name_len;
+      // Skip optional whitespace
+      while (hdr < line_end && (*hdr == ' ' || *hdr == '\t')) {
+        hdr++;
+      }
+
+      size_t i = 0;
+      while (i < sizeof(value_buf) - 1 && hdr < line_end) {
+        value_buf[i] = *hdr;
+        hdr++;
+        i++;
+      }
+      value_buf[i] = '\0';
+      return value_buf;
+    }
+
+    line = line_end;
+    while (line < end && (*line == '\r' || *line == '\n')) {
+      line++;
+    }
   }
-  value_buf[i] = '\0';
-  return value_buf;
+
+  return NULL;
 }
 
 int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
@@ -948,8 +975,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   // AirPlay v1 stream SETUP is identified by a Transport header and no bplist
   // streams array. Classify it before opening AirPlay 2-only resources.
   bool is_v1_transport_setup =
-      !request_has_streams && raw &&
-      strcasestr((const char *)raw, "Transport:") != NULL;
+      !request_has_streams &&
+      parse_raw_header(raw, raw_len, "Transport:") != NULL;
 
   if (body && body_len > 0 && is_bplist && request_has_streams) {
     conn->protocol_version = 2;
@@ -1085,8 +1112,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   if (!request_has_streams) {
     // AirPlay v1: SETUP has no bplist body — transport info is in the header.
     // Detected by request shape (Transport: header present); AirPlay 2's
-    // initial SETUP has neither streams nor a Transport header. RTSP header
-    // names are case-insensitive (RFC 2326 §12), so use strcasestr.
+    // initial SETUP has neither streams nor a Transport header.
     if (is_v1_transport_setup) {
       ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
       conn->protocol_version = 1;

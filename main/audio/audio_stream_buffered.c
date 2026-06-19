@@ -167,6 +167,14 @@ static void buffered_audio_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool buffered_wait_for_task_stopped(audio_receiver_state_t *state,
+                                           int timeout_ticks) {
+  while (state->buffered_task_handle && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return state->buffered_task_handle == NULL;
+}
+
 static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   audio_receiver_state_t *state = audio_stream_state(stream);
   if (stream->running) {
@@ -174,8 +182,11 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
     return ESP_OK;
   }
   if (state->buffered_task_handle) {
-    ESP_LOGW(TAG, "Buffered audio task still stopping");
-    return ESP_ERR_INVALID_STATE;
+    ESP_LOGW(TAG, "Buffered audio task still stopping, waiting");
+    if (!buffered_wait_for_task_stopped(state, 20)) {
+      ESP_LOGW(TAG, "Buffered audio task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
 
   uint16_t bound_port = port;
@@ -221,11 +232,7 @@ static void buffered_stop(audio_stream_t *stream) {
     state->buffered_listen_socket = -1;
   }
 
-  int timeout = 20;
-  while (state->buffered_task_handle && timeout-- > 0) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-  if (state->buffered_task_handle) {
+  if (!buffered_wait_for_task_stopped(state, 20)) {
     ESP_LOGW(TAG, "Buffered audio task did not exit within timeout");
     return;
   }

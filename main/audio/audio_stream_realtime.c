@@ -500,6 +500,15 @@ static void control_receiver_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool realtime_wait_for_tasks_stopped(audio_receiver_state_t *state,
+                                            int timeout_ticks) {
+  while ((state->task_handle || state->control_task_handle) &&
+         timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return state->task_handle == NULL && state->control_task_handle == NULL;
+}
+
 static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   audio_receiver_state_t *state = audio_stream_state(stream);
   if (stream->running) {
@@ -508,8 +517,11 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
     return ESP_OK;
   }
   if (state->task_handle || state->control_task_handle) {
-    ESP_LOGW(TAG, "Audio receiver task still stopping");
-    return ESP_ERR_INVALID_STATE;
+    ESP_LOGW(TAG, "Audio receiver task still stopping, waiting");
+    if (!realtime_wait_for_tasks_stopped(state, 20)) {
+      ESP_LOGW(TAG, "Audio receiver task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
 
   uint16_t bound_port = port;
@@ -586,20 +598,8 @@ static void realtime_stop(audio_stream_t *stream) {
     state->control_socket = 0;
   }
 
-  int timeout = 20;
-  while (state->task_handle && timeout-- > 0) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-  if (state->task_handle) {
+  if (!realtime_wait_for_tasks_stopped(state, 20)) {
     ESP_LOGW(TAG, "Audio receiver task did not exit within timeout");
-  }
-
-  timeout = 20;
-  while (state->control_task_handle && timeout-- > 0) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-  if (state->control_task_handle) {
-    ESP_LOGW(TAG, "Control receiver task did not exit within timeout");
   }
 }
 
