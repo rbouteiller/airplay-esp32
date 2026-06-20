@@ -62,3 +62,19 @@ void playback_control_next(void);
  * Skip to previous track.
  */
 void playback_control_prev(void);
+
+/**
+ * Toggle mute/unmute (AirPlay only — mirrors local mute logic from play/pause).
+ */
+void playback_control_toggle_mute(void);
+
+/**
+ * Check if currently muted.
+ */
+bool playback_control_is_muted(void);
+
+/**
+ * Get the current volume as a percentage (0..100), derived from the saved
+ * AirPlay volume in NVS. Returns 0 when muted.
+ */
+int playback_control_get_volume_percent(void);

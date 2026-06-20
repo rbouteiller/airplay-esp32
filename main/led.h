@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,3 +36,13 @@ void led_set_error(bool error);
  * restart disables or reroutes the RGB LED.
  */
 void led_prepare_rgb_gpio_change(int previous_rgb_gpio, int new_rgb_gpio);
+
+/**
+ * Set LED brightness (0–255). Persists to NVS and takes effect immediately.
+ */
+esp_err_t led_set_brightness(uint8_t brightness);
+
+/**
+ * Get current LED brightness (0–255).
+ */
+uint8_t led_get_brightness(void);

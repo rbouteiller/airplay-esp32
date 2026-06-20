@@ -1,48 +1,84 @@
 #!/usr/bin/env bash
-# Format all source files
+# Format all source files, or check them with --check.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+EXPECTED_CLANG_FORMAT_VERSION="${EXPECTED_CLANG_FORMAT_VERSION:-22.1.4}"
 
 cd "$PROJECT_DIR"
 
-# Find clang-format
-CLANG_FORMAT=""
-for cmd in clang-format clang-format-14 clang-format-15 clang-format-16; do
-  if command -v "$cmd" &> /dev/null; then
-    CLANG_FORMAT="$cmd"
+MODE="format"
+if [[ "${1:-}" == "--check" ]]; then
+  MODE="check"
+elif [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  echo "Usage: scripts/format.sh [--check]"
+  exit 0
+elif [[ $# -gt 0 ]]; then
+  echo "Unknown argument: $1" >&2
+  echo "Usage: scripts/format.sh [--check]" >&2
+  exit 1
+fi
+
+resolve_candidate() {
+  local candidate="$1"
+
+  if [[ "$candidate" == */* ]]; then
+    [[ -x "$candidate" ]] && printf '%s\n' "$candidate"
+  elif command -v "$candidate" >/dev/null 2>&1; then
+    command -v "$candidate"
+  fi
+}
+
+format_version() {
+  "$1" --version | sed -E 's/.*version ([0-9]+(\.[0-9]+)*).*/\1/'
+}
+
+candidates=()
+if [[ -n "${CLANG_FORMAT:-}" ]]; then
+  candidates+=("$CLANG_FORMAT")
+else
+  candidates+=(
+    "clang-format"
+    "$HOME/.local/bin/clang-format"
+    "clang-format-22"
+    "/opt/homebrew/opt/llvm/bin/clang-format"
+    "/usr/local/opt/llvm/bin/clang-format"
+    "/opt/homebrew/opt/llvm@22/bin/clang-format"
+    "/usr/local/opt/llvm@22/bin/clang-format"
+  )
+fi
+
+CLANG_FORMAT_BIN=""
+for candidate in "${candidates[@]}"; do
+  resolved="$(resolve_candidate "$candidate" || true)"
+  if [[ -n "$resolved" &&
+        "$(format_version "$resolved")" == "$EXPECTED_CLANG_FORMAT_VERSION" ]]; then
+    CLANG_FORMAT_BIN="$resolved"
     break
   fi
 done
 
-# Check common paths
-if [ -z "$CLANG_FORMAT" ]; then
-  for path in /opt/homebrew/bin/clang-format /usr/local/bin/clang-format; do
-    if [ -x "$path" ]; then
-      CLANG_FORMAT="$path"
-      break
-    fi
-  done
-fi
-
-if [ -z "$CLANG_FORMAT" ]; then
-  echo "Error: clang-format not found"
-  echo ""
-  echo "Install clang-format:"
-  echo "  macOS:  brew install clang-format"
-  echo "  Ubuntu: sudo apt install clang-format"
-  echo "  Fedora: sudo dnf install clang-tools-extra"
+if [[ -z "$CLANG_FORMAT_BIN" ]]; then
+  echo "Error: clang-format ${EXPECTED_CLANG_FORMAT_VERSION} is required." >&2
+  echo "" >&2
+  echo "Install it with:" >&2
+  echo "  python3 -m pip install --user -r requirements-dev.txt" >&2
+  echo "" >&2
+  echo "Or set CLANG_FORMAT=/path/to/clang-format-${EXPECTED_CLANG_FORMAT_VERSION}." >&2
   exit 1
 fi
 
-# Submodule paths to exclude
-SUBMODULES="components/u8g2"
+FORMAT_ARGS=(-i)
+if [[ "$MODE" == "check" ]]; then
+  FORMAT_ARGS=(--dry-run --Werror)
+fi
 
-EXCLUDE_ARGS=()
-for sm in $SUBMODULES; do
-  EXCLUDE_ARGS+=(-path "$sm" -prune -o)
-done
+find main components -path components/u8g2 -prune -o \( -name "*.c" -o -name "*.h" \) -print0 \
+  | xargs -0 "$CLANG_FORMAT_BIN" "${FORMAT_ARGS[@]}"
 
-find main components "${EXCLUDE_ARGS[@]}" \( -name "*.c" -o -name "*.h" \) -print | xargs "$CLANG_FORMAT" -i
-
-echo "Formatted all source files"
+if [[ "$MODE" == "check" ]]; then
+  echo "All source files are clang-formatted"
+else
+  echo "Formatted all source files"
+fi

@@ -210,3 +210,48 @@ void playback_control_prev(void) {
     break;
   }
 }
+
+void playback_control_toggle_mute(void) {
+  switch (s_source) {
+  case PLAYBACK_SOURCE_AIRPLAY:
+    if (!s_muted) {
+      if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
+        s_pre_mute_db = -15.0f; // default 50 %
+      }
+      dac_set_volume(VOLUME_MIN_DB);
+      s_muted = true;
+      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      ESP_LOGI(TAG, "AirPlay muted locally (was %.1f dB)", s_pre_mute_db);
+    } else {
+      dac_set_volume(s_pre_mute_db);
+      s_muted = false;
+      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+      ESP_LOGI(TAG, "AirPlay unmuted locally (%.1f dB)", s_pre_mute_db);
+    }
+    break;
+#ifdef CONFIG_BT_A2DP_ENABLE
+  case PLAYBACK_SOURCE_BLUETOOTH:
+    // Bluetooth uses AVRCP absolute volume — no dedicated mute. Log.
+    ESP_LOGI(TAG, "Bluetooth: mute toggle not supported (use source device)");
+    break;
+#endif
+  default:
+    ESP_LOGI(TAG, "Toggle mute: no active source (source=%d)", s_source);
+    break;
+  }
+}
+
+bool playback_control_is_muted(void) {
+  return s_muted;
+}
+
+int playback_control_get_volume_percent(void) {
+  if (s_muted) {
+    return 0;
+  }
+  float db;
+  if (settings_get_volume(&db) != ESP_OK) {
+    db = -15.0f;
+  }
+  return (int)(db_to_dacp_percent(clamp_volume(db)) + 0.5f);
+}

@@ -20,6 +20,9 @@
  */
 
 #include "display.h"
+#include "audio_output.h"
+#include "board_common.h"
+#include "playback_control.h"
 #include "rtsp_events.h"
 
 #include "esp_lcd_panel_io.h"
@@ -45,8 +48,8 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-#define DISPLAY_WIDTH      320
-#define DISPLAY_HEIGHT     170
+#define DISPLAY_WIDTH      CONFIG_DISPLAY_ST7789_WIDTH
+#define DISPLAY_HEIGHT     CONFIG_DISPLAY_ST7789_HEIGHT
 #define LCD_HOST           SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
 #define DRAW_BUF_LINES     10
@@ -63,8 +66,11 @@ static const char *TAG = "display_st7789";
 #define Y_TITLE    10
 #define Y_ARTIST   44
 #define Y_ALBUM    69
-#define Y_PROGRESS 114
-#define Y_TIME     132
+// Keep the status controls on-screen for both the original 320x170 ST7789
+// layout and the Waveshare 240x240 panel.
+#define Y_PROGRESS ((DISPLAY_HEIGHT >= 220) ? 148 : 114)
+#define Y_TIME     (Y_PROGRESS + 18)
+#define Y_STATUS   ((DISPLAY_HEIGHT >= 220) ? 188 : (DISPLAY_HEIGHT - 18))
 #define BAR_HEIGHT 12
 
 // ============================================================================
@@ -110,10 +116,13 @@ static lv_image_dsc_t s_bg_dsc;
 static lv_obj_t *s_label_title = NULL;
 static lv_obj_t *s_label_artist = NULL;
 static lv_obj_t *s_label_album = NULL;
+static lv_obj_t *s_label_muted = NULL;
 static lv_obj_t *s_label_status = NULL;
 static lv_obj_t *s_bar_progress = NULL;
 static lv_obj_t *s_label_time_elapsed = NULL;
 static lv_obj_t *s_label_time_remaining = NULL;
+static lv_obj_t *s_label_battery = NULL;
+static lv_obj_t *s_label_volume = NULL;
 
 // ============================================================================
 // Background loading
@@ -214,11 +223,23 @@ static void ui_create(void) {
     lv_obj_align(bg, LV_ALIGN_TOP_LEFT, 0, 0);
   }
 
+  // Muted indicator — top-right corner, red, hidden by default
+  s_label_muted = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_muted, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_muted, lv_color_make(255, 50, 50), 0);
+  lv_obj_align(s_label_muted, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_TITLE);
+  lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(s_label_muted, "MUTED");
+
   // Title — largest font, white, scrolling
+  const lv_font_t *title_font =
+      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_24;
+  const lv_font_t *artist_font =
+      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_16;
   s_label_title = lv_label_create(scr);
   lv_obj_set_width(s_label_title, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_font(s_label_title, title_font, 0);
   lv_obj_set_style_text_color(s_label_title, lv_color_white(), 0);
   lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_TITLE);
   lv_label_set_text(s_label_title, "AirPlay Ready");
@@ -227,7 +248,7 @@ static void ui_create(void) {
   s_label_artist = lv_label_create(scr);
   lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_artist, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(s_label_artist, artist_font, 0);
   lv_obj_set_style_text_color(s_label_artist, lv_color_make(180, 180, 180), 0);
   lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_ARTIST);
   lv_label_set_text(s_label_artist, "");
@@ -277,6 +298,73 @@ static void ui_create(void) {
                               lv_color_make(150, 150, 150), 0);
   lv_obj_align(s_label_time_remaining, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_TIME);
   lv_label_set_text(s_label_time_remaining, "");
+
+  // Volume — status row, bottom-left
+  s_label_volume = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_volume, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_volume, lv_color_make(150, 150, 150), 0);
+  lv_obj_align(s_label_volume, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_STATUS);
+  lv_label_set_text(s_label_volume, "");
+
+  // Battery — status row, bottom-right
+  s_label_battery = lv_label_create(scr);
+  lv_obj_set_style_text_font(s_label_battery, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_label_battery, lv_color_make(150, 150, 150), 0);
+  lv_obj_align(s_label_battery, LV_ALIGN_TOP_RIGHT, X_MARGIN_R, Y_STATUS);
+  lv_label_set_text(s_label_battery, "");
+}
+
+// Update the battery + volume status row. Called from ui_update() with the
+// LVGL port lock already held.
+static void ui_update_status_row(void) {
+  // Volume — show as percentage, with the channel mode (L+R / L / R)
+  const char *chan;
+  switch (audio_output_get_channel_mode()) {
+  case AUDIO_CHANNEL_LEFT:
+    chan = "L";
+    break;
+  case AUDIO_CHANNEL_RIGHT:
+    chan = "R";
+    break;
+  default:
+    chan = "L+R";
+    break;
+  }
+  char vol_str[24];
+  snprintf(vol_str, sizeof(vol_str), LV_SYMBOL_VOLUME_MAX " %d%%  %s",
+           playback_control_get_volume_percent(), chan);
+  lv_label_set_text(s_label_volume, vol_str);
+
+  // Battery — only if the board reports one
+  int pct = 0;
+  bool charging = false;
+  if (board_battery_read(&pct, &charging)) {
+    const char *icon;
+    if (charging) {
+      icon = LV_SYMBOL_USB; // plugged into USB / charging
+    } else if (pct >= 80) {
+      icon = LV_SYMBOL_BATTERY_FULL;
+    } else if (pct >= 60) {
+      icon = LV_SYMBOL_BATTERY_3;
+    } else if (pct >= 40) {
+      icon = LV_SYMBOL_BATTERY_2;
+    } else if (pct >= 20) {
+      icon = LV_SYMBOL_BATTERY_1;
+    } else {
+      icon = LV_SYMBOL_BATTERY_EMPTY;
+    }
+
+    char bat_str[16];
+    snprintf(bat_str, sizeof(bat_str), "%s %d%%", icon, pct);
+    lv_label_set_text(s_label_battery, bat_str);
+
+    // Tint red when low and not charging
+    lv_color_t color = (!charging && pct <= 20) ? lv_color_make(255, 60, 60)
+                                                : lv_color_make(150, 150, 150);
+    lv_obj_set_style_text_color(s_label_battery, color, 0);
+  } else {
+    lv_label_set_text(s_label_battery, "");
+  }
 }
 
 // ============================================================================
@@ -327,6 +415,7 @@ static void ui_update(void) {
     lv_label_set_text(s_label_time_elapsed, "");
     lv_label_set_text(s_label_time_remaining, "");
     lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+    lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
     break;
 
   case DISPLAY_STATE_CONNECTED:
@@ -337,6 +426,7 @@ static void ui_update(void) {
     lv_label_set_text(s_label_time_elapsed, "");
     lv_label_set_text(s_label_time_remaining, "");
     lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
+    lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
     break;
 
   case DISPLAY_STATE_PLAYING:
@@ -346,6 +436,13 @@ static void ui_update(void) {
     lv_label_set_text(s_label_album, album[0] ? album : "");
     lv_label_set_text(s_label_status,
                       state == DISPLAY_STATE_PAUSED ? "|| " : "");
+
+    // Muted indicator
+    if (playback_control_is_muted()) {
+      lv_obj_clear_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_label_muted, LV_OBJ_FLAG_HIDDEN);
+    }
 
     uint32_t pos = position_secs;
     if (state == DISPLAY_STATE_PLAYING && sync_time_us > 0) {
@@ -377,6 +474,8 @@ static void ui_update(void) {
     break;
   }
   }
+
+  ui_update_status_row();
 
   lvgl_port_unlock();
 }
@@ -495,6 +594,18 @@ static void display_task(void *pvParameters) {
         (now - last_progress_update) >= pdMS_TO_TICKS(1000)) {
       last_progress_update = now;
       ui_update();
+    }
+
+    // Refresh battery + volume + channel mode periodically even when idle.
+    // These are not tied to RTSP events; poll at 1s so an interactive change
+    // (volume, double-click channel toggle) shows up promptly.
+    static TickType_t last_status_update = 0;
+    if (!need_update && (now - last_status_update) >= pdMS_TO_TICKS(1000)) {
+      last_status_update = now;
+      if (lvgl_port_lock(100)) {
+        ui_update_status_row();
+        lvgl_port_unlock();
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(30));
@@ -621,7 +732,8 @@ void display_init(void *bus) {
   // the ST7789 MADCTL register during display registration.
   ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
   ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-  ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
+  ESP_ERROR_CHECK(esp_lcd_panel_set_gap(
+      panel_handle, CONFIG_DISPLAY_ST7789_GAP_X, CONFIG_DISPLAY_ST7789_GAP_Y));
 
   // Acquire the LVGL port mutex before touching LVGL widgets. The port task
   // is already running at this point, so we must wait on the lock rather

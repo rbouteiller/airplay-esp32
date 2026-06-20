@@ -142,6 +142,18 @@ esp_err_t settings_get_device_name(char *name, size_t len);
  */
 esp_err_t settings_set_device_name(const char *name);
 
+/** Get saved LED brightness (0-255). */
+esp_err_t settings_get_led_brightness(uint8_t *brightness);
+
+/** Save LED brightness (0-255) to persistent storage. */
+esp_err_t settings_set_led_brightness(uint8_t brightness);
+
+/** Return whether text, artwork, and progress metadata are enabled. */
+bool settings_airplay_metadata_enabled(void);
+
+/** Persist whether AirPlay text, artwork, and progress metadata are enabled. */
+esp_err_t settings_set_airplay_metadata_enabled(bool enabled);
+
 /**
  * Fill a GPIO config struct with compile-time defaults.
  */

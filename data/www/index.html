@@ -295,6 +295,107 @@ body::after{
   gap:14px;
 }
 
+.runtime-control{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin-top:16px;
+  padding:15px;
+  border-radius:18px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,0.035);
+}
+
+.runtime-copy strong{
+  display:block;
+  font-size:13px;
+}
+
+.runtime-copy span{
+  display:block;
+  margin-top:5px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+
+.switch{
+  position:relative;
+  flex:0 0 auto;
+  width:54px;
+  height:30px;
+  cursor:pointer;
+}
+
+.switch input{
+  position:absolute;
+  width:1px;
+  height:1px;
+  opacity:0;
+}
+
+.switch-track{
+  position:absolute;
+  inset:0;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:rgba(151,168,212,0.18);
+  transition:background .2s ease,border-color .2s ease,box-shadow .2s ease;
+}
+
+.switch-track::after{
+  content:"";
+  position:absolute;
+  top:3px;
+  left:3px;
+  width:22px;
+  height:22px;
+  border-radius:50%;
+  background:var(--text);
+  transition:transform .2s ease,background .2s ease;
+}
+
+.switch input:checked + .switch-track{
+  border-color:var(--line-strong);
+  background:linear-gradient(135deg,var(--accent),#9dd0ff);
+  box-shadow:0 0 20px rgba(122,246,255,0.18);
+}
+
+.switch input:checked + .switch-track::after{
+  transform:translateX(24px);
+  background:#04101f;
+}
+
+.switch input:focus-visible + .switch-track{
+  outline:2px solid var(--accent);
+  outline-offset:3px;
+}
+
+.brightness-control{
+  display:grid;
+  gap:12px;
+}
+
+.brightness-row{
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+
+.brightness-slider{
+  flex:1;
+  accent-color:var(--accent);
+}
+
+.brightness-value{
+  min-width:42px;
+  color:var(--accent);
+  font-size:13px;
+  font-weight:700;
+  text-align:right;
+}
+
 .device-hints{
   margin-top:16px;
   display:grid;
@@ -968,6 +1069,10 @@ a.btn:hover{transform:translateY(-1px)}
   .eq-preset-row,.eq-preset-row select{width:100%}
   .eq-editor{padding:12px;overflow-x:auto}
   .eq-sliders{min-width:720px}
+  .runtime-control{align-items:stretch;flex-direction:column}
+  .runtime-control .switch{align-self:flex-end}
+  .brightness-row{display:grid;grid-template-columns:minmax(0,1fr) auto}
+  .brightness-row .btn{grid-column:1/-1}
 }
 </style>
 </head>
@@ -1026,6 +1131,29 @@ a.btn:hover{transform:translateY(-1px)}
         <button class="btn btn-primary" onclick="saveName()">保存设备名称</button>
       </div>
       <div id="name-msg"></div>
+      <div class="runtime-control brightness-control">
+        <div class="runtime-copy">
+          <strong>LED 亮度</strong>
+          <span>调整状态灯、错误灯和 RGB 灯的整体亮度。</span>
+        </div>
+        <div class="brightness-row">
+          <input class="brightness-slider" type="range" id="led-brightness" min="0" max="255" value="128" oninput="updateBrightnessLabel(this.value)">
+          <span class="brightness-value" id="led-brightness-value">50%</span>
+          <button class="btn btn-secondary" onclick="saveBrightness()">保存</button>
+        </div>
+      </div>
+      <div id="brightness-msg"></div>
+      <div class="runtime-control">
+        <div class="runtime-copy">
+          <strong>音频元数据</strong>
+          <span>开启后可接收歌曲名称、封面图片和播放进度；关闭后不处理这些信息。</span>
+        </div>
+        <label class="switch" for="airplay-metadata-enabled">
+          <input type="checkbox" id="airplay-metadata-enabled" aria-label="音频元数据" disabled onchange="applyAirPlayMetadataChange(this)">
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <div id="metadata-msg"></div>
     </article>
   </section>
 
@@ -1582,6 +1710,100 @@ async function saveName() {
   }
 }
 
+function updateBrightnessLabel(value) {
+  document.getElementById('led-brightness-value').textContent =
+    Math.round(Number(value) / 255 * 100) + '%';
+}
+
+async function loadBrightness() {
+  try {
+    var resp = await fetch('/api/led/brightness');
+    var data = await resp.json();
+    if (data.success) {
+      var slider = document.getElementById('led-brightness');
+      slider.value = data.brightness;
+      updateBrightnessLabel(data.brightness);
+    }
+  } catch (e) {
+    if (location.protocol !== 'file:') {
+      msg('brightness-msg', '读取 LED 亮度失败', 'err');
+    }
+  }
+}
+
+async function saveBrightness() {
+  var brightness = Number.parseInt(
+    document.getElementById('led-brightness').value, 10);
+  try {
+    var resp = await fetch('/api/led/brightness', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({brightness: brightness})
+    });
+    var data = await resp.json();
+    if (data.success) {
+      msg('brightness-msg', 'LED 亮度已保存并实时生效。', 'ok');
+    } else {
+      msg('brightness-msg', data.error || '保存 LED 亮度失败', 'err');
+    }
+  } catch (e) {
+    msg('brightness-msg', '保存 LED 亮度失败', 'err');
+  }
+}
+
+async function loadAirPlayMetadataConfig() {
+  var input = document.getElementById('airplay-metadata-enabled');
+  try {
+    var resp = await fetch('/api/airplay/metadata');
+    var data = await resp.json();
+    if (data.success) {
+      input.checked = !!data.enabled;
+      input.dataset.savedState = data.enabled ? 'true' : 'false';
+      input.disabled = false;
+    } else {
+      msg('metadata-msg', data.error || '读取音频元数据设置失败', 'err');
+    }
+  } catch (e) {
+    if (location.protocol !== 'file:') {
+      msg('metadata-msg', '读取音频元数据设置失败', 'err');
+    }
+  }
+}
+
+async function applyAirPlayMetadataChange(input) {
+  var savedState = input.dataset.savedState;
+  if (savedState !== 'true' && savedState !== 'false') {
+    input.checked = false;
+    return;
+  }
+
+  var previous = savedState === 'true';
+  var requested = input.checked;
+  input.disabled = true;
+
+  try {
+    var resp = await fetch('/api/airplay/metadata', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: requested})
+    });
+    var data = await resp.json();
+    if (data.success) {
+      input.dataset.savedState = requested ? 'true' : 'false';
+      input.disabled = false;
+      msg('metadata-msg', '音频元数据设置已保存并实时生效。', 'ok');
+    } else {
+      input.checked = previous;
+      input.disabled = false;
+      msg('metadata-msg', data.error || '保存音频元数据设置失败', 'err');
+    }
+  } catch (e) {
+    input.checked = previous;
+    input.disabled = false;
+    msg('metadata-msg', '保存音频元数据设置失败', 'err');
+  }
+}
+
 function isUploadBusy() {
   return !!otaRequest || !!storageRequest || combinedUploadActive;
 }
@@ -2121,6 +2343,8 @@ window.onload = function() {
   };
 
   loadInfo();
+  loadBrightness();
+  loadAirPlayMetadataConfig();
   loadGPIOConfig();
   refreshOTAControls();
   setInterval(loadInfo, 30000);

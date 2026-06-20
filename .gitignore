@@ -4,6 +4,7 @@
 .venv/
 .vscode/
 build*
+!.github/workflows/build.yml
 managed_components/
 sdkconfig
 sdkconfig.*

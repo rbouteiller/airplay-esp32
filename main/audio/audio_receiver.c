@@ -30,6 +30,14 @@ static void audio_receiver_reset_stats(void) {
   memset(&receiver.stats, 0, sizeof(receiver.stats));
 }
 
+static void audio_receiver_reset_resend_state(void) {
+  receiver.rtp_sequence_valid = false;
+  receiver.resend_window_first = 0;
+  receiver.resend_missing_mask = 0;
+  receiver.resend_last_request_time_us = 0;
+  receiver.last_resend_error_time_us = 0;
+}
+
 static void audio_receiver_reset_blocks(void) {
   receiver.blocks_read = 0;
   receiver.blocks_read_in_sequence = 0;
@@ -261,11 +269,13 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
     } else {
       int64_t elapsed_us = esp_timer_get_time() -
                            (receiver.timing.anchor_local_time_ns / 1000LL);
-      if (elapsed_us < 0)
+      if (elapsed_us < 0) {
         elapsed_us = 0;
+      }
       // Cap elapsed to prevent int64 overflow on very long pauses.
-      if (elapsed_us > 600000000LL)
+      if (elapsed_us > 600000000LL) {
         elapsed_us = 600000000LL;
+      }
       int32_t elapsed_samples =
           (int32_t)((elapsed_us * (int64_t)sample_rate) / 1000000LL);
       reference_rtp =
@@ -364,14 +374,17 @@ void audio_receiver_set_playing(bool playing) {
     // pre-buffered frames end up far ahead of the unwanted new anchor.
     if (receiver.timing.anchor_valid && receiver.stream) {
       int sample_rate = receiver.stream->format.sample_rate;
-      if (sample_rate <= 0)
+      if (sample_rate <= 0) {
         sample_rate = 44100;
+      }
       int64_t elapsed_us = esp_timer_get_time() -
                            (receiver.timing.anchor_local_time_ns / 1000LL);
-      if (elapsed_us < 0)
+      if (elapsed_us < 0) {
         elapsed_us = 0;
-      if (elapsed_us > 600000000LL)
+      }
+      if (elapsed_us > 600000000LL) {
         elapsed_us = 600000000LL;
+      }
       int32_t elapsed_samples =
           (int32_t)((elapsed_us * (int64_t)sample_rate) / 1000000LL);
       receiver.paused_rtp =
@@ -438,6 +451,7 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
+  audio_receiver_reset_resend_state();
 
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
@@ -462,6 +476,7 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
+  audio_receiver_reset_resend_state();
 
   receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
@@ -494,6 +509,7 @@ void audio_receiver_set_client_control(uint32_t client_ip,
                                        uint16_t client_control_port) {
   if (client_ip == 0 || client_control_port == 0) {
     receiver.retransmit_enabled = false;
+    audio_receiver_reset_resend_state();
     return;
   }
   memset(&receiver.client_control_addr, 0,
@@ -502,7 +518,7 @@ void audio_receiver_set_client_control(uint32_t client_ip,
   receiver.client_control_addr.sin_addr.s_addr = client_ip;
   receiver.client_control_addr.sin_port = htons(client_control_port);
   receiver.retransmit_enabled = true;
-  receiver.last_resend_error_time_us = 0;
+  audio_receiver_reset_resend_state();
   ESP_LOGI(TAG, "NACK retransmission enabled, client control port %u",
            client_control_port);
 }
@@ -533,6 +549,7 @@ void audio_receiver_stop(void) {
   receiver.retransmit_enabled = false;
   memset(&receiver.client_control_addr, 0,
          sizeof(receiver.client_control_addr));
+  audio_receiver_reset_resend_state();
 
   audio_receiver_flush();
 }
@@ -572,6 +589,7 @@ void audio_receiver_flush(void) {
   // next track's frames.
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
+  audio_receiver_reset_resend_state();
 
   receiver.discard_before_rtp_valid = false;
   receiver.discard_above_rtp_valid = false;

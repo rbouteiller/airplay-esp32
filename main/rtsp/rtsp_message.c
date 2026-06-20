@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 
 #include "esp_log.h"
@@ -63,7 +64,9 @@ void rtsp_parse_transport(const char *request, uint16_t *control_port,
     *timing_port = 0;
   }
 
-  const char *transport = strstr(request, "Transport:");
+  // RTSP header names and Transport-header parameter names are
+  // case-insensitive (RFC 2326), so match accordingly.
+  const char *transport = strcasestr(request, "Transport:");
   if (!transport) {
     return;
   }
@@ -75,13 +78,13 @@ void rtsp_parse_transport(const char *request, uint16_t *control_port,
   }
 
   // Parse control_port
-  const char *cp = strstr(transport, "control_port=");
+  const char *cp = strcasestr(transport, "control_port=");
   if (cp && cp < line_end && control_port) {
     *control_port = (uint16_t)strtoul(cp + 13, NULL, 10);
   }
 
   // Parse timing_port
-  const char *tp = strstr(transport, "timing_port=");
+  const char *tp = strcasestr(transport, "timing_port=");
   if (tp && tp < line_end && timing_port) {
     *timing_port = (uint16_t)strtoul(tp + 12, NULL, 10);
   }
@@ -100,8 +103,24 @@ int rtsp_request_parse(const uint8_t *data, size_t len, rtsp_request_t *req) {
     return -1;
   }
 
-  // Parse first line: METHOD PATH PROTOCOL
-  if (sscanf((const char *)data, "%31s %255s", req->method, req->path) < 1) {
+  // Parse first line: METHOD PATH PROTOCOL.  The socket buffer is not
+  // guaranteed to be NUL-terminated, so copy only the request line.
+  const uint8_t *line_end = memchr(data, '\n', (size_t)(header_end - data));
+  if (!line_end) {
+    return -1;
+  }
+  size_t line_len = (size_t)(line_end - data);
+  if (line_len > 0 && data[line_len - 1] == '\r') {
+    line_len--;
+  }
+  char first_line[320];
+  if (line_len >= sizeof(first_line)) {
+    return -1;
+  }
+  memcpy(first_line, data, line_len);
+  first_line[line_len] = '\0';
+  if (sscanf(first_line, "%31s %255s %15s", req->method, req->path,
+             req->protocol) < 2) {
     return -1;
   }
 

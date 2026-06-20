@@ -519,6 +519,123 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t airplay_metadata_get_handler(httpd_req_t *req) {
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddBoolToObject(response, "success", true);
+  cJSON_AddBoolToObject(response, "enabled",
+                        settings_airplay_metadata_enabled());
+
+  char *json_str = cJSON_PrintUnformatted(response);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t err = httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  return err;
+}
+
+static esp_err_t airplay_metadata_post_handler(httpd_req_t *req) {
+  char content[JSON_BODY_MAX];
+  cJSON *response = cJSON_CreateObject();
+
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_set_status(req, HTTPD_400);
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error", "Invalid request body");
+  } else {
+    cJSON *json = cJSON_Parse(content);
+    cJSON *enabled = json ? cJSON_GetObjectItem(json, "enabled") : NULL;
+
+    if (!json) {
+      httpd_resp_set_status(req, HTTPD_400);
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error", "Invalid JSON");
+    } else if (!cJSON_IsBool(enabled)) {
+      httpd_resp_set_status(req, HTTPD_400);
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error",
+                              "enabled must be a boolean");
+    } else {
+      bool requested = cJSON_IsTrue(enabled);
+      esp_err_t err = settings_set_airplay_metadata_enabled(requested);
+      if (err == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddBoolToObject(response, "enabled", requested);
+        cJSON_AddBoolToObject(response, "restarting", false);
+      } else {
+        httpd_resp_set_status(req, HTTPD_500);
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+      }
+    }
+    cJSON_Delete(json);
+  }
+
+  char *json_str = cJSON_PrintUnformatted(response);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t send_err =
+      httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  return send_err;
+}
+
+static esp_err_t led_brightness_get_handler(httpd_req_t *req) {
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddNumberToObject(response, "brightness", led_get_brightness());
+  cJSON_AddBoolToObject(response, "success", true);
+
+  char *json_str = cJSON_PrintUnformatted(response);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t err = httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  return err;
+}
+
+static esp_err_t led_brightness_post_handler(httpd_req_t *req) {
+  char content[JSON_BODY_MAX];
+  if (read_request_body(req, content, sizeof(content)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *value = cJSON_GetObjectItem(json, "brightness");
+  if (cJSON_IsNumber(value)) {
+    int brightness = (int)value->valuedouble;
+    if (brightness < 0) {
+      brightness = 0;
+    } else if (brightness > 255) {
+      brightness = 255;
+    }
+
+    esp_err_t err = led_set_brightness((uint8_t)brightness);
+    cJSON_AddBoolToObject(response, "success", err == ESP_OK);
+    if (err != ESP_OK) {
+      cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+    }
+  } else {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error",
+                            "Expected {\"brightness\": 0-255}");
+  }
+
+  char *json_str = cJSON_PrintUnformatted(response);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t send_err =
+      httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
+  return send_err;
+}
+
 static esp_err_t gpio_config_get_handler(httpd_req_t *req) {
   settings_gpio_config_t current;
   settings_gpio_config_t defaults;
@@ -1183,7 +1300,7 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
-  config.max_uri_handlers = 36;   // Room for captive portal + EQ + log stream
+  config.max_uri_handlers = 40;   // Room for captive portal + runtime controls
   config.max_resp_headers = 8;
   config.stack_size = 12288;
 
@@ -1250,6 +1367,30 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
   httpd_register_uri_handler(s_server, &device_name_uri);
+
+  httpd_uri_t airplay_metadata_get_uri = {
+      .uri = "/api/airplay/metadata",
+      .method = HTTP_GET,
+      .handler = airplay_metadata_get_handler};
+  httpd_register_uri_handler(s_server, &airplay_metadata_get_uri);
+
+  httpd_uri_t airplay_metadata_post_uri = {
+      .uri = "/api/airplay/metadata",
+      .method = HTTP_POST,
+      .handler = airplay_metadata_post_handler};
+  httpd_register_uri_handler(s_server, &airplay_metadata_post_uri);
+
+  httpd_uri_t led_brightness_get_uri = {
+      .uri = "/api/led/brightness",
+      .method = HTTP_GET,
+      .handler = led_brightness_get_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_get_uri);
+
+  httpd_uri_t led_brightness_post_uri = {
+      .uri = "/api/led/brightness",
+      .method = HTTP_POST,
+      .handler = led_brightness_post_handler};
+  httpd_register_uri_handler(s_server, &led_brightness_post_uri);
 
   httpd_uri_t gpio_config_get_uri = {.uri = "/api/gpio/config",
                                      .method = HTTP_GET,

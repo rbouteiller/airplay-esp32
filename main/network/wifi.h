@@ -53,3 +53,10 @@ esp_err_t wifi_enable_ap_mode(void);
  * Disconnect and stop WiFi
  */
 void wifi_stop(void);
+
+/**
+ * Set the DHCP hostname from the given device name.
+ * Sanitizes to a valid DNS label (lowercase, hyphens for spaces/symbols).
+ * Takes effect on the next DHCP transaction.
+ */
+void wifi_set_hostname(const char *device_name);

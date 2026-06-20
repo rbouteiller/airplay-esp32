@@ -19,6 +19,8 @@ static const char *TAG = "settings";
 #define NVS_KEY_WIFI_PASSWORD "wifi_pass"
 #define NVS_KEY_DEVICE_NAME   "device_name"
 #define NVS_KEY_EQ_GAINS      "eq_gains"
+#define NVS_KEY_LED_BRIGHTNESS  "led_bright"
+#define NVS_KEY_METADATA_ENABLED "metadata_en"
 #define NVS_KEY_GPIO_CFG      "gpio_cfg"
 #define NVS_KEY_POWER_CYCLES  "pc_cycles"
 #define NVS_KEY_POWER_PENDING "pc_pending"
@@ -42,6 +44,7 @@ static float g_eq_gains[SETTINGS_EQ_BANDS];
 static bool g_eq_loaded = false;
 static settings_gpio_config_t g_gpio_config;
 static bool g_gpio_loaded = false;
+static bool g_airplay_metadata_enabled = true;
 
 typedef struct {
   uint8_t completed_cycles;
@@ -225,6 +228,18 @@ esp_err_t settings_init(void) {
     if (err == ESP_OK && eq_size == sizeof(g_eq_gains)) {
       g_eq_loaded = true;
       ESP_LOGI(TAG, "Loaded EQ gains (%d bands)", SETTINGS_EQ_BANDS);
+    }
+
+    uint8_t metadata_enabled = 1;
+    err = nvs_get_u8(nvs, NVS_KEY_METADATA_ENABLED, &metadata_enabled);
+    if (err == ESP_OK) {
+      g_airplay_metadata_enabled = metadata_enabled != 0;
+      ESP_LOGI(TAG, "Loaded AirPlay metadata setting: %s",
+               g_airplay_metadata_enabled ? "enabled" : "disabled");
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+      ESP_LOGW(TAG,
+               "Failed to load AirPlay metadata setting: %s; using enabled",
+               esp_err_to_name(err));
     }
 
     size_t gpio_size = sizeof(g_gpio_config);
@@ -655,6 +670,75 @@ esp_err_t settings_set_device_name(const char *name) {
     ESP_LOGE(TAG, "Failed to save device name: %s", esp_err_to_name(err));
   }
 
+  return err;
+}
+
+esp_err_t settings_get_led_brightness(uint8_t *brightness) {
+  if (!brightness) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  err = nvs_get_u8(nvs, NVS_KEY_LED_BRIGHTNESS, brightness);
+  nvs_close(nvs);
+  return err;
+}
+
+esp_err_t settings_set_led_brightness(uint8_t brightness) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_LED_BRIGHTNESS, brightness);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved LED brightness: %u", brightness);
+  }
+  return err;
+}
+
+bool settings_airplay_metadata_enabled(void) {
+  return g_airplay_metadata_enabled;
+}
+
+esp_err_t settings_set_airplay_metadata_enabled(bool enabled) {
+  if (enabled == g_airplay_metadata_enabled) {
+    return ESP_OK;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS for AirPlay metadata setting: %s",
+             esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_METADATA_ENABLED, enabled ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    g_airplay_metadata_enabled = enabled;
+    ESP_LOGI(TAG, "Saved AirPlay metadata setting: %s",
+             enabled ? "enabled" : "disabled");
+  } else {
+    ESP_LOGE(TAG, "Failed to save AirPlay metadata setting: %s",
+             esp_err_to_name(err));
+  }
   return err;
 }
 

@@ -1,0 +1,12 @@
+if DAC_ES8311
+
+    config ES8311_MAX_VOLUME
+        int "Maximum DAC volume (dB)"
+        range -60 0
+        default -60
+        help
+            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
+            The ES8311 register range is 0 dB to -95.5 dB.
+            A value of -60 means AirPlay full volume maps to -60 dB on the DAC.
+
+endif # DAC_ES8311

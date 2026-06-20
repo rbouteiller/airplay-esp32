@@ -25,15 +25,13 @@ static const char *TAG = "mdns_airplay";
 // Flags: 0x4 = audio receiver
 #define AIRPLAY_FLAGS "0x4"
 
-// Metadata types advertised in the "md" txt record:
-//   0 = artwork (cover art images), 1 = progress, 2 = text (track info).
-// When artwork is disabled, drop "0" so senders do not transmit cover art,
-// which can stall the audio pipeline and cause drop-outs on realtime streams.
-#ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
+// Metadata types advertised in the "md" TXT record:
+//   0 = text (track info)
+//   1 = artwork (cover art images)
+//   2 = progress
+// The runtime setting controls whether received metadata is processed. Keep
+// all types advertised so toggling the setting takes effect without restarting.
 #define AIRPLAY_METADATA_TYPES "0,1,2"
-#else
-#define AIRPLAY_METADATA_TYPES "1,2"
-#endif
 
 // Model identifier - AudioAccessory for speaker appearance
 // AppleTV3,2 = Apple TV, AudioAccessory1,1 = HomePod (speaker)
@@ -126,11 +124,16 @@ void mdns_airplay_init(void) {
       {"txtvers", "1"},               // TXT record version
   };
 #else
+  // Dual-mode: include et=1 (RSA) so RAOP-only clients (TuneBlade, AirMusic,
+  // shairtunes2, etc.) accept the advertisement, while keeping et=3,5 for
+  // AirPlay 2 FairPlay/MFi-SAP. ek=1 advertises that an RSA-encrypted key
+  // can be supplied via SDP rsaaeskey: at ANNOUNCE time.
   mdns_txt_item_t raop_txt[] = {
       {"am", AIRPLAY_MODEL},
       {"cn", "0,1,2,3"},              // Audio codecs: PCM, ALAC, AAC, AAC-ELD
       {"da", "true"},                 // Digest auth
-      {"et", "0,3,5"},                // Encryption types
+      {"ek", "1"},                    // Encryption key available (RSA)
+      {"et", "0,1,3,5"},              // Encryption types
       {"ft", features_str},           // Features (same as airplay)
       {"md", AIRPLAY_METADATA_TYPES}, // Metadata types
       {"pk", pk_str},                 // Public key

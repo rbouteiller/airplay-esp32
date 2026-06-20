@@ -132,12 +132,17 @@ pip install platformio
 git clone --recursive https://github.com/rbouteiller/airplay-esp32
 cd airplay-esp32
 
-# 3. Plug in your ESP32 via USB-C and flash
+# 3. Plug in your ESP32 via USB-C and flash the firmware
 pio run -e esp32s3 -t upload
 
-# 4. (Optional) Watch serial output for debugging
+# 4. Flash the SPIFFS image with the web UI and data files
+pio run -e esp32s3 -t uploadfs
+
+# 5. (Optional) Watch serial output for debugging
 pio run -e esp32s3 -t monitor
 ```
+> **Note:** PlatformIO does not flash the [SPIFFS Filesystem](#spiffs-filesystem) as part of `-t upload`; run `pio run -e esp32s3 -t uploadfs` after flashing firmware so the web UI and data files are present [[details](#flashing-the-spiffs-image)].
+
 
 ### Option C — ESP-IDF
 
@@ -663,25 +668,14 @@ A 320×170 colour TFT display can be connected to show track metadata with a pro
 
 ## AirPlay Tuning (Optional)
 
-Advanced timing and metadata options under **AirPlay Receiver → AirPlay Protocol** in `menuconfig`. The defaults are sensible for most setups — only change these if you hear drop-outs or want to control what metadata is received.
+Advanced timing options are available under **AirPlay Receiver → AirPlay Protocol** in `menuconfig`. Runtime metadata reception is controlled from the main web configuration page.
 
 ### Cover Art / Artwork
 
-Album cover art is **disabled by default**. Most receivers have no screen (or only a small OLED), and receiving artwork images over the RTSP connection can stall the audio pipeline and cause drop-outs — especially on unbuffered AirPlay 1 / realtime streams. When disabled, the receiver removes the artwork type (`0`) from its advertised `md` txt record so senders don't transmit cover art, and ignores any artwork sent anyway. Track title, artist, album and progress metadata are always received.
-
-To enable cover art (e.g. if you have a TFT display):
-
-```bash
-idf.py menuconfig
-# Navigate to: AirPlay Receiver → AirPlay Protocol
-# Enable "Enable cover-art / artwork reception"
-```
-
-Or add to your sdkconfig defaults:
-
-```
-CONFIG_ENABLE_AIRPLAY_ARTWORK=y
-```
+The receiver advertises all AirPlay metadata types using the protocol mapping
+`0 = text`, `1 = artwork`, and `2 = progress`. The **Audio Metadata** switch on
+the main web page enables or disables processing and logging all three types at
+runtime. The setting is enabled by default and persisted in NVS.
 
 ### Early/Late Timing Thresholds
 

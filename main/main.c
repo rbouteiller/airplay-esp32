@@ -1,6 +1,5 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
-#include "audio_stream.h"
 #include "buttons.h"
 #include "spiram_task.h"
 #include "display.h"
@@ -250,10 +249,9 @@ void app_main(void) {
   display_init(iot_board_get_handle(BOARD_I2C_DISP_ID));
 #endif
 
-  // Pre-allocate audio task stacks while internal heap is still unfragmented.
-  // WiFi/TCP/TLS allocations fragment the heap, making large contiguous
-  // allocations unreliable later.
-  ESP_ERROR_CHECK(audio_realtime_preallocate());
+  // Initialize LVGL-dependent board resources (e.g., touch input) after
+  // display/LVGL port is ready.
+  iot_board_init_lvgl_resources();
 
   // Try ethernet first
   bool eth_available = false;

@@ -1,0 +1,99 @@
+# =============================================================================
+# ESP32-S2 TARGET AND FLASH LAYOUT
+# =============================================================================
+# Default to ESP32-S2 Generic board profile.
+CONFIG_BOARD_ESP32S2_GENERIC=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# Use smaller partition table for 4MB flash
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions-4m.csv"
+
+# =============================================================================
+# ESP32-S2 MEMORY OPTIMIZATIONS
+# =============================================================================
+# ESP32-S2 has ~320KB DRAM (vs 520KB on ESP32) - memory optimization is critical
+# Binary Size: ~1.3 MB, Free: ~32% of app partition (plenty of room for updates)
+
+# Cache Configuration: Balance between memory and performance
+# Default: 8KB I-cache + 8KB D-cache leaves ~304KB for app/heap
+# For maximum memory: change D-cache to 0KB (if using SPIRAM) or reduce I-cache
+# For maximum performance: change both to 16KB (costs ~16KB more DRAM)
+CONFIG_ESP32S2_INSTRUCTION_CACHE_8KB=y
+CONFIG_ESP32S2_DATA_CACHE_8KB=y
+
+# =============================================================================
+# WIFI/LWIP TUNING FOR ESP32-S2
+# =============================================================================
+# WiFi buffer optimization
+# RX BA window must be ≤ 2 × STATIC_RX_BUFFER_NUM
+CONFIG_ESP_WIFI_RX_BA_WIN=12
+CONFIG_LWIP_TCP_WND_DEFAULT=34816
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=18432
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+
+# lwIP stack size optimization
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+
+# =============================================================================
+# FREERTOS AND SYSTEM HEAP TUNING
+# =============================================================================
+# FreeRTOS single-core optimizations
+CONFIG_FREERTOS_UNICORE=y
+CONFIG_FREERTOS_OPTIMIZED_SCHEDULER=y
+
+# Reduce idle task stack from default 1536 to save DRAM
+# Default is 1536 bytes (too much for single-core), 1024 is sufficient
+# Can reduce further to 768 if needed, but watch for stack overflow warnings
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=1024
+
+# Use RTC Fast Memory as heap (adds ~8KB to available heap)
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y
+
+# Increase main task stack if needed (audio/network operations)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=3072
+
+# =============================================================================
+# CONSOLE/USB
+# =============================================================================
+# USB settings
+CONFIG_ESP_CONSOLE_USB_CDC=y
+
+# ESP32-S2 is single-core and has less DRAM than ESP32/S3
+# Use SPIRAM if available on the board
+# CONFIG_SPIRAM=y
+
+# =============================================================================
+# USB Audio Class defaults for the current usb_device_uac integration.
+# Keep both streams stereo at 48 kHz so the UAC descriptors, feedback,
+# and AirPlay USB backend all use the same resampled output rate.
+CONFIG_UAC_SPEAKER_CHANNEL_NUM=2
+CONFIG_UAC_MIC_CHANNEL_NUM=2
+CONFIG_UAC_SAMPLE_RATE=48000
+
+# =============================================================================
+# LED Behavior Configuration
+CONFIG_LED_STATUS_PLAYING_VU=y
+CONFIG_LED_STATUS_PAUSED_BLINK_SLOW=y
+CONFIG_LED_STATUS_STANDBY_OFF=y
+
+# LED inversion (active-low logic)
+CONFIG_LED_STATUS_INVERT=n
+CONFIG_LED_ERROR_INVERT=n
+
+# =============================================================================
+# GPIO defaults (adjust for your board - ESP32-S2 has 47 GPIO pins)
+CONFIG_LED_STATUS_GPIO=15
+CONFIG_I2S_SCK_IO=35
+CONFIG_I2S_BCK_IO=33
+CONFIG_I2S_WS_IO=16
+CONFIG_I2S_DO_IO=18
+
+# ST7789 TFT display support is not enabled by default.
+# The display is optional hardware — enabling it configures specific SPI
+# GPIO pins which may conflict with other peripherals on your board.
+# To enable, add the following to your own sdkconfig.defaults.esp32s2
+# or run: idf.py menuconfig -> Display Configuration

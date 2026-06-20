@@ -18,9 +18,6 @@
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
 #define AUDIO_BUFFERED_STACK_SIZE  4096
 
-static StaticTask_t s_buffered_tcb;
-static StackType_t *s_buffered_stack;
-
 static const char *TAG = "audio_buf";
 
 // Read exact number of bytes, but keep waiting on timeout if paused
@@ -170,11 +167,26 @@ static void buffered_audio_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+static bool buffered_wait_for_task_stopped(audio_receiver_state_t *state,
+                                           int timeout_ticks) {
+  while (state->buffered_task_handle && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return state->buffered_task_handle == NULL;
+}
+
 static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   audio_receiver_state_t *state = audio_stream_state(stream);
   if (stream->running) {
     ESP_LOGI(TAG, "Buffered audio already running, continuing");
     return ESP_OK;
+  }
+  if (state->buffered_task_handle) {
+    ESP_LOGW(TAG, "Buffered audio task still stopping, waiting");
+    if (!buffered_wait_for_task_stopped(state, 20)) {
+      ESP_LOGW(TAG, "Buffered audio task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
 
   uint16_t bound_port = port;
@@ -187,30 +199,11 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
 
   stream->running = true;
 
-  // Allocate stack from SPIRAM on first use — the buffered task only does
-  // socket I/O and decryption, no SPI flash access, so SPIRAM is safe.
-  // This avoids competing with BT/WiFi/display for scarce internal DRAM.
-  if (!s_buffered_stack) {
-    s_buffered_stack = heap_caps_malloc(AUDIO_BUFFERED_STACK_SIZE,
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_buffered_stack) {
-      // Fallback to any available memory
-      s_buffered_stack = malloc(AUDIO_BUFFERED_STACK_SIZE);
-    }
-    if (!s_buffered_stack) {
-      ESP_LOGE(TAG, "Failed to allocate buffered audio stack");
-      close(state->buffered_listen_socket);
-      state->buffered_listen_socket = -1;
-      stream->running = false;
-      return ESP_ERR_NO_MEM;
-    }
-  }
-
-  state->buffered_task_handle =
-      xTaskCreateStatic(buffered_audio_task, "buff_audio",
-                        AUDIO_BUFFERED_STACK_SIZE / sizeof(StackType_t), stream,
-                        5, s_buffered_stack, &s_buffered_tcb);
-  if (!state->buffered_task_handle) {
+  state->buffered_task_handle = NULL;
+  BaseType_t task_ret =
+      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
+                  stream, 5, &state->buffered_task_handle);
+  if (task_ret != pdPASS || !state->buffered_task_handle) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
     state->buffered_listen_socket = -1;
@@ -223,7 +216,7 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
 
 static void buffered_stop(audio_stream_t *stream) {
   audio_receiver_state_t *state = audio_stream_state(stream);
-  if (!stream->running) {
+  if (!stream->running && !state->buffered_task_handle) {
     return;
   }
 
@@ -239,11 +232,10 @@ static void buffered_stop(audio_stream_t *stream) {
     state->buffered_listen_socket = -1;
   }
 
-  if (state->buffered_task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(300));
-    state->buffered_task_handle = NULL;
+  if (!buffered_wait_for_task_stopped(state, 20)) {
+    ESP_LOGW(TAG, "Buffered audio task did not exit within timeout");
+    return;
   }
-  task_free_spiram(&state->buffered_task_mem);
 
   if (state->buffered_recv_buffer) {
     heap_caps_free(state->buffered_recv_buffer);
@@ -268,6 +260,11 @@ static void buffered_destroy(audio_stream_t *stream) {
   }
 
   buffered_stop(stream);
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  if (state->buffered_task_handle) {
+    ESP_LOGW(TAG, "Leaking buffered stream because task shutdown timed out");
+    return;
+  }
   free(stream);
 }
 

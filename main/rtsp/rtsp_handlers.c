@@ -85,8 +85,6 @@ static int event_client_socket = -1;
 static int event_listen_socket = -1;
 static TaskHandle_t event_task_handle = NULL;
 static volatile bool event_task_should_stop = false;
-static StaticTask_t s_event_tcb;
-static StackType_t s_event_stack[EVENT_STACK_SIZE / sizeof(StackType_t)];
 
 void rtsp_get_device_id(char *device_id, size_t len) {
   uint8_t mac[6];
@@ -142,6 +140,39 @@ static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
       close(temp_socket);
     }
   }
+}
+
+static bool start_ntp_timing_or_fail(int socket, rtsp_conn_t *conn,
+                                     const rtsp_request_t *req) {
+  if (conn->client_timing_port == 0 || conn->client_ip == 0) {
+    return true;
+  }
+
+  esp_err_t err =
+      ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to start NTP timing client: %s",
+             esp_err_to_name(err));
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+    return false;
+  }
+  return true;
+}
+
+static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
+                                         const rtsp_request_t *req,
+                                         int64_t stream_type) {
+  audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
+  esp_err_t err = audio_receiver_start_stream(
+      conn->data_port, conn->control_port, conn->buffered_port);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to start audio receiver: %s", esp_err_to_name(err));
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+    return false;
+  }
+  return true;
 }
 
 // Event port task - handles AirPlay 2 session persistence
@@ -233,15 +264,33 @@ static void event_port_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
-void rtsp_start_event_port_task(int listen_socket) {
+static bool event_port_wait_for_task_stopped(int timeout_ticks) {
+  while (event_task_handle != NULL && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return event_task_handle == NULL;
+}
+
+esp_err_t rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
     rtsp_stop_event_port_task();
+    if (!event_port_wait_for_task_stopped(20)) {
+      ESP_LOGE(TAG, "Previous event port task did not stop");
+      return ESP_ERR_INVALID_STATE;
+    }
   }
   event_task_should_stop = false;
   event_listen_socket = -1;
-  event_task_handle = xTaskCreateStatic(
-      event_port_task, "event_port", EVENT_STACK_SIZE / sizeof(StackType_t),
-      (void *)(intptr_t)listen_socket, 5, s_event_stack, &s_event_tcb);
+  event_task_handle = NULL;
+  BaseType_t ret =
+      xTaskCreate(event_port_task, "event_port", EVENT_STACK_SIZE,
+                  (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+  if (ret != pdPASS) {
+    event_task_handle = NULL;
+    ESP_LOGE(TAG, "Failed to create event port task");
+    return ESP_FAIL;
+  }
+  return ESP_OK;
 }
 
 int rtsp_event_port_listen_socket(void) {
@@ -264,13 +313,9 @@ void rtsp_stop_event_port_task(void) {
     shutdown(event_listen_socket, SHUT_RDWR);
   }
 
-  // Wait for task to exit
-  int timeout = 20;
-  while (event_task_handle != NULL && timeout > 0) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-    timeout--;
+  if (!event_port_wait_for_task_stopped(20)) {
+    ESP_LOGW(TAG, "Event port task did not exit within timeout");
   }
-  // No need to free — static allocation
 }
 
 // Forward declarations of handlers
@@ -340,24 +385,54 @@ static const rtsp_method_handler_t method_handlers[] = {
 static const char *parse_raw_header(const uint8_t *raw, size_t raw_len,
                                     const char *name) {
   static char value_buf[64];
-  const char *hdr = strcasestr((const char *)raw, name);
-  if (!hdr || (size_t)(hdr - (const char *)raw) >= raw_len) {
+  if (!raw || !name) {
     return NULL;
   }
-  hdr += strlen(name);
-  // Skip optional whitespace
-  while (*hdr == ' ' || *hdr == '\t') {
-    hdr++;
+
+  const uint8_t *header_end = rtsp_find_header_end(raw, raw_len);
+  if (!header_end) {
+    return NULL;
   }
-  // Copy until CR/LF
-  size_t i = 0;
-  while (i < sizeof(value_buf) - 1 && hdr[i] && hdr[i] != '\r' &&
-         hdr[i] != '\n') {
-    value_buf[i] = hdr[i];
-    i++;
+
+  const char *line = (const char *)raw;
+  const char *end = (const char *)header_end;
+  size_t name_len = strlen(name);
+
+  while (line < end) {
+    const char *line_end = line;
+    while (line_end < end && *line_end != '\r' && *line_end != '\n') {
+      line_end++;
+    }
+
+    if ((size_t)(line_end - line) >= name_len &&
+        strncasecmp(line, name, name_len) == 0) {
+      const char *hdr = line + name_len;
+      // Skip optional whitespace
+      while (hdr < line_end && (*hdr == ' ' || *hdr == '\t')) {
+        hdr++;
+      }
+
+      size_t i = 0;
+      while (i < sizeof(value_buf) - 1 && hdr < line_end) {
+        value_buf[i] = *hdr;
+        hdr++;
+        i++;
+      }
+      value_buf[i] = '\0';
+      return value_buf;
+    }
+
+    line = line_end;
+    while (line < end && (*line == '\r' || *line == '\n')) {
+      line++;
+    }
   }
-  value_buf[i] = '\0';
-  return value_buf;
+
+  return NULL;
+}
+
+static bool request_uses_rtsp(const rtsp_request_t *req) {
+  return req && strncasecmp(req->protocol, "RTSP/", 5) == 0;
 }
 
 int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
@@ -400,8 +475,13 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
   }
 
   ESP_LOGW(TAG, "Unknown method: %s", req.method);
-  rtsp_send_http_response(socket, conn, 501, "Not Implemented", "text/plain",
-                          "Not Implemented", 15);
+  if (request_uses_rtsp(&req)) {
+    rtsp_send_response(socket, conn, 501, "Not Implemented", req.cseq,
+                       "Content-Type: text/plain\r\n", "Not Implemented", 15);
+  } else {
+    rtsp_send_http_response(socket, conn, 501, "Not Implemented", "text/plain",
+                            "Not Implemented", 15);
+  }
   return 0;
 }
 
@@ -417,11 +497,12 @@ static void handle_options(int socket, rtsp_conn_t *conn,
       "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
       "SETRATEANCHORTIME\r\n";
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1: handle Apple-Challenge if present
+  // AirPlay v1: handle Apple-Challenge if present. Triggered by request
+  // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
+  // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
-    // Get our IP and MAC
+    conn->protocol_version = 1;
     esp_netif_ip_info_t ip_info;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
@@ -442,10 +523,6 @@ static void handle_options(int socket, rtsp_conn_t *conn,
     }
     ESP_LOGW(TAG, "Failed to build Apple-Challenge response");
   }
-#else
-  (void)raw;
-  (void)raw_len;
-#endif
 
   rtsp_send_response(socket, conn, 200, "OK", req->cseq, public_methods, NULL,
                      0);
@@ -460,14 +537,38 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     // Build info response
     char device_id[18];
     char device_name[65];
-    static char body[4096];
-    plist_t p;
 
     rtsp_get_device_id(device_id, sizeof(device_id));
     settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
     uint64_t features =
         ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
+
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+    int64_t protocol_version = 1;
+#else
+    int64_t protocol_version = 2;
+#endif
+
+    if (request_uses_rtsp(req)) {
+      static uint8_t body[1024];
+      size_t body_len =
+          bplist_build_info_response(body, sizeof(body), device_id, device_name,
+                                     pk, 32, features, protocol_version);
+      if (body_len == 0) {
+        ESP_LOGE(TAG, "Failed to build binary /info response");
+        rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                           NULL, 0);
+        return;
+      }
+      rtsp_send_response(socket, conn, 200, "OK", req->cseq,
+                         "Content-Type: application/x-apple-binary-plist\r\n",
+                         (const char *)body, body_len);
+      return;
+    }
+
+    static char body[4096];
+    plist_t p;
 
     plist_init(&p, body, sizeof(body));
     plist_begin(&p);
@@ -478,11 +579,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_string(&p, "model", "AudioAccessory1,1");
     plist_dict_string(&p, "protovers", "1.1");
     plist_dict_string(&p, "srcvers", "377.40.00");
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-    plist_dict_int(&p, "vv", 1);
-#else
-    plist_dict_int(&p, "vv", 2);
-#endif
+    plist_dict_int(&p, "vv", protocol_version);
     plist_dict_int(&p, "statusFlags", 4);
     plist_dict_data(&p, "pk", pk, 32);
     plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
@@ -526,8 +623,13 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
                             body, body_len);
   } else {
     ESP_LOGW(TAG, "Unknown GET path: %s", req->path);
-    rtsp_send_http_response(socket, conn, 404, "Not Found", "text/plain",
-                            "Not Found", 9);
+    if (request_uses_rtsp(req)) {
+      rtsp_send_response(socket, conn, 404, "Not Found", req->cseq,
+                         "Content-Type: text/plain\r\n", "Not Found", 9);
+    } else {
+      rtsp_send_http_response(socket, conn, 404, "Not Found", "text/plain",
+                              "Not Found", 9);
+    }
   }
 }
 
@@ -541,6 +643,7 @@ static void handle_post(int socket, rtsp_conn_t *conn,
   size_t body_len = req->body_len;
 
   if (strstr(req->path, "/pair-setup")) {
+    conn->protocol_version = 2;
     // Create session if needed
     if (!conn->hap_session) {
       conn->hap_session = hap_session_create();
@@ -608,6 +711,7 @@ static void handle_post(int socket, rtsp_conn_t *conn,
     free(response);
 
   } else if (strstr(req->path, "/pair-verify")) {
+    conn->protocol_version = 2;
     if (!conn->hap_session) {
       conn->hap_session = hap_session_create();
       if (!conn->hap_session) {
@@ -815,11 +919,13 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
     format.max_samples_per_frame = 1024;
   }
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1: parse RSA-encrypted AES key and IV from SDP
+  // AirPlay v1: parse RSA-encrypted AES key and IV from SDP. Triggered by
+  // SDP shape so safe unconditionally — AirPlay 2 uses HAP-derived keys
+  // and never embeds rsaaeskey in ANNOUNCE.
   const char *rsaaeskey = strcasestr(sdp, "rsaaeskey:");
   const char *aesiv_str = strcasestr(sdp, "aesiv:");
   if (rsaaeskey && aesiv_str) {
+    conn->protocol_version = 1;
     // Extract base64 key (may span multiple lines, concatenate until next
     // field or end of SDP). In practice it's a single long base64 line.
     rsaaeskey += strlen("rsaaeskey:");
@@ -883,7 +989,6 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
                aes_key_len, iv_len);
     }
   }
-#endif
 
   // Update connection state
   strlcpy(conn->codec, format.codec, sizeof(conn->codec));
@@ -934,7 +1039,14 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "SETUP: has_streams=%d, stream_count=%zu", request_has_streams,
            stream_count);
 
+  // AirPlay v1 stream SETUP is identified by a Transport header and no bplist
+  // streams array. Classify it before opening AirPlay 2-only resources.
+  bool is_v1_transport_setup =
+      !request_has_streams &&
+      parse_raw_header(raw, raw_len, "Transport:") != NULL;
+
   if (body && body_len > 0 && is_bplist && request_has_streams) {
+    conn->protocol_version = 2;
     for (size_t i = 0; i < stream_count; i++) {
       int64_t stream_type = -1;
       size_t ekey_len = 0, eiv_len = 0, shk_len = 0;
@@ -1047,22 +1159,30 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   }
 
   // Create event port if needed
-  if (conn->event_port == 0) {
+  if (!is_v1_transport_setup && conn->event_port == 0) {
     conn->event_socket = rtsp_create_event_socket(&conn->event_port);
     if (conn->event_socket >= 0) {
-      rtsp_start_event_port_task(conn->event_socket);
-      ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port);
+      if (rtsp_start_event_port_task(conn->event_socket) == ESP_OK) {
+        ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port);
+      } else {
+        close(conn->event_socket);
+        conn->event_socket = -1;
+        conn->event_port = 0;
+        rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                           NULL, 0);
+        return;
+      }
     }
   }
 
   // Handle initial SETUP vs stream SETUP
   if (!request_has_streams) {
-#ifdef CONFIG_AIRPLAY_FORCE_V1
     // AirPlay v1: SETUP has no bplist body — transport info is in the header.
-    // Check for a Transport header to distinguish from an AirPlay 2 initial
-    // SETUP (which has no streams and no Transport header).
-    if (raw && strstr((const char *)raw, "Transport:")) {
+    // Detected by request shape (Transport: header present); AirPlay 2's
+    // initial SETUP has neither streams nor a Transport header.
+    if (is_v1_transport_setup) {
       ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
+      conn->protocol_version = 1;
       int64_t stream_type = 96; // RTP
       conn->stream_type = stream_type;
 
@@ -1072,9 +1192,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       ESP_LOGI(TAG, "Client ports: control=%u timing=%u",
                conn->client_control_port, conn->client_timing_port);
 
-      // Start NTP timing client if client has a timing port
-      if (conn->client_timing_port > 0 && conn->client_ip != 0) {
-        ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
+      if (!start_ntp_timing_or_fail(socket, conn, req)) {
+        return;
       }
 
       ensure_stream_ports(conn, false);
@@ -1101,7 +1220,6 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       conn->stream_active = true;
       return;
     }
-#endif // CONFIG_AIRPLAY_FORCE_V1
 
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
 
@@ -1148,12 +1266,17 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   uint16_t response_data_port =
       buffered ? conn->buffered_port : conn->data_port;
 
+  if (!start_audio_receiver_or_fail(socket, conn, req, stream_type)) {
+    return;
+  }
+
   if (is_bplist) {
     uint8_t plist_body[256];
     size_t plist_len = bplist_build_stream_setup(
         plist_body, sizeof(plist_body), stream_type, response_data_port,
         conn->control_port, AP2_AUDIO_BUFFER_SIZE);
     if (plist_len == 0) {
+      audio_receiver_stop();
       rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
                          NULL, 0);
       return;
@@ -1170,9 +1293,9 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "Client ports: control=%u timing=%u",
              conn->client_control_port, conn->client_timing_port);
 
-    // Start NTP timing client if client has a timing port
-    if (conn->client_timing_port > 0 && conn->client_ip != 0) {
-      ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
+    if (!start_ntp_timing_or_fail(socket, conn, req)) {
+      audio_receiver_stop();
+      return;
     }
 
     char transport_response[256];
@@ -1184,11 +1307,6 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     rtsp_send_response(socket, conn, 200, "OK", req->cseq, transport_response,
                        NULL, 0);
   }
-
-  // Start audio receiver
-  audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
-  audio_receiver_start_stream(conn->data_port, conn->control_port,
-                              conn->buffered_port);
 
   // Enable NACK retransmission if we know the client's control port
   if (conn->client_control_port > 0 && conn->client_ip != 0) {
@@ -1230,8 +1348,9 @@ static void handle_record(int socket, rtsp_conn_t *conn,
     audio_receiver_set_playing(true);
   } else {
     // Fresh start or post-teardown reconnect: full stream restart.
-    audio_receiver_start_stream(conn->data_port, conn->control_port,
-                                conn->buffered_port);
+    if (!start_audio_receiver_or_fail(socket, conn, req, conn->stream_type)) {
+      return;
+    }
     if (conn->client_control_port > 0 && conn->client_ip != 0) {
       audio_receiver_set_client_control(conn->client_ip,
                                         conn->client_control_port);
@@ -1375,27 +1494,29 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
   rtsp_event_data_t event_data;
   memset(&event_data, 0, sizeof(event_data));
   bool has_metadata = false;
+  bool metadata_enabled = settings_airplay_metadata_enabled();
 
-  // Check for progress header in raw request
-  const char *progress_hdr = strstr((const char *)raw, "progress:");
-  if (!progress_hdr) {
-    progress_hdr = strstr((const char *)raw, "Progress:");
-  }
-  if (progress_hdr) {
-    // Find end of header line
-    const char *line_end = strstr(progress_hdr, "\r\n");
-    if (line_end) {
-      size_t val_start = 9; // Length of "progress:"
-      while (progress_hdr[val_start] == ' ') {
-        val_start++;
-      }
-      char progress_val[64];
-      size_t val_len = line_end - (progress_hdr + val_start);
-      if (val_len < sizeof(progress_val)) {
-        memcpy(progress_val, progress_hdr + val_start, val_len);
-        progress_val[val_len] = '\0';
-        parse_progress(progress_val, 44100, &event_data.metadata);
-        has_metadata = true;
+  if (metadata_enabled) {
+    // Check for progress header in raw request.
+    const char *progress_hdr = strstr((const char *)raw, "progress:");
+    if (!progress_hdr) {
+      progress_hdr = strstr((const char *)raw, "Progress:");
+    }
+    if (progress_hdr) {
+      const char *line_end = strstr(progress_hdr, "\r\n");
+      if (line_end) {
+        size_t val_start = 9; // Length of "progress:"
+        while (progress_hdr[val_start] == ' ') {
+          val_start++;
+        }
+        char progress_val[64];
+        size_t val_len = line_end - (progress_hdr + val_start);
+        if (val_len < sizeof(progress_val)) {
+          memcpy(progress_val, progress_hdr + val_start, val_len);
+          progress_val[val_len] = '\0';
+          parse_progress(progress_val, 44100, &event_data.metadata);
+          has_metadata = true;
+        }
       }
     }
   }
@@ -1410,37 +1531,33 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         }
       }
       // Check for progress in body (AirPlay 1 style)
-      const char *prog = strstr((const char *)body, "progress:");
-      if (prog) {
-        prog += 9;
-        while (*prog == ' ') {
-          prog++;
+      if (metadata_enabled) {
+        const char *prog = strstr((const char *)body, "progress:");
+        if (prog) {
+          prog += 9;
+          while (*prog == ' ') {
+            prog++;
+          }
+          parse_progress(prog, 44100, &event_data.metadata);
+          has_metadata = true;
         }
-        parse_progress(prog, 44100, &event_data.metadata);
-        has_metadata = true;
       }
     }
   } else if (strstr(req->content_type, "application/x-dmap-tagged")) {
     // DMAP-tagged metadata (AirPlay 1)
-    if (body && body_len > 0) {
+    if (metadata_enabled && body && body_len > 0) {
       ESP_LOGI(TAG, "Received DMAP metadata (%zu bytes)", body_len);
       parse_dmap_metadata(body, body_len, &event_data.metadata);
       has_metadata = true;
     }
   } else if (strstr(req->content_type, "image/jpeg") ||
              strstr(req->content_type, "image/png")) {
-#ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
-    // Artwork - log and flag in metadata
-    ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
-             body_len);
-    event_data.metadata.has_artwork = true;
-    has_metadata = true;
-#else
-    // Artwork reception disabled — ignore it.  The md txt record already asks
-    // senders not to transmit cover art, but some send it regardless.
-    ESP_LOGD(TAG, "Ignoring artwork (%s, %zu bytes): disabled in config",
-             req->content_type, body_len);
-#endif
+    if (metadata_enabled) {
+      ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
+               body_len);
+      event_data.metadata.has_artwork = true;
+      has_metadata = true;
+    }
   } else if (strstr(req->content_type, "application/x-apple-binary-plist")) {
     if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
       int64_t value;
@@ -1451,41 +1568,43 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
       if (bplist_find_real(body, body_len, "rate", &rate)) {
         ESP_LOGI(TAG, "SET_PARAMETER: rate=%.2f", rate);
       }
-      // Try to extract metadata from bplist (AirPlay 2)
-      char str_val[METADATA_STRING_MAX];
-      if (bplist_find_string(body, body_len, "itemName", str_val,
-                             sizeof(str_val))) {
-        ESP_LOGI(TAG, "Metadata: Title = %s", str_val);
-        strlcpy(event_data.metadata.title, str_val, METADATA_STRING_MAX);
-        has_metadata = true;
-      }
-      if (bplist_find_string(body, body_len, "artistName", str_val,
-                             sizeof(str_val))) {
-        ESP_LOGI(TAG, "Metadata: Artist = %s", str_val);
-        strlcpy(event_data.metadata.artist, str_val, METADATA_STRING_MAX);
-        has_metadata = true;
-      }
-      if (bplist_find_string(body, body_len, "albumName", str_val,
-                             sizeof(str_val))) {
-        ESP_LOGI(TAG, "Metadata: Album = %s", str_val);
-        strlcpy(event_data.metadata.album, str_val, METADATA_STRING_MAX);
-        has_metadata = true;
-      }
-      // Progress info from bplist
-      double elapsed = 0, duration = 0;
-      if (bplist_find_real(body, body_len, "elapsed", &elapsed)) {
-        event_data.metadata.position_secs = (uint32_t)elapsed;
-        has_metadata = true;
-        char elapsed_str[16];
-        format_time_mmss((uint32_t)elapsed, elapsed_str, sizeof(elapsed_str));
-        if (bplist_find_real(body, body_len, "duration", &duration)) {
-          event_data.metadata.duration_secs = (uint32_t)duration;
-          char duration_str[16];
-          format_time_mmss((uint32_t)duration, duration_str,
-                           sizeof(duration_str));
-          ESP_LOGI(TAG, "Progress: %s / %s", elapsed_str, duration_str);
-        } else {
-          ESP_LOGI(TAG, "Progress: %s", elapsed_str);
+      if (metadata_enabled) {
+        // Try to extract metadata from bplist (AirPlay 2).
+        char str_val[METADATA_STRING_MAX];
+        if (bplist_find_string(body, body_len, "itemName", str_val,
+                               sizeof(str_val))) {
+          ESP_LOGI(TAG, "Metadata: Title = %s", str_val);
+          strlcpy(event_data.metadata.title, str_val, METADATA_STRING_MAX);
+          has_metadata = true;
+        }
+        if (bplist_find_string(body, body_len, "artistName", str_val,
+                               sizeof(str_val))) {
+          ESP_LOGI(TAG, "Metadata: Artist = %s", str_val);
+          strlcpy(event_data.metadata.artist, str_val, METADATA_STRING_MAX);
+          has_metadata = true;
+        }
+        if (bplist_find_string(body, body_len, "albumName", str_val,
+                               sizeof(str_val))) {
+          ESP_LOGI(TAG, "Metadata: Album = %s", str_val);
+          strlcpy(event_data.metadata.album, str_val, METADATA_STRING_MAX);
+          has_metadata = true;
+        }
+        double elapsed = 0, duration = 0;
+        if (bplist_find_real(body, body_len, "elapsed", &elapsed)) {
+          event_data.metadata.position_secs = (uint32_t)elapsed;
+          has_metadata = true;
+          char elapsed_str[16];
+          format_time_mmss((uint32_t)elapsed, elapsed_str,
+                           sizeof(elapsed_str));
+          if (bplist_find_real(body, body_len, "duration", &duration)) {
+            event_data.metadata.duration_secs = (uint32_t)duration;
+            char duration_str[16];
+            format_time_mmss((uint32_t)duration, duration_str,
+                             sizeof(duration_str));
+            ESP_LOGI(TAG, "Progress: %s / %s", elapsed_str, duration_str);
+          } else {
+            ESP_LOGI(TAG, "Progress: %s", elapsed_str);
+          }
         }
       }
     }
@@ -1640,13 +1759,14 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   if (!has_streams) {
     // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
     // when the TCP connection closes.
-#ifndef CONFIG_AIRPLAY_FORCE_V1
-    // In v1 mode, keep DACP session alive so the grace period can
-    // probe mDNS to differentiate pause from real disconnect.
-    dacp_clear_session();
-#endif
-    conn->dacp_id[0] = '\0';
-    conn->active_remote[0] = '\0';
+    // For v1 sessions, keep the DACP session alive across teardown so the
+    // grace period can probe mDNS to differentiate pause from real
+    // disconnect. v2 sessions clear immediately.
+    if (conn->protocol_version != 1) {
+      dacp_clear_session();
+      conn->dacp_id[0] = '\0';
+      conn->active_remote[0] = '\0';
+    }
     ntp_clock_stop();
     conn->timing_port = 0;
   }

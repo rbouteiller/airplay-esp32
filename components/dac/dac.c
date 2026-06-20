@@ -5,6 +5,8 @@
  * When no driver is registered, all functions are no-ops.
  */
 
+#include <stdbool.h>
+#include <stddef.h>
 #include "dac.h"
 
 static const dac_ops_t *s_ops = NULL;
@@ -30,6 +32,12 @@ void dac_set_volume(float volume_db) {
 void dac_set_power_mode(dac_power_mode_t mode) {
   if (s_ops && s_ops->set_power_mode) {
     s_ops->set_power_mode(mode);
+  }
+}
+
+void dac_on_i2s_started(void) {
+  if (s_ops && s_ops->on_i2s_started) {
+    s_ops->on_i2s_started();
   }
 }
 

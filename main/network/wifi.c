@@ -23,6 +23,8 @@ static EventGroupHandle_t s_wifi_event_group;
 
 // Re-enable AP after this many consecutive failures
 #define AP_REENABLE_THRESHOLD 5
+// lwIP DHCP hostnames are limited to 31 characters plus the trailing NUL.
+#define DHCP_HOSTNAME_MAX_LEN 31
 
 static int s_retry_num = 0;
 static esp_netif_t *s_sta_netif = NULL;
@@ -69,6 +71,42 @@ static void start_scan_connect_task(const char *task_name) {
       ESP_LOGW(TAG, "Direct reconnect failed: %s", esp_err_to_name(err));
       schedule_retry();
     }
+  }
+}
+
+static void sanitize_hostname(const char *name, char *out, size_t out_len) {
+  size_t j = 0;
+  for (size_t i = 0; name[i] && j < out_len - 1; i++) {
+    char c = name[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9')) {
+      out[j++] = c;
+    } else if (j > 0 && out[j - 1] != '-') {
+      out[j++] = '-';
+    }
+  }
+  while (j > 0 && out[j - 1] == '-') {
+    j--;
+  }
+  if (j == 0) {
+    strlcpy(out, "esp32-airplay", out_len);
+    return;
+  }
+  out[j] = '\0';
+}
+
+void wifi_set_hostname(const char *device_name) {
+  if (!s_sta_netif || !device_name) {
+    return;
+  }
+  char hostname[DHCP_HOSTNAME_MAX_LEN + 1];
+  sanitize_hostname(device_name, hostname, sizeof(hostname));
+  esp_err_t err = esp_netif_set_hostname(s_sta_netif, hostname);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set hostname '%s': %s", hostname,
+             esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "Hostname set to: %s", hostname);
   }
 }
 
@@ -324,6 +362,9 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
 
   if (!s_sta_netif) {
     s_sta_netif = esp_netif_create_default_wifi_sta();
+    char dev_name[65];
+    settings_get_device_name(dev_name, sizeof(dev_name));
+    wifi_set_hostname(dev_name);
   }
   if (!s_ap_netif) {
     s_ap_netif = esp_netif_create_default_wifi_ap();

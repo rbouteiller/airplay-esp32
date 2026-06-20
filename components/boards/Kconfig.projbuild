@@ -2,6 +2,7 @@ menu "Board Configuration"
     choice BOARD_TARGET
         prompt "Select Target Board"
         default BOARD_ESP32_GENERIC if IDF_TARGET_ESP32
+        default BOARD_ESP32S2_GENERIC if IDF_TARGET_ESP32S2
         default BOARD_ESP32S3_GENERIC if IDF_TARGET_ESP32S3
         default BOARD_WAVESHARE_ESP32P4 if IDF_TARGET_ESP32P4
 
@@ -12,6 +13,10 @@ menu "Board Configuration"
         config BOARD_SQUEEZEAMP_4M
             bool "SqueezeAMP (4MB flash)"
             depends on IDF_TARGET_ESP32
+
+        config BOARD_ESP32S2_GENERIC
+            bool "ESP32-S2 Generic"
+            depends on IDF_TARGET_ESP32S2
 
         config BOARD_ESP32S3_GENERIC
             bool "ESP32-S3 Generic"
@@ -33,6 +38,10 @@ menu "Board Configuration"
             bool "Waveshare ESP32-P4 Module Dev Kit"
             depends on IDF_TARGET_ESP32P4
 
+        config BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+            bool "Waveshare ESP32-S3-Touch-LCD-1.54"
+            depends on IDF_TARGET_ESP32S3
+
         config BOARD_ESPARAGUS_LOUDER
             bool "Louder Esparagus / Louder-ESP32 (ESP32, TAS58xx)"
             depends on IDF_TARGET_ESP32
@@ -47,11 +56,13 @@ menu "Board Configuration"
         string
         default "squeezeamp" if BOARD_SQUEEZEAMP
         default "squeezeamp" if BOARD_SQUEEZEAMP_4M
+        default "esp32s2-generic" if BOARD_ESP32S2_GENERIC
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
         default "esp32-generic" if BOARD_ESP32_GENERIC
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_S3
         default "waveshare-esp32p4" if BOARD_WAVESHARE_ESP32P4
+        default "waveshare-esp32s3" if BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER_S3
 
@@ -168,6 +179,99 @@ menu "Board Configuration"
                 default 0
                 help
                     Active level for mute GPIO (0=active low, 1=active high).
+        endmenu
+
+        menu "SPI Display Configuration"
+            config SPI_SCLK_IO
+                int "SPI Clock GPIO (display)"
+                default 38
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI clock GPIO for display.
+
+            config SPI_MOSI_IO
+                int "SPI MOSI GPIO (display)"
+                default 39
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI MOSI GPIO for display.
+
+            config SPI_MISO_IO
+                int "SPI MISO GPIO (display)"
+                default -1
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI MISO GPIO for display. Set to -1 if not used.
+
+            config SPI_CS_IO
+                int "SPI Chip Select GPIO (display)"
+                default 21
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI chip select GPIO for display.
+
+            config SPI_DC_IO
+                int "SPI Data Command GPIO (display)"
+                default 45
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI Data/Command GPIO for display.
+
+            config SPI_RST_IO
+                int "SPI Reset GPIO (display)"
+                default 40
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    SPI reset GPIO for display.
+
+            config SPI_BL_IO
+                int "SPI Backlight GPIO (display)"
+                default 46
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    GPIO for display backlight PWM dimming.
+
+            config I2C_TOUCH_SDA_IO
+                int "I2C SDA GPIO (touch controller)"
+                default 42
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    I2C SDA GPIO for touch controller (CST816S).
+
+            config I2C_TOUCH_SCL_IO
+                int "I2C SCL GPIO (touch controller)"
+                default 41
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    I2C SCL GPIO for touch controller (CST816S).
+
+            config I2C_TOUCH_RST_IO
+                int "I2C Touch Reset GPIO"
+                default 47
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    GPIO for touch controller reset line.
+
+            config I2C_TOUCH_INT_IO
+                int "I2C Touch Interrupt GPIO"
+                default 48
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    GPIO for touch controller interrupt line.
+
+            config LED_BL_PWM_TIMER
+                int "LED Backlight PWM Timer"
+                default 0
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    LEDC timer number for display backlight PWM.
+
+            config LED_BL_PWM_CHANNEL
+                int "LED Backlight PWM Channel"
+                default 0
+                depends on BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
+                help
+                    LEDC channel number for display backlight PWM.
         endmenu
 
         menu "SPI and Ethernet Configuration"
