@@ -4,12 +4,10 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
-#include "rtsp_events.h"
 #include "settings.h"
-
-#if CONFIG_LED_STATUS_GPIO >= 0 || CONFIG_LED_ERROR_GPIO >= 0
+#include "rtsp_events.h"
 #include "driver/ledc.h"
-#endif
+#include "led_strip.h"
 
 #include <math.h>
 
@@ -98,17 +96,20 @@ static led_mode_t get_rgb_mode_standby(void) {
 // Status LED (single color via LEDC PWM)
 // ============================================================================
 
-#if CONFIG_LED_STATUS_GPIO >= 0
-
 #define STATUS_LED_CHANNEL LEDC_CHANNEL_0
 #define STATUS_LED_TIMER   LEDC_TIMER_0
 
 static led_mode_t s_status_mode = LED_OFF;
 static TimerHandle_t s_status_timer = NULL;
 static bool s_status_on = false;
+static bool s_status_enabled = false;
+static int s_status_gpio = -1;
 static uint8_t s_status_duty = CONFIG_LED_STATUS_BRIGHTNESS;
 
 static void status_led_set_duty(uint8_t duty) {
+  if (!s_status_enabled) {
+    return;
+  }
   ledc_set_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, STATUS_LED_CHANNEL);
   ESP_LOGV(TAG, "Status LED duty set to %d", duty);
@@ -147,6 +148,15 @@ static void status_timer_cb(TimerHandle_t xTimer) {
 }
 
 static void status_led_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+  s_status_gpio = gpio_cfg.led_status;
+
+  if (s_status_gpio < 0) {
+    s_status_enabled = false;
+    return;
+  }
+
   s_status_duty = s_brightness;
 
   ledc_timer_config_t timer_cfg = {
@@ -166,7 +176,7 @@ static void status_led_init(void) {
       .channel = STATUS_LED_CHANNEL,
       .timer_sel = STATUS_LED_TIMER,
       .intr_type = LEDC_INTR_DISABLE,
-      .gpio_num = CONFIG_LED_STATUS_GPIO,
+      .gpio_num = s_status_gpio,
       .duty = 0,
       .hpoint = 0,
       .flags = {.output_invert = LED_STATUS_INVERT_VAL},
@@ -187,10 +197,14 @@ static void status_led_init(void) {
     return;
   }
 
-  ESP_LOGI(TAG, "Status LED initialized on GPIO %d", CONFIG_LED_STATUS_GPIO);
+  s_status_enabled = true;
+  ESP_LOGI(TAG, "Status LED initialized on GPIO %d", s_status_gpio);
 }
 
 static void status_led_set_mode(led_mode_t mode) {
+  if (!s_status_enabled) {
+    return;
+  }
   if (mode == s_status_mode) {
     return;
   }
@@ -241,34 +255,33 @@ static void status_led_set_mode(led_mode_t mode) {
 }
 
 static void status_led_set_vu(float norm) {
-  if (s_status_mode != LED_VU) {
+  if (!s_status_enabled || s_status_mode != LED_VU) {
     return;
   }
   uint8_t duty = (uint8_t)(norm * (float)s_status_duty);
   status_led_set_duty(duty);
 }
 
-#else
-static void status_led_init(void) {
-}
-static void status_led_set_mode(led_mode_t mode) {
-  (void)mode;
-}
-static void status_led_set_vu(float norm) {
-  (void)norm;
-}
-#endif
-
 // ============================================================================
 // Error LED (simple on/off via LEDC)
 // ============================================================================
 
-#if CONFIG_LED_ERROR_GPIO >= 0
-
 #define ERROR_LED_CHANNEL LEDC_CHANNEL_1
 #define ERROR_LED_TIMER   LEDC_TIMER_1
 
+static bool s_error_enabled = false;
+static int s_error_gpio = -1;
+
 static void error_led_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+  s_error_gpio = gpio_cfg.led_error;
+
+  if (s_error_gpio < 0) {
+    s_error_enabled = false;
+    return;
+  }
+
   ledc_timer_config_t timer_cfg = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
       .timer_num = ERROR_LED_TIMER,
@@ -286,7 +299,7 @@ static void error_led_init(void) {
       .channel = ERROR_LED_CHANNEL,
       .timer_sel = ERROR_LED_TIMER,
       .intr_type = LEDC_INTR_DISABLE,
-      .gpio_num = CONFIG_LED_ERROR_GPIO,
+      .gpio_num = s_error_gpio,
       .duty = 0,
       .hpoint = 0,
       .flags = {.output_invert = LED_ERROR_INVERT_VAL},
@@ -300,36 +313,87 @@ static void error_led_init(void) {
   ledc_set_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL, 0);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL);
 
-  ESP_LOGI(TAG, "Error LED initialized on GPIO %d", CONFIG_LED_ERROR_GPIO);
+  s_error_enabled = true;
+  ESP_LOGI(TAG, "Error LED initialized on GPIO %d", s_error_gpio);
 }
 
 static void error_led_set(bool on) {
+  if (!s_error_enabled) {
+    return;
+  }
   ledc_set_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL, on ? s_brightness : 0);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, ERROR_LED_CHANNEL);
 }
-
-#else
-static void error_led_init(void) {
-}
-static void error_led_set(bool on) {
-  (void)on;
-}
-#endif
 
 // ============================================================================
 // RGB LED (WS2812 via led_strip)
 // ============================================================================
 
-#if CONFIG_LED_RGB_GPIO >= 0
-
-#include "led_strip.h"
-
 static led_strip_handle_t s_rgb_strip = NULL;
 static led_mode_t s_rgb_mode = LED_OFF;
+static bool s_rgb_enabled = false;
+static int s_rgb_gpio = -1;
+
+static void rgb_led_clear(void);
+
+static esp_err_t rgb_led_clear_on_gpio(int gpio) {
+  if (gpio < 0) {
+    return ESP_OK;
+  }
+
+  if (s_rgb_strip && gpio == s_rgb_gpio) {
+    rgb_led_clear();
+    s_rgb_enabled = false;
+    s_rgb_mode = LED_OFF;
+    return ESP_OK;
+  }
+
+  led_strip_handle_t strip = NULL;
+  led_strip_config_t strip_cfg = {
+      .strip_gpio_num = gpio,
+      .max_leds = 1,
+      .led_model = LED_MODEL_WS2812,
+      .flags.invert_out = false,
+  };
+  led_strip_rmt_config_t rmt_cfg = {
+      .clk_src = RMT_CLK_SRC_DEFAULT,
+      .resolution_hz = 10 * 1000 * 1000,
+      .flags.with_dma = false,
+  };
+
+  esp_err_t err = led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &strip);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = led_strip_clear(strip);
+  if (err == ESP_OK) {
+    err = led_strip_refresh(strip);
+  }
+
+  esp_err_t del_err = led_strip_del(strip);
+  if (err == ESP_OK && del_err != ESP_OK) {
+    err = del_err;
+  }
+
+  return err;
+}
 
 static void rgb_led_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+  s_rgb_gpio = gpio_cfg.led_rgb;
+
+  if (s_rgb_gpio < 0) {
+    s_rgb_enabled = false;
+    s_rgb_strip = NULL;
+    s_rgb_mode = LED_OFF;
+    ESP_LOGI(TAG, "RGB LED disabled");
+    return;
+  }
+
   led_strip_config_t strip_cfg = {
-      .strip_gpio_num = CONFIG_LED_RGB_GPIO,
+      .strip_gpio_num = s_rgb_gpio,
       .max_leds = 1,
       .led_model = LED_MODEL_WS2812,
       .flags.invert_out = false,
@@ -347,7 +411,8 @@ static void rgb_led_init(void) {
   }
 
   led_strip_clear(s_rgb_strip);
-  ESP_LOGI(TAG, "RGB LED initialized on GPIO %d", CONFIG_LED_RGB_GPIO);
+  s_rgb_enabled = true;
+  ESP_LOGI(TAG, "RGB LED initialized on GPIO %d", s_rgb_gpio);
 }
 
 static void rgb_led_set_color(uint8_t r, uint8_t g, uint8_t b) {
@@ -367,6 +432,10 @@ static void rgb_led_clear(void) {
 }
 
 static void rgb_led_set_mode(led_mode_t mode) {
+  if (!s_rgb_enabled) {
+    s_rgb_mode = mode;
+    return;
+  }
   s_rgb_mode = mode;
 
   switch (mode) {
@@ -386,7 +455,7 @@ static void rgb_led_set_mode(led_mode_t mode) {
 }
 
 static void rgb_led_set_vu(float norm, float bass_ratio) {
-  if (s_rgb_mode != LED_VU || !s_rgb_strip) {
+  if (!s_rgb_enabled || s_rgb_mode != LED_VU || !s_rgb_strip) {
     return;
   }
 
@@ -420,25 +489,6 @@ static void rgb_led_set_vu(float norm, float bass_ratio) {
   led_strip_set_pixel_hsv(s_rgb_strip, 0, hue, sat, val);
   led_strip_refresh(s_rgb_strip);
 }
-
-#else
-static void rgb_led_init(void) {
-}
-static void rgb_led_set_mode(led_mode_t mode) {
-  (void)mode;
-}
-static void rgb_led_set_color(uint8_t r, uint8_t g, uint8_t b) {
-  (void)r;
-  (void)g;
-  (void)b;
-}
-static void rgb_led_clear(void) {
-}
-static void rgb_led_set_vu(float norm, float bass_ratio) {
-  (void)norm;
-  (void)bass_ratio;
-}
-#endif
 
 // ============================================================================
 // RTSP Event Handler
@@ -497,13 +547,13 @@ static void render_state(led_state_t state) {
     break;
 
   case STATE_ERROR:
-#if CONFIG_LED_ERROR_GPIO >= 0
-    // Dedicated error LED - turn off status to avoid mixed signals
-    status_led_set_mode(LED_OFF);
-#else
-    // No error LED - use status LED to indicate error
-    status_led_set_mode(LED_BLINK_FAST);
-#endif
+    if (s_error_enabled) {
+      // Dedicated error LED - turn off status to avoid mixed signals
+      status_led_set_mode(LED_OFF);
+    } else {
+      // No error LED - use status LED to indicate error
+      status_led_set_mode(LED_BLINK_FAST);
+    }
     rgb_led_set_color(scale_bright(0x80), 0, 0);
     error_led_set(true);
     break;
@@ -606,10 +656,13 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
 // ============================================================================
 
 void led_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+
   ESP_LOGI(TAG, "Initializing LED subsystem");
-  ESP_LOGI(TAG, "  Status LED GPIO: %d", CONFIG_LED_STATUS_GPIO);
-  ESP_LOGI(TAG, "  Error LED GPIO: %d", CONFIG_LED_ERROR_GPIO);
-  ESP_LOGI(TAG, "  RGB LED GPIO: %d", CONFIG_LED_RGB_GPIO);
+  ESP_LOGI(TAG, "  Status LED GPIO: %d", gpio_cfg.led_status);
+  ESP_LOGI(TAG, "  Error LED GPIO: %d", gpio_cfg.led_error);
+  ESP_LOGI(TAG, "  RGB LED GPIO: %d", gpio_cfg.led_rgb);
   ESP_LOGI(TAG, "  LED brightness: %d", CONFIG_LED_STATUS_BRIGHTNESS);
 
   uint8_t saved;
@@ -642,6 +695,21 @@ void led_set_error(bool error) {
   }
 }
 
+void led_prepare_rgb_gpio_change(int previous_rgb_gpio, int new_rgb_gpio) {
+  if (previous_rgb_gpio < 0 || previous_rgb_gpio == new_rgb_gpio) {
+    return;
+  }
+
+  esp_err_t err = rgb_led_clear_on_gpio(previous_rgb_gpio);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Cleared RGB LED on previous GPIO %d before restart",
+             previous_rgb_gpio);
+  } else {
+    ESP_LOGW(TAG, "Failed to clear RGB LED on previous GPIO %d: %s",
+             previous_rgb_gpio, esp_err_to_name(err));
+  }
+}
+
 esp_err_t led_set_brightness(uint8_t brightness) {
   esp_err_t err = settings_set_led_brightness(brightness);
   if (err != ESP_OK) {
@@ -649,13 +717,11 @@ esp_err_t led_set_brightness(uint8_t brightness) {
   }
 
   s_brightness = brightness;
-#if CONFIG_LED_STATUS_GPIO >= 0
   s_status_duty = brightness;
-  if (s_status_mode == LED_STEADY ||
-      (s_status_mode >= LED_BLINK_SLOW && s_status_on)) {
+  if (s_status_enabled && (s_status_mode == LED_STEADY ||
+                           (s_status_mode >= LED_BLINK_SLOW && s_status_on))) {
     status_led_set_duty(s_status_duty);
   }
-#endif
   // Re-render without changing previous/current state history.
   render_state(s_current_state);
   return ESP_OK;

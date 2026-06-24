@@ -45,6 +45,11 @@ esp_err_t wifi_get_ip_str(char *ip_str, size_t len);
 esp_err_t wifi_scan(wifi_ap_record_t **ap_list, uint16_t *ap_count);
 
 /**
+ * Ensure AP mode is active so the provisioning hotspot is reachable.
+ */
+esp_err_t wifi_enable_ap_mode(void);
+
+/**
  * Disconnect and stop WiFi
  */
 void wifi_stop(void);

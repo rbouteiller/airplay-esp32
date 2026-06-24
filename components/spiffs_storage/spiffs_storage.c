@@ -31,3 +31,17 @@ esp_err_t spiffs_storage_init(void) {
   s_mounted = true;
   return ESP_OK;
 }
+
+void spiffs_storage_deinit(void) {
+  if (!s_mounted) {
+    return;
+  }
+
+  esp_vfs_spiffs_unregister("storage");
+  s_mounted = false;
+  ESP_LOGI(TAG, "SPIFFS unmounted");
+}
+
+bool spiffs_storage_is_mounted(void) {
+  return s_mounted;
+}

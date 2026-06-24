@@ -32,6 +32,12 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples);
 void led_set_error(bool error);
 
 /**
+ * Clear the currently latched WS2812 color on the previous GPIO before a
+ * restart disables or reroutes the RGB LED.
+ */
+void led_prepare_rgb_gpio_change(int previous_rgb_gpio, int new_rgb_gpio);
+
+/**
  * Set LED brightness (0–255). Persists to NVS and takes effect immediately.
  */
 esp_err_t led_set_brightness(uint8_t brightness);

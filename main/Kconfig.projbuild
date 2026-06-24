@@ -429,12 +429,6 @@ menu "Airplay ESP Configuration"
                 the cost of slightly looser sync. Increase this if you still
                 hear drop-outs on AirPlay 1 / realtime playback.
 
-        config ENABLE_AIRPLAY_ARTWORK
-            bool "Enable cover-art / artwork reception"
-            default n
-            help
-                Receive cover-art images. Enable it only if you have a display
-                cabable of and want album art.
     endmenu
 
     menu "Button Configuration"

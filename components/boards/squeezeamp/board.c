@@ -70,6 +70,12 @@ static volatile bool speaker_fault_active = false;
 static volatile bool headphone_inserted = false;
 static i2c_master_bus_handle_t s_i2c_dac_bus_handle = NULL;
 static i2c_master_bus_handle_t s_i2c_disp_bus_handle = NULL;
+static settings_gpio_config_t s_gpio_cfg;
+static int s_dac_i2c_sda = -1;
+static int s_dac_i2c_scl = -1;
+static int s_mute_gpio = -1;
+static int s_spkfault_gpio = -1;
+static int s_jack_gpio = -1;
 
 static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
@@ -84,7 +90,7 @@ static void IRAM_ATTR spkfault_isr_handler(void *arg) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Check current GPIO level to determine fault or clear
-  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
+  int level = gpio_get_level(s_spkfault_gpio);
   uint32_t notify_bit =
       (level == 0) ? SPKFAULT_NOTIFY_FAULT : SPKFAULT_NOTIFY_CLEAR;
 
@@ -147,7 +153,7 @@ static void spkfault_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(JACK_DEBOUNCE_MS));
 
         // Read stable state after debounce
-        bool jack_inserted = (gpio_get_level(BOARD_JACK_GPIO) == 0);
+        bool jack_inserted = (gpio_get_level(s_jack_gpio) == 0);
 
         if (jack_inserted && !headphone_inserted) {
           headphone_inserted = true;
@@ -211,11 +217,23 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
+  settings_get_gpio_config(&s_gpio_cfg);
+  s_dac_i2c_sda = s_gpio_cfg.dac_i2c_sda;
+  s_dac_i2c_scl = s_gpio_cfg.dac_i2c_scl;
+  s_mute_gpio = s_gpio_cfg.mute;
+  s_spkfault_gpio = s_gpio_cfg.spkfault;
+  s_jack_gpio = s_gpio_cfg.jack;
+
+  if (s_dac_i2c_sda < 0 || s_dac_i2c_scl < 0) {
+    ESP_LOGE(TAG, "DAC I2C pins are not configured");
+    return ESP_ERR_INVALID_ARG;
+  }
+
   // Initialize DAC I2C bus
   i2c_master_bus_config_t i2c_cfg = {
       .i2c_port = BOARD_I2C_PORT,
-      .sda_io_num = BOARD_I2C_SDA_GPIO,
-      .scl_io_num = BOARD_I2C_SCL_GPIO,
+      .sda_io_num = s_dac_i2c_sda,
+      .scl_io_num = s_dac_i2c_scl,
       .clk_source = I2C_CLK_SRC_DEFAULT,
       .glitch_ignore_cnt = 7,
       .flags.enable_internal_pullup = true,
@@ -226,13 +244,13 @@ esp_err_t iot_board_init(void) {
     return err;
   }
   ESP_LOGI(TAG, "DAC I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
-           BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
+           s_dac_i2c_sda, s_dac_i2c_scl);
 
 #if defined(CONFIG_DISPLAY_ENABLED) && defined(CONFIG_DISPLAY_BUS_I2C)
   // Initialize display I2C bus — share with DAC bus if pins are identical,
   // otherwise bring up a second controller on BOARD_I2C_DISP_PORT.
-  if (CONFIG_DISPLAY_I2C_SDA == BOARD_I2C_SDA_GPIO &&
-      CONFIG_DISPLAY_I2C_SCL == BOARD_I2C_SCL_GPIO) {
+  if (CONFIG_DISPLAY_I2C_SDA == s_dac_i2c_sda &&
+      CONFIG_DISPLAY_I2C_SCL == s_dac_i2c_scl) {
     s_i2c_disp_bus_handle = s_i2c_dac_bus_handle;
     ESP_LOGI(TAG, "Display sharing DAC I2C bus");
   } else {
@@ -353,8 +371,12 @@ esp_err_t iot_board_deinit(void) {
     return ESP_OK;
   }
 
-  gpio_isr_handler_remove(BOARD_JACK_GPIO);
-  gpio_isr_handler_remove(BOARD_SPKFAULT_GPIO);
+  if (s_jack_gpio >= 0) {
+    gpio_isr_handler_remove(s_jack_gpio);
+  }
+  if (s_spkfault_gpio >= 0) {
+    gpio_isr_handler_remove(s_spkfault_gpio);
+  }
   if (gpio_task_handle != NULL) {
     vTaskDelete(gpio_task_handle);
     gpio_task_handle = NULL;
@@ -362,7 +384,9 @@ esp_err_t iot_board_deinit(void) {
   rtsp_events_unregister(on_rtsp_event);
 
   // Ensure mute GPIO is active (muted) during shutdown for safety
-  gpio_set_level(BOARD_MUTE_GPIO, BOARD_MUTE_GPIO_LEVEL);
+  if (s_mute_gpio >= 0) {
+    gpio_set_level(s_mute_gpio, CONFIG_MUTE_GPIO_LEVEL);
+  }
 
   dac_enable_speaker(false);
   dac_set_power_mode(DAC_POWER_OFF);
@@ -385,8 +409,13 @@ esp_err_t iot_board_deinit(void) {
 }
 
 static esp_err_t init_mute_gpio(void) {
+  if (s_mute_gpio < 0) {
+    ESP_LOGI(TAG, "Mute GPIO disabled");
+    return ESP_OK;
+  }
+
   gpio_config_t mute_gpio_cfg = {
-      .pin_bit_mask = (1ULL << BOARD_MUTE_GPIO),
+      .pin_bit_mask = (1ULL << s_mute_gpio),
       .mode = GPIO_MODE_OUTPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -396,10 +425,10 @@ static esp_err_t init_mute_gpio(void) {
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure mute GPIO");
 
   // Initialize to unmuted state (active low, so set high to unmute)
-  gpio_set_level(BOARD_MUTE_GPIO, !BOARD_MUTE_GPIO_LEVEL);
+  gpio_set_level(s_mute_gpio, !CONFIG_MUTE_GPIO_LEVEL);
 
-  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)", BOARD_MUTE_GPIO,
-           BOARD_MUTE_GPIO_LEVEL ? "high" : "low");
+  ESP_LOGI(TAG, "Mute GPIO initialized on GPIO %d (active %s)", s_mute_gpio,
+           CONFIG_MUTE_GPIO_LEVEL ? "high" : "low");
   return ESP_OK;
 }
 
@@ -421,8 +450,13 @@ static esp_err_t init_gpio_isr_task(void) {
 }
 
 static esp_err_t init_spkfault_gpio(void) {
+  if (s_spkfault_gpio < 0) {
+    ESP_LOGI(TAG, "Speaker fault GPIO disabled");
+    return ESP_OK;
+  }
+
   gpio_config_t spkfault_cfg = {
-      .pin_bit_mask = (1ULL << BOARD_SPKFAULT_GPIO),
+      .pin_bit_mask = (1ULL << s_spkfault_gpio),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_ENABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -431,26 +465,30 @@ static esp_err_t init_spkfault_gpio(void) {
   esp_err_t err = gpio_config(&spkfault_cfg);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure speaker fault GPIO");
 
-  err = gpio_isr_handler_add(BOARD_SPKFAULT_GPIO, spkfault_isr_handler, NULL);
+  err = gpio_isr_handler_add(s_spkfault_gpio, spkfault_isr_handler, NULL);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to add speaker fault ISR handler");
 
   // Check initial state
-  int level = gpio_get_level(BOARD_SPKFAULT_GPIO);
+  int level = gpio_get_level(s_spkfault_gpio);
   if (level == 0) {
     ESP_LOGW(TAG, "Speaker fault already active at startup");
     xTaskNotify(gpio_task_handle, SPKFAULT_NOTIFY_FAULT, eSetBits);
   }
 
-  ESP_LOGI(TAG, "Speaker fault detection enabled on GPIO %d",
-           BOARD_SPKFAULT_GPIO);
+  ESP_LOGI(TAG, "Speaker fault detection enabled on GPIO %d", s_spkfault_gpio);
   return ESP_OK;
 }
 
 static esp_err_t init_jack_gpio(void) {
+  if (s_jack_gpio < 0) {
+    ESP_LOGI(TAG, "Headphone jack GPIO disabled");
+    return ESP_OK;
+  }
+
   // Note: GPIO 34-39 on ESP32 are input-only and have no internal pull-up.
   // An external pull-up resistor is required on the jack detect pin.
   gpio_config_t jack_cfg = {
-      .pin_bit_mask = (1ULL << BOARD_JACK_GPIO),
+      .pin_bit_mask = (1ULL << s_jack_gpio),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE, // GPIO 34 has no internal pull-up
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -459,15 +497,15 @@ static esp_err_t init_jack_gpio(void) {
   esp_err_t err = gpio_config(&jack_cfg);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure jack GPIO");
 
-  err = gpio_isr_handler_add(BOARD_JACK_GPIO, jack_isr_handler, NULL);
+  err = gpio_isr_handler_add(s_jack_gpio, jack_isr_handler, NULL);
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to add jack ISR handler");
 
   // Check initial state in case headphone is already inserted
-  if (gpio_get_level(BOARD_JACK_GPIO) == 0) {
+  if (gpio_get_level(s_jack_gpio) == 0) {
     xTaskNotify(gpio_task_handle, JACK_NOTIFY_CHANGED, eSetBits);
   }
 
-  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d", BOARD_JACK_GPIO);
+  ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d", s_jack_gpio);
   return ESP_OK;
 }
 
@@ -476,12 +514,12 @@ static esp_err_t init_jack_gpio(void) {
 void IRAM_ATTR __wrap_abort(void) {
   // Immediately mute the amplifier using direct register access
   // This must be fast and not rely on any complex systems
-  if (BOARD_MUTE_GPIO_LEVEL) {
+  if (s_mute_gpio >= 0 && s_mute_gpio < 32 && CONFIG_MUTE_GPIO_LEVEL) {
     // Active high - set bit
-    GPIO.out_w1ts = (1ULL << BOARD_MUTE_GPIO);
-  } else {
+    GPIO.out_w1ts = (1ULL << s_mute_gpio);
+  } else if (s_mute_gpio >= 0 && s_mute_gpio < 32) {
     // Active low - clear bit
-    GPIO.out_w1tc = (1ULL << BOARD_MUTE_GPIO);
+    GPIO.out_w1tc = (1ULL << s_mute_gpio);
   }
 
   // Call the original abort function

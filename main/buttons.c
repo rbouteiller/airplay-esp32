@@ -18,6 +18,7 @@
 #include "audio_output.h"
 #include "playback_control.h"
 #include "spiram_task.h"
+#include "settings.h"
 
 #include "board_common.h"
 #include "driver/gpio.h"
@@ -196,13 +197,14 @@ static void long_press_timer_cb(TimerHandle_t timer) {
   }
 
   ESP_LOGI(TAG, "Long press detected — powering off");
-  gpio_wakeup_enable(CONFIG_BTN_PLAY_PAUSE_GPIO, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(btn->gpio, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   board_power_off();
 }
 
 // Double-click window expired — dispatch based on how many presses we saw.
 // 1 press  -> play/pause; 2 presses -> cycle channel mode (L/R/stereo).
+#if CONFIG_BTN_PLAY_PAUSE_DOUBLE_CLICK
 static void click_timer_cb(TimerHandle_t timer) {
   int id = (int)(intptr_t)pvTimerGetTimerID(timer);
   button_state_t *btn = &buttons[id];
@@ -218,6 +220,7 @@ static void click_timer_cb(TimerHandle_t timer) {
   }
   // count == 1 && still pressed: long-press hold — defer play/pause to release
 }
+#endif
 
 // GPIO ISR — just resets the debounce timer. Each new edge restarts the
 // debounce window so the callback only fires once bouncing stops.
@@ -290,6 +293,9 @@ static void configure_button(button_id_t id, int gpio, bool repeatable) {
 }
 
 esp_err_t buttons_init(void) {
+  settings_gpio_config_t gpio_cfg;
+  settings_get_gpio_config(&gpio_cfg);
+
   // Action-only IDs — not backed by GPIO
   buttons[BTN_LONG_PRESS].gpio = -1;
   buttons[BTN_CHANNEL_CYCLE].gpio = -1;
@@ -300,12 +306,12 @@ esp_err_t buttons_init(void) {
     return err;
   }
 
-  // Configure each button from Kconfig (adds ISR handlers)
-  configure_button(BTN_PLAY_PAUSE, CONFIG_BTN_PLAY_PAUSE_GPIO, false);
-  configure_button(BTN_VOLUME_UP, CONFIG_BTN_VOLUME_UP_GPIO, true);
-  configure_button(BTN_VOLUME_DOWN, CONFIG_BTN_VOLUME_DOWN_GPIO, true);
-  configure_button(BTN_NEXT, CONFIG_BTN_NEXT_GPIO, false);
-  configure_button(BTN_PREV, CONFIG_BTN_PREV_GPIO, false);
+  // Configure each button from runtime GPIO overrides (adds ISR handlers)
+  configure_button(BTN_PLAY_PAUSE, gpio_cfg.btn_play_pause, false);
+  configure_button(BTN_VOLUME_UP, gpio_cfg.btn_volume_up, true);
+  configure_button(BTN_VOLUME_DOWN, gpio_cfg.btn_volume_down, true);
+  configure_button(BTN_NEXT, gpio_cfg.btn_next, false);
+  configure_button(BTN_PREV, gpio_cfg.btn_prev, false);
 
   bool any_configured = false;
   for (int i = BTN_PLAY_PAUSE; i <= BTN_PREV; i++) {

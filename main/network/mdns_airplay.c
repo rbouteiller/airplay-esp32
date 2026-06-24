@@ -25,19 +25,17 @@ static const char *TAG = "mdns_airplay";
 // Flags: 0x4 = audio receiver
 #define AIRPLAY_FLAGS "0x4"
 
-// Metadata types advertised in the "md" txt record:
-//   0 = artwork (cover art images), 1 = progress, 2 = text (track info).
-// When artwork is disabled, drop "0" so senders do not transmit cover art,
-// which can stall the audio pipeline and cause drop-outs on realtime streams.
-#ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
+// Metadata types advertised in the "md" TXT record:
+//   0 = text (track info)
+//   1 = artwork (cover art images)
+//   2 = progress
+// The runtime setting controls whether received metadata is processed. Keep
+// all types advertised so toggling the setting takes effect without restarting.
 #define AIRPLAY_METADATA_TYPES "0,1,2"
-#else
-#define AIRPLAY_METADATA_TYPES "1,2"
-#endif
 
 // Model identifier - AudioAccessory for speaker appearance
-// AppleTV3,2 = Apple TV, AudioAccessory5,1 = HomePod mini (speaker)
-#define AIRPLAY_MODEL "AudioAccessory5,1"
+// AppleTV3,2 = Apple TV, AudioAccessory1,1 = HomePod (speaker)
+#define AIRPLAY_MODEL "AudioAccessory1,1"
 
 void mdns_airplay_init(void) {
   char mac_str[18];

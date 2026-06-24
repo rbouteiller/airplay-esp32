@@ -15,12 +15,8 @@ static const char TAG[] = "ESP32S3-Generic";
 
 static bool s_board_initialized = false;
 
-#ifdef CONFIG_MUTE_GPIO
+#if CONFIG_MUTE_GPIO >= 0
 static esp_err_t init_mute_gpio(void) {
-  if (CONFIG_MUTE_GPIO < 0) {
-    return ESP_OK;
-  }
-
   gpio_config_t io_conf = {
       .pin_bit_mask = (1ULL << CONFIG_MUTE_GPIO),
       .mode = GPIO_MODE_OUTPUT,
@@ -63,7 +59,7 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
-#ifdef CONFIG_MUTE_GPIO
+#if CONFIG_MUTE_GPIO >= 0
   esp_err_t err = init_mute_gpio();
   if (err != ESP_OK) {
     return err;

@@ -9,6 +9,7 @@ set( SRC_FILES
     "audio/audio_decoder.c"
     "audio/audio_buffer.c"
     "audio/audio_timing.c"
+    "audio/software_eq.c"
     "audio/audio_crypto.c"
     "audio/audio_resample.c"
     "rtsp/rtsp_server.c"

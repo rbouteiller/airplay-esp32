@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Persistent settings storage (NVS)
@@ -9,6 +10,30 @@
 
 // Default device name (used if none configured)
 #define SETTINGS_DEFAULT_DEVICE_NAME "ESP32 AirPlay"
+#define SETTINGS_POWER_CYCLE_WIFI_RESET_THRESHOLD 5
+#define SETTINGS_POWER_CYCLE_RESET_WINDOW_MS      5000
+
+typedef struct {
+  int i2s_sck;
+  int i2s_bck;
+  int i2s_ws;
+  int i2s_do;
+  int i2s_gnd;
+  int i2s_vcc;
+  int dac_i2c_sda;
+  int dac_i2c_scl;
+  int jack;
+  int spkfault;
+  int mute;
+  int led_status;
+  int led_error;
+  int led_rgb;
+  int btn_play_pause;
+  int btn_volume_up;
+  int btn_volume_down;
+  int btn_next;
+  int btn_prev;
+} settings_gpio_config_t;
 
 /**
  * Initialize settings module (call once at startup)
@@ -80,6 +105,24 @@ esp_err_t settings_get_wifi_password(char *password, size_t len);
 esp_err_t settings_set_wifi_credentials(const char *ssid, const char *password);
 
 /**
+ * Clear saved WiFi credentials from persistent storage.
+ */
+esp_err_t settings_clear_wifi_credentials(void);
+
+/**
+ * Process one power-on boot for the power-cycle AP recovery feature.
+ * A round is defined as: power on -> power off before the stable window.
+ * After N complete rounds, the next power-on boot clears saved WiFi
+ * credentials so the device returns to AP provisioning.
+ */
+esp_err_t settings_record_power_cycle_boot(bool *wifi_reset_triggered);
+
+/**
+ * Clear the consecutive power-cycle boot counter after a stable run window.
+ */
+esp_err_t settings_clear_power_cycle_counter(void);
+
+/**
  * Check if WiFi credentials are stored
  * @return true if credentials exist, false otherwise
  */
@@ -99,17 +142,38 @@ esp_err_t settings_get_device_name(char *name, size_t len);
  */
 esp_err_t settings_set_device_name(const char *name);
 
-// ---- LED settings ----
-
-/**
- * Get saved LED brightness (0–255). Returns compile-time default if not set.
- */
+/** Get saved LED brightness (0-255). */
 esp_err_t settings_get_led_brightness(uint8_t *brightness);
 
-/**
- * Save LED brightness (0–255) to persistent storage.
- */
+/** Save LED brightness (0-255) to persistent storage. */
 esp_err_t settings_set_led_brightness(uint8_t brightness);
+
+/** Return whether text, artwork, and progress metadata are enabled. */
+bool settings_airplay_metadata_enabled(void);
+
+/** Persist whether AirPlay text, artwork, and progress metadata are enabled. */
+esp_err_t settings_set_airplay_metadata_enabled(bool enabled);
+
+/**
+ * Fill a GPIO config struct with compile-time defaults.
+ */
+void settings_get_default_gpio_config(settings_gpio_config_t *config);
+
+/**
+ * Get the active GPIO config (saved overrides or compile-time defaults).
+ */
+esp_err_t settings_get_gpio_config(settings_gpio_config_t *config);
+
+/**
+ * Persist GPIO overrides.
+ */
+esp_err_t settings_set_gpio_config(const settings_gpio_config_t *config);
+
+/**
+ * Validate a GPIO number for the current target.
+ * -1 is accepted and means "disabled".
+ */
+bool settings_is_valid_gpio(int gpio);
 
 // ---- EQ settings ----
 
