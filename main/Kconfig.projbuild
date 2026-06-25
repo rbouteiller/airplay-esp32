@@ -156,12 +156,31 @@ menu "Airplay ESP Configuration"
                 The USB stream defaults to 48 kHz and must match the UAC
                 sample-rate setting. AirPlay audio is resampled automatically
                 when needed.
+
+        config AUDIO_OUTPUT_USB_HOST
+            bool "USB Audio Class HOST (drive a USB DAC/headphone)"
+            depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+            help
+                Act as a USB Audio Class HOST and stream AirPlay audio to a
+                connected USB-C headphone or DAC (e.g. Apple USB-C EarPods).
+                Uses the ESP-IDF USB Host library plus the
+                espressif/usb_host_uac component.
+
+                Requires a chip with USB-OTG and that the USB-C connector's
+                VBUS is powered (self-powered host: supply 5V to the board via
+                a SECOND port/pin, e.g. the UART/CH343 USB-C port). Enabling
+                this TAKES OVER the native USB-Serial/JTAG port, so flashing and
+                serial monitoring must use the external UART (CH343).
+
+                The stream runs at whatever rate the connected device
+                negotiates (48 kHz target); AirPlay audio is resampled
+                automatically.
     endchoice
 
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
         default OUTPUT_SAMPLE_RATE_44100
-        depends on !DAC_TAS57XX && !DAC_TAS58XX && !AUDIO_OUTPUT_USB
+        depends on !DAC_TAS57XX && !DAC_TAS58XX && !AUDIO_OUTPUT_USB && !AUDIO_OUTPUT_USB_HOST
         help
             Sample rate for I2S/SPDIF output. If the AirPlay source sends a
             different rate, the audio is resampled automatically.
@@ -175,6 +194,7 @@ menu "Airplay ESP Configuration"
     config OUTPUT_SAMPLE_RATE_HZ
         int
         default 48000 if AUDIO_OUTPUT_USB
+        default 44100 if AUDIO_OUTPUT_USB_HOST
         default 48000 if OUTPUT_SAMPLE_RATE_48000
         default 44100
 
@@ -190,6 +210,18 @@ menu "Airplay ESP Configuration"
             Must be a multiple of 4.
             ESP32-S3 (hardware FPU): 28 recommended.
             ESP32 (no FPU): 12 recommended.
+
+    config USB_HOST_VBUS_EN_GPIO
+        int "USB host VBUS enable GPIO (-1 = none)"
+        depends on AUDIO_OUTPUT_USB_HOST
+        range -1 48
+        default -1
+        help
+            Optional GPIO driven HIGH at init to enable an external VBUS power
+            switch for the USB-C host port. Leave at -1 if the board already
+            supplies 5V to the native USB-C VBUS (self-powered host). Note:
+            GPIO5 is the ESP32-S3 reference VBUS *detect* (input) convention;
+            this option is a separate power-switch *enable* output.
 
     endmenu
 

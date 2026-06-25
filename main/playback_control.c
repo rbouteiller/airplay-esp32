@@ -32,7 +32,7 @@
 static const char *TAG = "playback_ctrl";
 
 #define VOLUME_STEP_DB 3.0f
-#define VOLUME_MIN_DB  (-30.0f)
+#define VOLUME_MIN_DB  (-30.0f) /* q15 = 0 here: true silence */
 #define VOLUME_MAX_DB  0.0f
 
 static playback_source_t s_source = PLAYBACK_SOURCE_NONE;
@@ -125,11 +125,16 @@ void playback_control_play_pause(void) {
         if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
           s_pre_mute_db = -15.0f; // default 50 %
         }
+        /* airplay_set_volume drives the q15 the USB-host path applies in
+         * apply_volume; dac_set_volume drives a hardware DAC (I2S/SPDIF). Set
+         * both so mute works on every output. */
+        airplay_set_volume(VOLUME_MIN_DB); // q15 = 0 -> true silence
         dac_set_volume(VOLUME_MIN_DB);
         s_muted = true;
         rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
         ESP_LOGI(TAG, "AirPlay muted locally (was %.1f dB)", s_pre_mute_db);
       } else {
+        airplay_set_volume(s_pre_mute_db);
         dac_set_volume(s_pre_mute_db);
         s_muted = false;
         rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
@@ -152,7 +157,7 @@ void playback_control_play_pause(void) {
 void playback_control_volume_up(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    airplay_adjust_volume(VOLUME_STEP_DB);
+    airplay_adjust_volume(VOLUME_STEP_DB); /* one step; ramps up from silence */
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
@@ -167,7 +172,7 @@ void playback_control_volume_up(void) {
 void playback_control_volume_down(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    airplay_adjust_volume(-VOLUME_STEP_DB);
+    airplay_adjust_volume(-VOLUME_STEP_DB); /* one step; reaches silence at -30 */
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
