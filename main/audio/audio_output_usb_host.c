@@ -70,6 +70,16 @@
 #define USB_CLI_PRIO  6
 #define PLAYBACK_PRIO 7
 
+/* Largest iso-OUT wMaxPacketSize the controller can take. On S2/S3 the
+ * periodic TX FIFO is carved to 150 lines = 600 B in audio_output_init(); an
+ * alt-setting with a bigger EP (e.g. 96k/32-bit stereo = 768 B) can never get
+ * a pipe ("EP MPS exceeds supported limit"), so skip it at selection time. */
+#if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+#define ISO_OUT_MPS_LIMIT 600
+#else
+#define ISO_OUT_MPS_LIMIT 512 /* HS targets (P4): balanced-bias periodic OUT */
+#endif
+
 /* Isochronous OUT transfer pool. Full-speed: 1 packet per 1 ms frame.
  * 48 kHz 16-bit stereo = 192 bytes/frame. */
 #define NUM_URBS        4
@@ -234,6 +244,7 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
   bool cur_is_hid = false; /* current interface is HID (media buttons) */
   int as_channels = 0, as_bits = 0, as_subslot = 0;
   bool found_speaker = false;
+  int best_rank = -1; /* rank of the speaker alt held so far (see below) */
   s_ac_iface = 0;
   s_uac_ver = 0;
   s_out_subslot = 2;
@@ -338,18 +349,30 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
                iface, alt, as_channels, as_bits, as_subslot, ep_addr, is_iso,
                is_out, (ep_attr >> 2) & 0x03, (ep_attr >> 4) & 0x03, mps);
       if (is_iso && mps > 0) {
-        if (is_out && as_channels == 2 && as_subslot >= 2 && as_subslot <= 4) {
-          /* Stereo PCM iso OUT = the speaker path. Prefer 16-bit (subslot 2, no
-           * conversion); otherwise accept 24-/32-bit (e.g. the UAC1 Bose). */
-          bool better =
-              !found_speaker || (s_out_subslot != 2 && as_subslot == 2);
-          if (better) {
+        if (is_out && as_channels == 2 && as_subslot >= 2 && as_subslot <= 4 &&
+            mps > ISO_OUT_MPS_LIMIT) {
+          /* Pipe allocation would fail — a later/smaller alt may still work. */
+          ESP_LOGW(TAG, "  skip alt %d: iso-OUT mps %u > HW limit %d", alt, mps,
+                   ISO_OUT_MPS_LIMIT);
+        } else if (is_out && as_channels == 2 && as_subslot >= 2 &&
+                   as_subslot <= 4) {
+          /* Stereo PCM iso OUT = the speaker path. Rank: an alt whose packet
+           * carries OUTPUT_RATE beats one that can't (an undersized EP would
+           * underrun); then prefer 16-bit (subslot 2, no conversion) —
+           * otherwise accept 24-/32-bit (e.g. the UAC1 Bose). Ties keep the
+           * first alt in descriptor order. */
+          unsigned need = (unsigned)(OUTPUT_RATE / 1000 +
+                                     (OUTPUT_RATE % 1000 != 0)) *
+                          2u * (unsigned)as_subslot; /* peak bytes per 1 ms */
+          int rank = (mps >= need ? 2 : 0) + (as_subslot == 2 ? 1 : 0);
+          if (rank > best_rank) {
             s_out_iface = (uint8_t)iface;
             s_out_alt = (uint8_t)alt;
             s_out_ep = ep_addr;
             s_out_mps = mps;
             s_out_subslot = as_subslot;
             found_speaker = true;
+            best_rank = rank;
           }
         } else if (!is_out && as_channels >= 1 && as_subslot == 2 &&
                    s_in_ep == 0) {
@@ -562,9 +585,20 @@ static esp_err_t uac_fu_set_mute(uint8_t fu_id, bool mute) {
 }
 static esp_err_t uac_fu_set_volume_db(uint8_t fu_id, int16_t db_q8) {
   uint8_t d[2] = {(uint8_t)db_q8, (uint8_t)(db_q8 >> 8)};
-  /* VOLUME_CONTROL (0x02) << 8, channel 0 (master) */
-  return ctrl_xfer_sync(0x21, 0x01, 0x0200,
-                        (uint16_t)((fu_id << 8) | s_ac_iface), d, 2);
+  uint16_t widx = (uint16_t)((fu_id << 8) | s_ac_iface);
+  /* VOLUME_CONTROL (0x02) << 8 | channel. Master (ch 0) covers most devices
+   * (EarPods, Bose), but some — e.g. Sony USB receivers — STALL the master
+   * channel and only accept per-channel writes. Fall back to L (ch 1) + R
+   * (ch 2): a device left at its silent power-on default (because the volume
+   * was never set) plays nothing even though it's unmuted. */
+  esp_err_t e = ctrl_xfer_sync(0x21, 0x01, 0x0200, widx, d, 2);
+  if (e != ESP_OK) {
+    esp_err_t l = ctrl_xfer_sync(0x21, 0x01, 0x0201, widx, d, 2); /* ch 1 = L */
+    esp_err_t r = ctrl_xfer_sync(0x21, 0x01, 0x0202, widx, d, 2); /* ch 2 = R */
+    if (l == ESP_OK || r == ESP_OK)
+      e = ESP_OK;
+  }
+  return e;
 }
 static esp_err_t uac_mixer_set_db(uint8_t mixer_id, uint8_t in_ch,
                                   uint8_t out_ch, int16_t db_q8) {
@@ -715,10 +749,12 @@ static void setup_device(uint8_t addr) {
     bool mic = (s_fu_ids[i] == s_mic_fu);         /* feeds the USB mic-out */
     bool keep = master || mic;
     esp_err_t em = uac_fu_set_mute(s_fu_ids[i], !keep);
+    esp_err_t ev = ESP_OK;
     if (keep)
-      uac_fu_set_volume_db(s_fu_ids[i], 0);
-    ESP_LOGI(TAG, "FU %u %s mute=%d:%s", s_fu_ids[i],
-             master ? "SPK" : (mic ? "MIC" : "off"), !keep, esp_err_to_name(em));
+      ev = uac_fu_set_volume_db(s_fu_ids[i], 0);
+    ESP_LOGI(TAG, "FU %u %s mute=%d:%s vol:%s", s_fu_ids[i],
+             master ? "SPK" : (mic ? "MIC" : "off"), !keep, esp_err_to_name(em),
+             keep ? esp_err_to_name(ev) : "-");
   }
 
   /* 3b) Route the USB stereo input through the mixer to the speaker (a headset
@@ -981,6 +1017,22 @@ esp_err_t audio_output_init(void) {
   const usb_host_config_t host_cfg = {
       .skip_phy_setup = false,
       .intr_flags = ESP_INTR_FLAG_LEVEL1,
+#if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+      /* Carve the FS controller's 200-line (4 B each) FIFO for iso-OUT audio.
+       * The Kconfig default (balanced bias) gives the periodic TX FIFO only 32
+       * lines = 128 B max packet, so ANY real UAC speaker EP (192 B at
+       * 48k/16-bit stereo, 384 B on high-rate alts) fails to allocate:
+       * "HCD DWC: EP MPS (192) exceeds supported limit (128)". PTX 150 lines
+       * = 600 B iso OUT; RX 34 lines = 128 B IN (HID buttons use 64); NPTX 16
+       * lines = 64 B, enough for FS control writes. Same split as
+       * CONFIG_USB_HOST_HW_BUFFER_BIAS_PERIODIC_OUT, but independent of the
+       * builder's sdkconfig. */
+      .fifo_settings_custom = {
+          .nptx_fifo_lines = 16,
+          .ptx_fifo_lines = 150,
+          .rx_fifo_lines = 34,
+      },
+#endif
   };
   ESP_RETURN_ON_ERROR(usb_host_install(&host_cfg), TAG, "usb_host_install");
 
