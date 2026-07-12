@@ -17,7 +17,8 @@
  *
  * The connected device's endpoint is assumed synchronous (no feedback EP); we
  * send the nominal 48 kHz data rate. Sample-rate is the compile-time
- * OUTPUT_RATE (48 kHz); AirPlay audio is resampled to it.
+ * the device-supported rate (44.1 kHz preferred, else e.g. 48 kHz with
+ * on-board resampling — some dongles are 48 k-only).
  *
  * FULL-DUPLEX (USB_HOST_FULL_DUPLEX): some headsets — notably the Apple USB-C
  * EarPods (a "Headset" terminal, not "Headphones") — only route USB audio to
@@ -49,16 +50,23 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
+#include "esp_system.h"
 #include "usb/usb_host.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #define TAG           "audio_uac_host"
-#define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ /* 48000 */
+/* PREFERRED output rate (44.1 kHz = native AirPlay, no resampling). A device
+ * that doesn't list it in its descriptors runs at the closest rate it does
+ * support (s_out_rate) with on-board resampling — e.g. the Sony INZONE Buds
+ * dongle is 48 k-only: it ACKs SET_CUR(44100) on the EP but plays silence. */
+#define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
 #define FRAME_SAMPLES 352
+/* Sized for the HIGHEST rate a device can force (48 k), not OUTPUT_RATE —
+ * s_out_rate is chosen per device at runtime. */
 #define MAX_RESAMPLE_FRAMES \
-  ((size_t)((FRAME_SAMPLES + 2) * ((double)OUTPUT_RATE / 44100) + 16))
+  ((size_t)((FRAME_SAMPLES + 2) * (48000.0 / 44100) + 16))
 
 #if CONFIG_FREERTOS_UNICORE
 #define PLAYBACK_CORE 0
@@ -128,6 +136,7 @@ static uint8_t s_mic_fu = 0;      /* feature unit feeding the USB-out (mic) term
 static uint8_t s_clock_ids[4];    /* all UAC2 Clock Source entity IDs */
 static int s_clock_count = 0;
 static int s_out_subslot = 2;  /* device sample size (bytes): 2=16-bit, 3=24-bit */
+static uint32_t s_out_rate = OUTPUT_RATE; /* rate the chosen alt actually runs */
 static uint8_t s_uac_ver = 0;  /* UAC spec major version: 1 or 2 */
 
 /* Full-duplex capture path (mic IN). Opening it alongside the speaker OUT can
@@ -243,11 +252,13 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
   bool cur_is_ac = false;  /* current interface is AudioControl */
   bool cur_is_hid = false; /* current interface is HID (media buttons) */
   int as_channels = 0, as_bits = 0, as_subslot = 0;
+  uint32_t as_rate = 0; /* rate this alt would run at (0 = unknown, UAC2) */
   bool found_speaker = false;
   int best_rank = -1; /* rank of the speaker alt held so far (see below) */
   s_ac_iface = 0;
   s_uac_ver = 0;
   s_out_subslot = 2;
+  s_out_rate = OUTPUT_RATE;
   s_clock_id = 0;
   s_clock_count = 0;
   s_fu_count = 0;
@@ -286,6 +297,7 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
       as_channels = 0;
       as_bits = 0;
       as_subslot = 0;
+      as_rate = 0;
     } else if (cur_is_ac && type == 0x24) { /* CS_INTERFACE (AudioControl) */
       /* INPUT_TERMINAL (subtype 2): grab the clock feeding the USB-streaming
        * (host->device) terminal. UAC2 layout: wTerminalType @4, bCSourceID @7 */
@@ -333,6 +345,33 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
           as_channels = p[4];
           as_subslot = p[5];
           as_bits = p[6];
+          /* UAC1 lists the supported rates right here: bSamFreqType @7
+           * (0 = continuous min..max, else count of discrete rates), 3-byte
+           * rates from @8. Pick per alt: 44.1 k native > 48 k resampled >
+           * first listed. Do NOT assume a device accepts OUTPUT_RATE just
+           * because SET_CUR succeeds — 48 k-only dongles (Sony INZONE Buds)
+           * ACK 44100 and then play silence. */
+          if (len >= 8) {
+            uint8_t nfreq = p[7];
+            if (nfreq == 0 && len >= 14) { /* continuous range */
+              uint32_t lo = p[8] | (p[9] << 8) | ((uint32_t)p[10] << 16);
+              uint32_t hi = p[11] | (p[12] << 8) | ((uint32_t)p[13] << 16);
+              as_rate = (44100 >= lo && 44100 <= hi)   ? 44100
+                        : (48000 >= lo && 48000 <= hi) ? 48000
+                                                       : lo;
+            } else {
+              for (int f = 0; f < nfreq && 8 + 3 * f + 2 < len; f++) {
+                uint32_t r = p[8 + 3 * f] | (p[9 + 3 * f] << 8) |
+                             ((uint32_t)p[10 + 3 * f] << 16);
+                if (as_rate == 0)
+                  as_rate = r; /* fallback: first listed */
+                if (r == 48000 && as_rate != 44100)
+                  as_rate = 48000;
+                if (r == 44100)
+                  as_rate = 44100;
+              }
+            }
+          }
         }
       }
     } else if (cur_is_as && type == 0x05) { /* ENDPOINT */
@@ -345,9 +384,10 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
        * separate feedback IN endpoint we'd need to honor to avoid drift. */
       ESP_LOGI(TAG,
                "  AS iface=%d alt=%d: ch=%d bits=%d sub=%d ep=0x%02x iso=%d "
-               "out=%d sync=%d use=%d mps=%u",
+               "out=%d sync=%d use=%d mps=%u rate=%lu",
                iface, alt, as_channels, as_bits, as_subslot, ep_addr, is_iso,
-               is_out, (ep_attr >> 2) & 0x03, (ep_attr >> 4) & 0x03, mps);
+               is_out, (ep_attr >> 2) & 0x03, (ep_attr >> 4) & 0x03, mps,
+               (unsigned long)as_rate);
       if (is_iso && mps > 0) {
         if (is_out && as_channels == 2 && as_subslot >= 2 && as_subslot <= 4 &&
             mps > ISO_OUT_MPS_LIMIT) {
@@ -361,8 +401,9 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
            * underrun); then prefer 16-bit (subslot 2, no conversion) —
            * otherwise accept 24-/32-bit (e.g. the UAC1 Bose). Ties keep the
            * first alt in descriptor order. */
-          unsigned need = (unsigned)(OUTPUT_RATE / 1000 +
-                                     (OUTPUT_RATE % 1000 != 0)) *
+          uint32_t alt_rate = as_rate ? as_rate : OUTPUT_RATE;
+          unsigned need = (unsigned)(alt_rate / 1000 +
+                                     (alt_rate % 1000 != 0)) *
                           2u * (unsigned)as_subslot; /* peak bytes per 1 ms */
           int rank = (mps >= need ? 2 : 0) + (as_subslot == 2 ? 1 : 0);
           if (rank > best_rank) {
@@ -371,6 +412,7 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
             s_out_ep = ep_addr;
             s_out_mps = mps;
             s_out_subslot = as_subslot;
+            s_out_rate = alt_rate;
             found_speaker = true;
             best_rank = rank;
           }
@@ -450,8 +492,8 @@ static esp_err_t start_streaming(void) {
    * 44 samples/frame, 45 every ~10th. Allocate the worst case (one extra
    * sample/packet), capped at the endpoint MPS. */
   s_frame_bytes = 2 * s_out_subslot; /* 4 = 16-bit, 6 = 24-bit (stereo) */
-  s_pkt_base = OUTPUT_RATE / 1000;
-  s_pkt_frac = OUTPUT_RATE % 1000;
+  s_pkt_base = (int)(s_out_rate / 1000);
+  s_pkt_frac = (int)(s_out_rate % 1000);
   s_frac_accum = 0;
   int alloc = (s_pkt_base + 1) * s_frame_bytes * PACKETS_PER_URB;
   if (alloc > (int)s_out_mps * PACKETS_PER_URB)
@@ -471,8 +513,9 @@ static esp_err_t start_streaming(void) {
     fill_out_packets(s_urb[i]);              /* sets packet sizes + num_bytes */
     ESP_RETURN_ON_ERROR(usb_host_transfer_submit(s_urb[i]), TAG, "submit");
   }
-  ESP_LOGI(TAG, "Streaming: ep=0x%02x rate=%d (%d+frac samp/frame) x %d pkt x %d urbs",
-           s_out_ep, OUTPUT_RATE, s_pkt_base, PACKETS_PER_URB, NUM_URBS);
+  ESP_LOGI(TAG, "Streaming: ep=0x%02x rate=%lu (%d+frac samp/frame) x %d pkt x %d urbs",
+           s_out_ep, (unsigned long)s_out_rate, s_pkt_base, PACKETS_PER_URB,
+           NUM_URBS);
   return ESP_OK;
 }
 
@@ -495,7 +538,7 @@ static void in_xfer_cb(usb_transfer_t *xfer) {
 }
 
 static esp_err_t start_capture(void) {
-  s_in_packet_bytes = s_in_channels * 2 * (OUTPUT_RATE / 1000);
+  s_in_packet_bytes = s_in_channels * 2 * (int)(s_out_rate / 1000);
   if (s_in_packet_bytes > s_in_mps)
     s_in_packet_bytes = s_in_mps;
   int total = s_in_packet_bytes * PACKETS_PER_URB;
@@ -700,23 +743,32 @@ static void setup_device(uint8_t addr) {
     goto fail_close;
   }
   ESP_LOGI(TAG,
-           "Speaker iface=%u alt=%u ep=0x%02x mps=%u | Mic iface=%u alt=%u "
-           "ep=0x%02x ch=%d | AC iface=%u clocks=%d FUs=%d mic_fu=%u",
-           s_out_iface, s_out_alt, s_out_ep, s_out_mps, s_in_iface, s_in_alt,
+           "Speaker iface=%u alt=%u ep=0x%02x mps=%u rate=%lu | Mic iface=%u "
+           "alt=%u ep=0x%02x ch=%d | AC iface=%u clocks=%d FUs=%d mic_fu=%u",
+           s_out_iface, s_out_alt, s_out_ep, s_out_mps,
+           (unsigned long)s_out_rate, s_in_iface, s_in_alt,
            s_in_ep, s_in_channels, s_ac_iface, s_clock_count, s_fu_count,
            s_mic_fu);
+
+  /* 0) Mute every feature unit FIRST (best-effort — some FUs reject writes).
+   * Between USB reset and the first iso packet the device's DAC is enabled
+   * but unclocked, and several DACs emit white noise in that window. Keep
+   * them muted through setup; unmute AFTER the silence stream is flowing
+   * (step 5 below). */
+  for (int i = 0; i < s_fu_count; i++)
+    uac_fu_set_mute(s_fu_ids[i], true);
 
   /* 1) UAC2: set every clock source's sample rate BEFORE selecting a streaming
    * alt. UAC1 has no clock entities — its rate is set on the endpoint after
    * SET_INTERFACE (below). */
   if (s_uac_ver == 2) {
     for (int i = 0; i < s_clock_count; i++) {
-      esp_err_t e = uac_set_clock_hz(s_clock_ids[i], OUTPUT_RATE);
-      ESP_LOGI(TAG, "set clock id=%u %d Hz: %s", s_clock_ids[i], OUTPUT_RATE,
-               esp_err_to_name(e));
+      esp_err_t e = uac_set_clock_hz(s_clock_ids[i], s_out_rate);
+      ESP_LOGI(TAG, "set clock id=%u %lu Hz: %s", s_clock_ids[i],
+               (unsigned long)s_out_rate, esp_err_to_name(e));
     }
     if (s_clock_count == 0 && s_clock_id)
-      uac_set_clock_hz(s_clock_id, OUTPUT_RATE);
+      uac_set_clock_hz(s_clock_id, s_out_rate);
   }
 
   /* 2) Claim the streaming interface+alt. NOTE: usb_host_interface_claim() only
@@ -730,43 +782,34 @@ static void setup_device(uint8_t addr) {
              s_out_alt);
     goto fail_close;
   }
+  /* 2b) Prime and submit the silence URBs BEFORE SET_INTERFACE. While the
+   * device is on alt 0 it discards iso OUT data, so this is harmless — and
+   * the moment SET_INTERFACE enables its endpoint, real (zero) data is
+   * already arriving. Devices whose DAC hisses while enabled-but-unclocked
+   * (startup white noise) get clocked immediately. */
+  audio_resample_init(44100, s_out_rate, 2);
+  audio_resample_reset();
+  if (start_streaming() != ESP_OK) {
+    ESP_LOGE(TAG, "start_streaming failed");
+    s_streaming = false;
+    usb_host_interface_release(s_client, s_dev, s_out_iface);
+    goto fail_close;
+  }
+
   /* THE FIX: switch the DEVICE to the streaming alt (enables its endpoint). */
   esp_err_t si = ctrl_xfer_sync(0x01, 0x0b, s_out_alt, s_out_iface, NULL, 0);
   ESP_LOGI(TAG, "SET_INTERFACE(iface=%u alt=%u): %s", s_out_iface, s_out_alt,
            esp_err_to_name(si));
-  /* UAC1: now that the endpoint exists, set its sampling frequency. */
+  /* UAC1: now that the endpoint exists, set its sampling frequency. (Until
+   * this lands the device consumes our zeros at its power-on rate — still
+   * silence, so the order is safe.) */
   if (s_uac_ver == 1) {
-    esp_err_t er = uac1_set_ep_rate(s_out_ep, OUTPUT_RATE);
-    ESP_LOGI(TAG, "UAC1 set ep 0x%02x rate %d Hz: %s", s_out_ep, OUTPUT_RATE,
-             esp_err_to_name(er));
+    esp_err_t er = uac1_set_ep_rate(s_out_ep, s_out_rate);
+    ESP_LOGI(TAG, "UAC1 set ep 0x%02x rate %lu Hz: %s", s_out_ep,
+             (unsigned long)s_out_rate, esp_err_to_name(er));
   }
 
-  /* 3) Unmute the speaker FU (master) and the mic FU (so the capture stream has
-   * signal — part of looking like a live call); mute the rest, e.g. the
-   * mic-monitor (sidetone) FU that otherwise loops the mic into the speaker. */
-  for (int i = 0; i < s_fu_count; i++) {
-    bool master = (s_fu_ids[i] == s_speaker_src); /* feeds the speaker */
-    bool mic = (s_fu_ids[i] == s_mic_fu);         /* feeds the USB mic-out */
-    bool keep = master || mic;
-    esp_err_t em = uac_fu_set_mute(s_fu_ids[i], !keep);
-    esp_err_t ev = ESP_OK;
-    if (keep)
-      ev = uac_fu_set_volume_db(s_fu_ids[i], 0);
-    ESP_LOGI(TAG, "FU %u %s mute=%d:%s vol:%s", s_fu_ids[i],
-             master ? "SPK" : (mic ? "MIC" : "off"), !keep, esp_err_to_name(em),
-             keep ? esp_err_to_name(ev) : "-");
-  }
-
-  /* 3b) Route the USB stereo input through the mixer to the speaker (a headset
-   * mixer's USB crosspoints default to muted, while the mic pin is unity). */
-  if (s_mixer_id) {
-    esp_err_t a = uac_mixer_set_db(s_mixer_id, 1, 1, 0); /* USB L -> out L */
-    esp_err_t b = uac_mixer_set_db(s_mixer_id, 2, 2, 0); /* USB R -> out R */
-    ESP_LOGI(TAG, "mixer %u (1->1):%s (2->2):%s", s_mixer_id, esp_err_to_name(a),
-             esp_err_to_name(b));
-  }
-
-  /* 3c) Full-duplex: also claim the mic interface and run iso IN transfers, so
+  /* 3) Full-duplex: also claim the mic interface and run iso IN transfers, so
    * a headset that only routes USB audio during an active bidirectional call
    * un-gates its speaker. Best-effort — failure falls back to output-only. */
 #if USB_HOST_FULL_DUPLEX
@@ -788,26 +831,37 @@ static void setup_device(uint8_t addr) {
   s_in_ep = 0; /* output-only build: never open capture */
 #endif
 
-  /* 4) Start the isochronous OUT stream. */
-  audio_resample_init(44100, OUTPUT_RATE, 2);
-  audio_resample_reset();
-  if (start_streaming() != ESP_OK) {
-    ESP_LOGE(TAG, "start_streaming failed");
-    s_streaming = false;
-    s_capturing = false;
-    for (int i = 0; i < NUM_IN_URBS; i++)
-      if (s_in_urb[i]) {
-        usb_host_transfer_free(s_in_urb[i]);
-        s_in_urb[i] = NULL;
-      }
-    usb_host_interface_release(s_client, s_dev, s_out_iface);
-    if (s_in_ep)
-      usb_host_interface_release(s_client, s_dev, s_in_iface);
-    goto fail_close;
-  }
   ESP_LOGI(TAG, "USB audio OUT streaming started");
 
-  /* 5) Headset media buttons: claim the HID interface (if present) and read its
+  /* 4) NOW unmute — the silence stream is already flowing, so the device's
+   * DAC is clocked with real (zero) data and can't hiss. Unmute EVERY
+   * feature unit and set each to 0 dB: dual-stream devices (e.g. Sony
+   * receivers expose separate game/chat OUT streams with one FU per path)
+   * put our chosen stream behind a FU that is NOT the one feeding the
+   * output terminal we tagged as "master" — muting it, or leaving its
+   * silent power-on default volume unset, plays nothing despite a healthy
+   * iso stream. A rare sidetone FU coming up audible is the lesser evil
+   * vs. guaranteed silence. */
+  for (int i = 0; i < s_fu_count; i++) {
+    bool master = (s_fu_ids[i] == s_speaker_src); /* feeds the speaker */
+    bool mic = (s_fu_ids[i] == s_mic_fu);         /* feeds the USB mic-out */
+    esp_err_t em = uac_fu_set_mute(s_fu_ids[i], false);
+    esp_err_t ev = uac_fu_set_volume_db(s_fu_ids[i], 0);
+    ESP_LOGI(TAG, "FU %u %s mute=0:%s vol:%s", s_fu_ids[i],
+             master ? "SPK" : (mic ? "MIC" : "aux"), esp_err_to_name(em),
+             esp_err_to_name(ev));
+  }
+
+  /* 5b) Route the USB stereo input through the mixer to the speaker (a headset
+   * mixer's USB crosspoints default to muted, while the mic pin is unity). */
+  if (s_mixer_id) {
+    esp_err_t a = uac_mixer_set_db(s_mixer_id, 1, 1, 0); /* USB L -> out L */
+    esp_err_t b = uac_mixer_set_db(s_mixer_id, 2, 2, 0); /* USB R -> out R */
+    ESP_LOGI(TAG, "mixer %u (1->1):%s (2->2):%s", s_mixer_id, esp_err_to_name(a),
+             esp_err_to_name(b));
+  }
+
+  /* 6) Headset media buttons: claim the HID interface (if present) and read its
    * interrupt reports. Best-effort — failure just means no button control. */
   if (s_hid_iface != 0xff && s_hid_ep) {
     if (usb_host_interface_claim(s_client, s_dev, s_hid_iface, s_hid_alt) ==
@@ -916,6 +970,19 @@ static void usb_setup_task(void *arg) {
   }
 }
 
+/* Graceful-reboot hook. A software reset (OTA, web-UI restart) kills the host
+ * mid-stream; a bus-powered DAC that keeps VBUS through the reboot then hisses
+ * on the dead bus until the next boot re-enumerates it (~7 s). Mute the FUs
+ * and switch the streaming interface back to alt 0 (endpoint disabled) so the
+ * device idles silently instead. Hard resets (button/power) can't run this. */
+static void usb_audio_shutdown(void) {
+  if (!s_dev)
+    return;
+  for (int i = 0; i < s_fu_count; i++)
+    uac_fu_set_mute(s_fu_ids[i], true);
+  ctrl_xfer_sync(0x01, 0x0b, 0, s_out_iface, NULL, 0); /* SET_INTERFACE alt 0 */
+}
+
 /* ── Volume + playback task ──────────────────────────────────────────────── */
 static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
@@ -961,7 +1028,7 @@ static void playback_task(void *arg) {
   while (true) {
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
-      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2);
+      audio_resample_init((uint32_t)source_rate, s_out_rate, 2);
     }
     if (flush_requested) {
       flush_requested = false;
@@ -1001,6 +1068,12 @@ static void playback_task(void *arg) {
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 esp_err_t audio_output_init(void) {
+  /* Called twice: early in app_main (USB up before the network waits, so a
+   * noisy idle DAC gets silence ASAP) and from start_airplay_services(). */
+  static bool s_inited = false;
+  if (s_inited)
+    return ESP_OK;
+  s_inited = true;
   ESP_LOGI(TAG, "Init USB UAC HOST (native) output, rate=%d", OUTPUT_RATE);
   s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
   s_ctrl_sem = xSemaphoreCreateBinary();
@@ -1035,6 +1108,7 @@ esp_err_t audio_output_init(void) {
 #endif
   };
   ESP_RETURN_ON_ERROR(usb_host_install(&host_cfg), TAG, "usb_host_install");
+  esp_register_shutdown_handler(usb_audio_shutdown);
 
   xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, NULL, USB_LIB_PRIO,
                           NULL, USB_CORE);
@@ -1074,7 +1148,7 @@ uint32_t audio_output_get_hardware_latency_us(void) {
    * backs up and ages, and stale frames then drop as "late" — the oscillation
    * heard as stutter. Reporting the true depth makes them release on time. */
   uint32_t fifo_us = (uint32_t)((uint64_t)FIFO_TARGET_BYTES * 1000000ULL /
-                                ((uint32_t)OUTPUT_RATE * s_frame_bytes));
+                                (s_out_rate * (uint32_t)s_frame_bytes));
   uint32_t urb_us = (uint32_t)NUM_URBS * PACKETS_PER_URB * 1000;
   return fifo_us + urb_us;
 }

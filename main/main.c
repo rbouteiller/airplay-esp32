@@ -288,6 +288,16 @@ void app_main(void) {
   // display/LVGL port is ready.
   iot_board_init_lvgl_resources();
 
+#if CONFIG_AUDIO_OUTPUT_USB_HOST
+  // Bring the USB host up BEFORE the network waits below (ethernet up to
+  // 15 s, WiFi up to 30 s). A bus-powered DAC keeps replaying its stale —
+  // audibly noisy — buffer the whole time no host feeds it, so enumeration
+  // and the silence stream must start as early in boot as possible; they
+  // run in parallel with network bring-up. audio_output_init() is
+  // idempotent — the later call in start_airplay_services() is a no-op.
+  ESP_ERROR_CHECK(audio_output_init());
+#endif
+
   // Try ethernet first
   bool eth_available = false;
   err = ethernet_init();
