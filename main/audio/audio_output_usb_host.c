@@ -992,6 +992,48 @@ static void apply_volume(int16_t *buf, size_t n) {
 #endif
 }
 
+static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_STEREO;
+
+/* Apply the selected channel mode to an interleaved stereo buffer (L,R,...).
+ * LEFT/RIGHT route the chosen source channel to BOTH outputs so the selected
+ * track is heard from both speakers; STEREO leaves the buffer untouched. */
+static void apply_channel_mode(int16_t *buf, size_t frames) {
+  audio_channel_mode_t mode = channel_mode;
+  if (mode == AUDIO_CHANNEL_STEREO)
+    return;
+  size_t src = (mode == AUDIO_CHANNEL_RIGHT) ? 1 : 0;
+  for (size_t i = 0; i < frames; i++) {
+    int16_t s = buf[i * 2 + src];
+    buf[i * 2] = s;
+    buf[i * 2 + 1] = s;
+  }
+}
+
+audio_channel_mode_t audio_output_cycle_channel_mode(void) {
+  audio_channel_mode_t next;
+  switch (channel_mode) {
+  case AUDIO_CHANNEL_STEREO:
+    next = AUDIO_CHANNEL_LEFT;
+    break;
+  case AUDIO_CHANNEL_LEFT:
+    next = AUDIO_CHANNEL_RIGHT;
+    break;
+  default:
+    next = AUDIO_CHANNEL_STEREO;
+    break;
+  }
+  channel_mode = next;
+  ESP_LOGI(TAG, "Channel mode: %s",
+           next == AUDIO_CHANNEL_LEFT    ? "LEFT only"
+           : next == AUDIO_CHANNEL_RIGHT ? "RIGHT only"
+                                         : "STEREO");
+  return next;
+}
+
+audio_channel_mode_t audio_output_get_channel_mode(void) {
+  return channel_mode;
+}
+
 static volatile bool flush_requested = false;
 static volatile int source_rate = 44100;
 static volatile bool resample_reinit_needed = false;
@@ -1047,6 +1089,7 @@ static void playback_task(void *arg) {
         play_buf = resample_buf;
       }
       apply_volume(play_buf, play_samples * 2);
+      apply_channel_mode(play_buf, play_samples);
       led_audio_feed(play_buf, play_samples);
       if (s_streaming) {
         if (s_frame_bytes == 4) {
