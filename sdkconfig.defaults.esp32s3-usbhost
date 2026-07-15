@@ -1,0 +1,73 @@
+# USB Audio HOST output on ESP32-S3 (AirPlay -> USB-C headphone/DAC/receiver).
+#
+# Reusable, board-independent settings for a USB-host-audio build. Chain this
+# AFTER sdkconfig.defaults and sdkconfig.defaults.esp32s3, e.g. in an env's
+# board_build.cmake_extra_args:
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.esp32s3-usbhost"
+# Board-specific bits (flash size/mode, PSRAM, flash encryption) belong in a
+# separate board file, not here.
+
+# --- Backend selector -------------------------------------------------------
+# Route AirPlay audio to the native USB-C port acting as a USB host. Requires
+# the espressif/usb_device_uac component and an S2/S3/P4 target.
+CONFIG_AUDIO_OUTPUT_USB_HOST=y
+
+# --- USB host enumeration ---------------------------------------------------
+# Default EP0 control-transfer buffer (256 B) is too small for the multi-config
+# / audio+HID descriptors of devices like Apple USB-C EarPods -> enumeration
+# fails with "Configuration descriptor larger than control transfer max length".
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+
+# Some audio devices (e.g. Bose QC Ultra) sit behind an internal or external
+# USB hub; without hub support the host logs "External Hubs support disabled"
+# and the device never enumerates. Directly-attached devices are unaffected.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
+
+# FIFO bias FALLBACK. audio_output_init() carves the DWC-OTG FIFO at runtime
+# via usb_host_config_t.fifo_settings_custom (IDF >=5.5) so iso-OUT gets a
+# ~600 B MPS limit regardless of this Kconfig value; the default "balanced"
+# bias caps iso-OUT at 128 B -> "HCD DWC: EP MPS (192) exceeds supported limit
+# (128)". This line is a belt-and-suspenders fallback only (the failure mode
+# is a hard EP-alloc error = no audio), so keep it even though the code
+# normally overrides it.
+CONFIG_USB_HOST_HW_BUFFER_BIAS_BALANCED=n
+CONFIG_USB_HOST_HW_BUFFER_BIAS_PERIODIC_OUT=y
+
+# --- Audio pacing -----------------------------------------------------------
+# 1 kHz tick: the playback task tops up the PCM FIFO with vTaskDelay(1); at the
+# 100 Hz default that is a 10 ms step, landing on the timing layer's late-frame
+# threshold and causing periodic drops. 1 ms keeps frames well inside it.
+CONFIG_FREERTOS_HZ=1000
+
+# --- Realtime (ALAC/UDP) receive robustness ---------------------------------
+# PROVEN load-bearing (measured 2026-07-16): the USB playback task runs ABOVE
+# the RTP receive+decode task, so the receive task is preempted during playback
+# bursts. The lwIP default UDP mailbox of 6 datagrams (~48 ms at 125 pkt/s)
+# then overflows and DROPS datagrams locally — indistinguishable from network
+# loss, and it stutters realtime (Mac system-audio) playback. Reverting this to
+# 6 took arrival loss from 0% to a steady ~8% on a clean network; 64 -> 0%.
+# NOTE: lwIP mailbox size is compile-time only — there is no runtime API, so it
+# MUST come from sdkconfig. (Buffered AAC over TCP is immune; this is UDP-only.)
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+
+# Supporting: absorb bursty AP frame delivery (aggregated frames) without
+# radio-level drops. Tested together with the mailbox, not isolated — the
+# mailbox is the primary fix; these add margin.
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+
+# Pin the lwIP TCP/IP task to core 0 (with WiFi/USB). Left floating it can land
+# on core 1 during Apple Music's 1-2 s network bursts (progress/feedback/
+# artwork) and preempt the core-1 audio producer, draining the USB FIFO into
+# underrun gaps.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_NO_AFFINITY=n
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
+# --- Timing threshold -------------------------------------------------------
+# Widen the buffered early/late threshold for the deep USB-host pipeline
+# (~50 ms PCM FIFO + ~32 ms iso URB queue). Upstream's 10 ms default is far too
+# tight for that depth plus WiFi PTP jitter and drops frames. Kconfig range for
+# buffered is 2..200. (Realtime RT threshold is left at its 50 ms default.)
+CONFIG_AIRPLAY_TIMING_THRESHOLD_MS=200

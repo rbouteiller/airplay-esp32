@@ -51,6 +51,7 @@
 
 #include "driver/gpio.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "usb/usb_host.h"
 
 #include <stdlib.h>
@@ -76,7 +77,14 @@
 #define USB_CORE      0
 #define USB_LIB_PRIO  9
 #define USB_CLI_PRIO  6
-#define PLAYBACK_PRIO 7
+/* Playback feeds the iso-OUT FIFO on a hard ~8 ms deadline while the realtime
+ * RTP receive/decode task (prio 8, shared code) has seconds of jitter buffer
+ * to spare — so playback must outrank it. At the old prio 7 the decode task
+ * preempted playback during burst decodes and starved the FIFO: underruns
+ * accumulated (~1 / 2.5 s) even at ZERO packet loss. Fixing it HERE (raise the
+ * consumer) instead of lowering the shared receive task keeps the change in
+ * this backend and leaves other outputs' scheduling untouched. */
+#define PLAYBACK_PRIO 10
 
 /* Largest iso-OUT wMaxPacketSize the controller can take. On S2/S3 the
  * periodic TX FIFO is carved to 150 lines = 600 B in audio_output_init(); an
@@ -103,12 +111,16 @@
 
 /* PCM FIFO (producer = playback task, consumer = iso OUT callbacks) */
 #define FIFO_CAP 16384 /* bytes; ~85 ms at 48 kHz stereo 16-bit */
-/* Target FIFO depth (~50 ms). The playback task fills to here then yields, so it
+/* Target FIFO depth (~80 ms). The playback task fills to here then yields, so it
  * paces itself to the iso drain rate instead of busy-spinning. The old loop
  * never delayed while frames were available — it pegged this core at 100% and
  * jittered the shared timing layer into dropping frames as "late" (the
- * play-stop-play-stop stutter). 50 ms keeps a safe margin over the 10 ms tick. */
-#define FIFO_TARGET_BYTES ((OUTPUT_RATE / 1000) * 4 * 50)
+ * play-stop-play-stop stutter). Raised 50 -> 80 ms (2026-07-09): the timing
+ * layer occasionally withholds frames for tens of ms (early-hold, refill
+ * bursts) and 50 ms of headroom let the FIFO hit empty = audible gap; the
+ * extra 30 ms of pipeline latency is absorbed by the sender lead (buffered)
+ * and the 250 ms timing threshold (realtime). */
+#define FIFO_TARGET_BYTES ((OUTPUT_RATE / 1000) * 4 * 80)
 
 /* ── USB / streaming state (owned by the USB client task) ────────────────── */
 static usb_host_client_handle_t s_client = NULL;
@@ -197,22 +209,71 @@ static void fifo_reset(void) {
     xStreamBufferReset(s_pcm);
 }
 
+/* Refill the FIFO with silence after a reset. Starting from an EMPTY FIFO,
+ * the playback task races ~112 ms of REAL audio (FIFO + URB ring) into the
+ * pipeline at once, permanently parking playout that far ahead of schedule —
+ * right at the early-hold boundary, where anchor wobble quantizes into
+ * audible clicks. Pre-filled with silence, the producer is pipeline-paced
+ * from its very first real frame and playout starts on schedule. */
+static void fifo_prefill_silence(void) {
+  if (!s_pcm)
+    return;
+  static const uint8_t zeros[512] = {0};
+  size_t space = xStreamBufferSpacesAvailable(s_pcm);
+  while (space >= sizeof(zeros)) {
+    xStreamBufferSend(s_pcm, zeros, sizeof(zeros), 0);
+    space -= sizeof(zeros);
+  }
+  if (space)
+    xStreamBufferSend(s_pcm, zeros, space, 0);
+}
+
 /* Enqueue, blocking (paced by the consumer) until there is room. A long stall
- * (e.g. the device was unplugged) times out and drops the chunk rather than
- * wedging the playback task. */
+ * (e.g. the device was unplugged) eventually drops the remainder rather than
+ * wedging the playback task — but NEVER at an arbitrary byte offset: the FIFO
+ * is a raw byte stream, so losing a non-multiple of the frame size would
+ * shift every later frame boundary (channel swap + byte-shift = loud static
+ * until the next flush). On timeout, retry; if the FIFO stays full, drop the
+ * tail but zero-pad back to a frame boundary. */
 static void fifo_push(const uint8_t *src, size_t len) {
   if (!s_pcm)
     return;
   s_push_bytes += len;
-  xStreamBufferSend(s_pcm, src, len, pdMS_TO_TICKS(100));
+  size_t sent = 0;
+  for (int tries = 0; sent < len && tries < 5 && s_streaming; tries++)
+    sent +=
+        xStreamBufferSend(s_pcm, src + sent, len - sent, pdMS_TO_TICKS(100));
+  if (sent < len) {
+    size_t mis = sent % (size_t)s_frame_bytes;
+    if (mis) {
+      static const uint8_t pad[8] = {0};
+      xStreamBufferSend(s_pcm, pad, (size_t)s_frame_bytes - mis,
+                        pdMS_TO_TICKS(20));
+    }
+  }
 }
 
 /* Dequeue up to `len` bytes (non-blocking — runs in the USB callback); pad the
  * remainder with silence on underrun. */
+static uint32_t s_underruns = 0; /* mid-stream FIFO underruns (audible gaps) */
+
 static void fifo_pop_padded(uint8_t *dst, size_t len) {
   size_t got = s_pcm ? xStreamBufferReceive(s_pcm, dst, len, 0) : 0;
-  if (got < len)
+  if (got < len) {
     memset(dst + got, 0, len - got);
+    /* A PARTIAL pop is the moment an active stream ran dry — an audible
+     * gap. (Full-zero pops also happen while idle, so don't count those.) */
+    if (got > 0) {
+      s_underruns++;
+      static int64_t s_last_ur_log = 0;
+      int64_t now = esp_timer_get_time();
+      if (now - s_last_ur_log > 2000000) {
+        s_last_ur_log = now;
+        ESP_LOGW(TAG, "FIFO underrun #%lu: gap at USB boundary",
+                 (unsigned long)s_underruns);
+      }
+    }
+  }
 }
 
 /* ── Optional VBUS enable ────────────────────────────────────────────────── */
@@ -445,6 +506,13 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
 /* Size each iso packet for the (possibly fractional) rate; sets per-packet
  * num_bytes + xfer->num_bytes, returns the urb total. */
 static int fill_out_packets(usb_transfer_t *xfer) {
+  /* Never exceed the endpoint's wMaxPacketSize: the chooser accepts an
+   * undersized iso EP as a last resort, and the URB buffer is allocated
+   * to MPS in that case — a packet sized from the rate alone would
+   * overrun both the buffer and the device limit. Return the unsent
+   * fraction to the accumulator (bounded) so a marginally-small EP still
+   * averages out; a fundamentally-too-small EP degrades gracefully. */
+  int max_samples = (int)(s_out_mps / (uint16_t)s_frame_bytes);
   int total = 0;
   for (int j = 0; j < PACKETS_PER_URB; j++) {
     int samples = s_pkt_base;
@@ -452,6 +520,12 @@ static int fill_out_packets(usb_transfer_t *xfer) {
     if (s_frac_accum >= 1000) {
       samples++;
       s_frac_accum -= 1000;
+    }
+    if (samples > max_samples) {
+      s_frac_accum += (samples - max_samples) * 1000;
+      if (s_frac_accum > 2000)
+        s_frac_accum = 2000; /* cap the debt: the EP can't sustain the rate */
+      samples = max_samples;
     }
     int bytes = samples * s_frame_bytes;
     xfer->isoc_packet_desc[j].num_bytes = bytes;
@@ -474,11 +548,24 @@ static void out_xfer_cb(usb_transfer_t *xfer) {
   int total = fill_out_packets(xfer); /* fractional sizing + xfer->num_bytes */
   fifo_pop_padded(xfer->data_buffer, (size_t)total);
 
-  if ((s_xfer_done % 1250) == 0) /* ~ every 10 s (1250 urbs * 8 ms) */
-    ESP_LOGI(TAG, "tlm xfers=%lu xerr=%lu pkterr=%lu push=%luB fifo=%d/%d",
-             (unsigned long)s_xfer_done, (unsigned long)s_xfer_err,
-             (unsigned long)s_pkt_err, (unsigned long)s_push_bytes,
-             fifo_level(), FIFO_TARGET_BYTES);
+  if ((s_xfer_done % 1250) == 0) { /* ~ every 10 s (1250 urbs * 8 ms) */
+    /* rx/gap deltas answer "did every UDP packet arrive in time": gap counts
+     * RTP sequence holes at ARRIVAL (before any buffering/timing). */
+    static uint32_t s_prev_rx = 0, s_prev_gap = 0;
+    audio_stats_t st;
+    audio_receiver_get_stats(&st);
+    uint32_t rx_d = st.packets_received - s_prev_rx;
+    uint32_t gap_d = st.packets_dropped - s_prev_gap;
+    s_prev_rx = st.packets_received;
+    s_prev_gap = st.packets_dropped;
+    // ESP_LOGI(TAG,
+    //          "tlm xfers=%lu xerr=%lu pkterr=%lu push=%luB fifo=%d/%d "
+    //          "ur=%lu rx=%lu gap=%lu",
+    //          (unsigned long)s_xfer_done, (unsigned long)s_xfer_err,
+    //          (unsigned long)s_pkt_err, (unsigned long)s_push_bytes,
+    //          fifo_level(), FIFO_TARGET_BYTES, (unsigned long)s_underruns,
+    //          (unsigned long)rx_d, (unsigned long)gap_d);
+  }
 
   /* Resubmit regardless of transient status so the iso stream keeps flowing;
    * a real disconnect arrives via the DEV_GONE client event. */
@@ -500,6 +587,7 @@ static esp_err_t start_streaming(void) {
     alloc = (int)s_out_mps * PACKETS_PER_URB;
 
   fifo_reset();
+  fifo_prefill_silence();
   s_streaming = true;
   for (int i = 0; i < NUM_URBS; i++) {
     ESP_RETURN_ON_ERROR(
@@ -569,9 +657,27 @@ fail:
   return ESP_FAIL;
 }
 
+/* Control-transfer completion handshake. The waiter and the completion
+ * callback race at timeout: freeing an in-flight EP0 URB corrupts the USB
+ * host stack (observed: assert in hcd_urb_dequeue at a track-change
+ * teardown, hours into a session). Ownership is decided by one atomic CAS:
+ * whoever loses the race cleans up. */
+typedef enum {
+  CTRL_WAITING = 0,
+  CTRL_DONE,     /* callback fired first: waiter frees */
+  CTRL_ABANDONED /* waiter timed out first: callback frees */
+} ctrl_state_t;
+
 static void ctrl_done_cb(usb_transfer_t *t) {
-  (void)t;
-  xSemaphoreGive(s_ctrl_sem);
+  int expected = CTRL_WAITING;
+  if (__atomic_compare_exchange_n((int *)&t->context, &expected,
+                                  CTRL_DONE, false, __ATOMIC_SEQ_CST,
+                                  __ATOMIC_SEQ_CST)) {
+    xSemaphoreGive(s_ctrl_sem);
+  } else {
+    /* Waiter abandoned this transfer on timeout — it is ours to free. */
+    usb_host_transfer_free(t);
+  }
 }
 
 /* Blocking control transfer on EP0. MUST be called from a task other than the
@@ -595,14 +701,27 @@ static esp_err_t ctrl_xfer_sync(uint8_t reqtype, uint8_t req, uint16_t val,
   x->device_handle = s_dev;
   x->bEndpointAddress = 0;
   x->callback = ctrl_done_cb;
-  x->context = NULL;
+  x->context = (void *)CTRL_WAITING;
   esp_err_t e = usb_host_transfer_submit_control(s_client, x);
-  if (e == ESP_OK) {
-    if (xSemaphoreTake(s_ctrl_sem, pdMS_TO_TICKS(500)) != pdTRUE)
-      e = ESP_ERR_TIMEOUT;
-    else
-      e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
+  if (e != ESP_OK) {
+    usb_host_transfer_free(x); /* never submitted — safe to free */
+    return e;
   }
+  if (xSemaphoreTake(s_ctrl_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
+    e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
+    usb_host_transfer_free(x);
+    return e;
+  }
+  /* Timeout. Try to abandon the transfer to the callback; if the callback
+   * completed in this instant, consume its semaphore give and free here. */
+  int expected = CTRL_WAITING;
+  if (__atomic_compare_exchange_n((int *)&x->context, &expected,
+                                  CTRL_ABANDONED, false, __ATOMIC_SEQ_CST,
+                                  __ATOMIC_SEQ_CST)) {
+    return ESP_ERR_TIMEOUT; /* callback will free the in-flight transfer */
+  }
+  xSemaphoreTake(s_ctrl_sem, 0); /* balance the give from the callback */
+  e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
   usb_host_transfer_free(x);
   return e;
 }
@@ -630,10 +749,9 @@ static esp_err_t uac_fu_set_volume_db(uint8_t fu_id, int16_t db_q8) {
   uint8_t d[2] = {(uint8_t)db_q8, (uint8_t)(db_q8 >> 8)};
   uint16_t widx = (uint16_t)((fu_id << 8) | s_ac_iface);
   /* VOLUME_CONTROL (0x02) << 8 | channel. Master (ch 0) covers most devices
-   * (EarPods, Bose), but some — e.g. Sony USB receivers — STALL the master
-   * channel and only accept per-channel writes. Fall back to L (ch 1) + R
-   * (ch 2): a device left at its silent power-on default (because the volume
-   * was never set) plays nothing even though it's unmuted. */
+   * (EarPods, Bose), but some — e.g. the Sony INZONE Buds receiver — STALL
+   * the master channel and only accept per-channel writes. Fall back to
+   * L (ch 1) + R (ch 2) so the 0 dB volume write still lands. */
   esp_err_t e = ctrl_xfer_sync(0x21, 0x01, 0x0200, widx, d, 2);
   if (e != ESP_OK) {
     esp_err_t l = ctrl_xfer_sync(0x21, 0x01, 0x0201, widx, d, 2); /* ch 1 = L */
@@ -834,21 +952,21 @@ static void setup_device(uint8_t addr) {
   ESP_LOGI(TAG, "USB audio OUT streaming started");
 
   /* 4) NOW unmute — the silence stream is already flowing, so the device's
-   * DAC is clocked with real (zero) data and can't hiss. Unmute EVERY
-   * feature unit and set each to 0 dB: dual-stream devices (e.g. Sony
-   * receivers expose separate game/chat OUT streams with one FU per path)
-   * put our chosen stream behind a FU that is NOT the one feeding the
-   * output terminal we tagged as "master" — muting it, or leaving its
-   * silent power-on default volume unset, plays nothing despite a healthy
-   * iso stream. A rare sidetone FU coming up audible is the lesser evil
-   * vs. guaranteed silence. */
+   * DAC is clocked with real (zero) data and can't hiss. Unmute + 0 dB the
+   * speaker-path and mic-path feature units only; the rest (e.g. a
+   * mic-monitor/sidetone FU that would loop the mic into the speaker) stay
+   * muted from step 0. (History: an unmute-everything variant was tried
+   * while chasing a silent Sony receiver, but that silence was a 48 kHz-only
+   * sample-rate issue — see find_speaker_altsetting — not a hidden FU.) */
   for (int i = 0; i < s_fu_count; i++) {
     bool master = (s_fu_ids[i] == s_speaker_src); /* feeds the speaker */
     bool mic = (s_fu_ids[i] == s_mic_fu);         /* feeds the USB mic-out */
+    if (!master && !mic)
+      continue; /* left muted by step 0 (sidetone hygiene) */
     esp_err_t em = uac_fu_set_mute(s_fu_ids[i], false);
     esp_err_t ev = uac_fu_set_volume_db(s_fu_ids[i], 0);
     ESP_LOGI(TAG, "FU %u %s mute=0:%s vol:%s", s_fu_ids[i],
-             master ? "SPK" : (mic ? "MIC" : "aux"), esp_err_to_name(em),
+             master ? "SPK" : "MIC", esp_err_to_name(em),
              esp_err_to_name(ev));
   }
 
@@ -1076,6 +1194,7 @@ static void playback_task(void *arg) {
       flush_requested = false;
       audio_resample_reset();
       fifo_reset();
+      fifo_prefill_silence();
     }
     /* No FIFO-level polling here: fifo_push() blocks on the stream buffer until
      * the iso callbacks free space, which paces this loop to the device. */
