@@ -3,8 +3,7 @@
 #include "sdkconfig.h"
 
 /* The USB host backend picks the output rate at RUNTIME from the device's
- * descriptors (44.1 kHz preferred, but e.g. Sony INZONE Buds are 48 k-only),
- * so it needs the real resampler even when the compile-time rate is 44100. */
+ * descriptors (44.1 kHz preferred, but sometimes are 48 k-only) */
 #if CONFIG_OUTPUT_SAMPLE_RATE_HZ != 44100 || CONFIG_AUDIO_OUTPUT_USB_HOST
 
 #include "resampler.h"

@@ -1586,7 +1586,6 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         const char *vol = strstr((const char *)body, "volume:");
         if (vol) {
           float volume = strtof(vol + 7, NULL);
-          ESP_LOGI(TAG, "SET_PARAMETER volume: %.2f dB", volume);
           rtsp_conn_set_volume(conn, volume);
         }
       }

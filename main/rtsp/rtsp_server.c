@@ -58,37 +58,18 @@ static int current_slot = 0;
 // to send a DACP resume command and keep waiting for reconnect.
 static volatile bool s_resume_requested = false;
 
-// Volume lives on the connection that received SET_PARAMETER, but
-// current_slot tracks the most recently ACCEPTED connection — after a
-// reconnect race or a transient extra connection those diverge, and reading
-// clients[current_slot] blindly pins playback at the 50% fallback while the
-// sender's volume changes land on the live session conn. Resolve against
-// whichever connection is actually alive instead.
-static rtsp_conn_t *live_volume_conn(void) {
-  client_slot_t *cur = &clients[current_slot];
-  if (cur->conn && !cur->is_old) {
-    return cur->conn;
-  }
-  client_slot_t *oth = &clients[1 - current_slot];
-  if (oth->conn && !oth->is_old) {
-    return oth->conn;
-  }
-  // Last resort: a conn in grace period still beats a made-up constant
-  return cur->conn ? cur->conn : oth->conn;
-}
-
 // Public API for volume control
 void airplay_set_volume(float volume_db) {
-  rtsp_conn_t *conn = live_volume_conn();
-  if (conn) {
-    rtsp_conn_set_volume(conn, volume_db);
+  client_slot_t *c = &clients[current_slot];
+  if (c->conn && !c->is_old) {
+    rtsp_conn_set_volume(c->conn, volume_db);
   }
 }
 
 int32_t airplay_get_volume_q15(void) {
-  rtsp_conn_t *conn = live_volume_conn();
-  if (conn) {
-    return rtsp_conn_get_volume_q15(conn);
+  client_slot_t *c = &clients[current_slot];
+  if (c->conn && !c->is_old) {
+    return rtsp_conn_get_volume_q15(c->conn);
   }
   return 16384; // 50% volume for new clients
 }
