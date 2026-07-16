@@ -127,6 +127,9 @@
 static usb_host_client_handle_t s_client = NULL;
 static usb_device_handle_t s_dev = NULL;
 static volatile bool s_streaming = false;
+/* Resampler rebuild request. Only the playback task may call
+ * audio_resample_init/reset once it is running — see playback_task(). */
+static volatile bool resample_reinit_needed = false;
 
 static uint8_t s_out_iface = 0;
 static uint8_t s_out_alt = 0;
@@ -205,13 +208,42 @@ static StreamBufferHandle_t s_pcm = NULL;
 static volatile uint32_t s_xfer_done = 0, s_xfer_err = 0, s_pkt_err = 0;
 static volatile uint32_t s_push_bytes = 0;
 
+/* Set to make the playback task reset + silence-prefill the FIFO at the top
+ * of its loop. The playback task is the stream buffer's only writer and the
+ * only caller of fifo_reset(); other tasks (connect/teardown, AirPlay flush)
+ * request the reset through this flag instead of touching the FIFO. */
+static volatile bool flush_requested = false;
+
+/* fifo_reset() <-> iso-callback handshake: while s_fifo_hold is set the
+ * callback emits silence without touching the stream buffer, and
+ * s_iso_cb_gen ticks at the END of every callback invocation. */
+static volatile bool s_fifo_hold = false;
+static volatile uint32_t s_iso_cb_gen = 0;
+
 static int fifo_level(void) {
   return s_pcm ? (int)xStreamBufferBytesAvailable(s_pcm) : 0;
 }
 
+/* Reset without racing the reader: xStreamBufferReset() must never run
+ * concurrently with the callback's xStreamBufferReceive() — the reader-side
+ * tail update is lock-free, so a reset under it corrupts the buffer
+ * accounting. Raise the hold, then wait for one callback generation tick:
+ * callbacks are serialized on the USB client task, so a tick means any
+ * receive that was in flight when the hold went up has finished. The
+ * timeout covers a stopped stream (callbacks no longer ticking). Called
+ * from the playback task only — it is the sole writer, so no send can be
+ * in flight either. */
 static void fifo_reset(void) {
-  if (s_pcm)
-    xStreamBufferReset(s_pcm);
+  if (!s_pcm)
+    return;
+  s_fifo_hold = true;
+  if (s_streaming) {
+    uint32_t g0 = s_iso_cb_gen;
+    for (int i = 0; i < 50 && s_iso_cb_gen == g0; i++)
+      vTaskDelay(1);
+  }
+  xStreamBufferReset(s_pcm);
+  s_fifo_hold = false;
 }
 
 /* Refill the FIFO with silence after a reset. Starting from an EMPTY FIFO,
@@ -263,7 +295,12 @@ static void fifo_push(const uint8_t *src, size_t len) {
 static uint32_t s_underruns = 0; /* mid-stream FIFO underruns (audible gaps) */
 
 static void fifo_pop_padded(uint8_t *dst, size_t len) {
-  size_t got = s_pcm ? xStreamBufferReceive(s_pcm, dst, len, 0) : 0;
+  if (s_fifo_hold || !s_pcm) {
+    memset(dst, 0, len); /* fifo_reset() in progress — stay off the buffer */
+    s_iso_cb_gen++;
+    return;
+  }
+  size_t got = xStreamBufferReceive(s_pcm, dst, len, 0);
   if (got < len) {
     memset(dst + got, 0, len - got);
     /* A PARTIAL pop is the moment an active stream ran dry — an audible
@@ -279,6 +316,7 @@ static void fifo_pop_padded(uint8_t *dst, size_t len) {
       }
     }
   }
+  s_iso_cb_gen++; /* tick only after all buffer access is complete */
 }
 
 /* ── Optional VBUS enable ────────────────────────────────────────────────── */
@@ -465,15 +503,18 @@ static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
                    ISO_OUT_MPS_LIMIT);
         } else if (is_out && as_channels == 2 && as_subslot >= 2 &&
                    as_subslot <= 4) {
-          /* Stereo PCM iso OUT = the speaker path. Rank: an alt whose packet
-           * carries OUTPUT_RATE beats one that can't (an undersized EP would
-           * underrun); then prefer 16-bit (subslot 2, no conversion) —
-           * otherwise accept 24-/32-bit (e.g. the UAC1 Bose). Ties keep the
-           * first alt in descriptor order. */
+          /* Stereo PCM iso OUT = the speaker path. Rank, high to low: an alt
+           * whose packets can carry its rate beats one that can't (an
+           * undersized EP would underrun); then native OUTPUT_RATE — a UAC1
+           * device may expose 48 k and 44.1 k as separate sibling alts, and
+           * the sinc resampler costs far more CPU than a subslot expand;
+           * then 16-bit (subslot 2, no conversion) over 24-/32-bit (e.g.
+           * the UAC1 Bose). Ties keep the first alt in descriptor order. */
           uint32_t alt_rate = as_rate ? as_rate : OUTPUT_RATE;
           unsigned need = (unsigned)(alt_rate / 1000 + (alt_rate % 1000 != 0)) *
                           2u * (unsigned)as_subslot; /* peak bytes per 1 ms */
-          int rank = (mps >= need ? 2 : 0) + (as_subslot == 2 ? 1 : 0);
+          int rank = (mps >= need ? 4 : 0) + (alt_rate == OUTPUT_RATE ? 2 : 0) +
+                     (as_subslot == 2 ? 1 : 0);
           if (rank > best_rank) {
             s_out_iface = (uint8_t)iface;
             s_out_alt = (uint8_t)alt;
@@ -593,8 +634,11 @@ static esp_err_t start_streaming(void) {
   if (alloc > (int)s_out_mps * PACKETS_PER_URB)
     alloc = (int)s_out_mps * PACKETS_PER_URB;
 
-  fifo_reset();
-  fifo_prefill_silence();
+  /* FIFO reset + silence prefill belong to the playback task (the buffer's
+   * sole writer and fifo_reset()'s only legal caller); it services this flag
+   * at the top of its loop. Until then the callback zero-pads from the FIFO
+   * — silence either way, since teardown_device() flushed it. */
+  flush_requested = true;
   s_streaming = true;
   for (int i = 0; i < NUM_URBS; i++) {
     ESP_RETURN_ON_ERROR(
@@ -856,6 +900,8 @@ static esp_err_t start_hid(void) {
   return usb_host_transfer_submit(s_hid_urb);
 }
 
+static void teardown_device(void); /* used on unrecoverable setup failure */
+
 static void setup_device(uint8_t addr) {
   if (usb_host_device_open(s_client, addr, &s_dev) != ESP_OK) {
     ESP_LOGE(TAG, "device_open(addr=%u) failed", addr);
@@ -910,13 +956,17 @@ static void setup_device(uint8_t addr) {
              s_out_alt);
     goto fail_close;
   }
+  /* The new device may run a different rate — flag the playback task (the
+   * resampler's sole owner) to rebuild it at the top of its loop. Calling
+   * audio_resample_init() from this task would free buffers a concurrent
+   * audio_resample_process() may be reading (hot-plug during playback =
+   * use-after-free). */
+  resample_reinit_needed = true;
   /* 2b) Prime and submit the silence URBs BEFORE SET_INTERFACE. While the
    * device is on alt 0 it discards iso OUT data, so this is harmless — and
    * the moment SET_INTERFACE enables its endpoint, real (zero) data is
    * already arriving. Devices whose DAC hisses while enabled-but-unclocked
    * (startup white noise) get clocked immediately. */
-  audio_resample_init(44100, s_out_rate, 2);
-  audio_resample_reset();
   if (start_streaming() != ESP_OK) {
     ESP_LOGE(TAG, "start_streaming failed");
     s_streaming = false;
@@ -924,10 +974,25 @@ static void setup_device(uint8_t addr) {
     goto fail_close;
   }
 
-  /* THE FIX: switch the DEVICE to the streaming alt (enables its endpoint). */
-  esp_err_t si = ctrl_xfer_sync(0x01, 0x0b, s_out_alt, s_out_iface, NULL, 0);
+  /* THE FIX: switch the DEVICE to the streaming alt (enables its endpoint).
+   * Everything hangs on this transfer: if it doesn't land, the device stays
+   * on alt 0 and every iso-OUT byte is silently discarded with zero error
+   * feedback (iso has no handshake). Retry transient control-pipe failures;
+   * on persistent failure tear down rather than run a provably silent
+   * session that logs "streaming started". */
+  esp_err_t si = ESP_FAIL;
+  for (int attempt = 0; attempt < 3 && si != ESP_OK; attempt++) {
+    if (attempt)
+      vTaskDelay(pdMS_TO_TICKS(20));
+    si = ctrl_xfer_sync(0x01, 0x0b, s_out_alt, s_out_iface, NULL, 0);
+  }
   ESP_LOGI(TAG, "SET_INTERFACE(iface=%u alt=%u): %s", s_out_iface, s_out_alt,
            esp_err_to_name(si));
+  if (si != ESP_OK) {
+    ESP_LOGE(TAG, "device stuck on alt 0 (output would be silent) — teardown");
+    teardown_device();
+    return;
+  }
   /* UAC1: now that the endpoint exists, set its sampling frequency. (Until
    * this lands the device consumes our zeros at its power-on rate — still
    * silence, so the order is safe.) */
@@ -1018,7 +1083,14 @@ static void teardown_device(void) {
   s_streaming = false;
   s_capturing = false;
   s_hid_active = false;
-  vTaskDelay(pdMS_TO_TICKS(5)); /* let in-flight callbacks settle */
+  flush_requested = true; /* playback task drops the now-stale FIFO bytes */
+  /* Wait out in-flight URBs before freeing them: the staggered iso-OUT ring
+   * spans NUM_URBS * PACKETS_PER_URB ms (32 ms) on a still-ALIVE device
+   * (SET_INTERFACE-failure teardown), and callbacks stop resubmitting only
+   * once s_streaming is false. usb_host_transfer_free() on an in-flight URB
+   * corrupts the heap. On DEV_GONE the stack fails transfers back much
+   * faster — the extra wait just makes disconnect teardown unhurried. */
+  vTaskDelay(pdMS_TO_TICKS(NUM_URBS * PACKETS_PER_URB + 10));
   for (int i = 0; i < NUM_URBS; i++) {
     if (s_urb[i]) {
       usb_host_transfer_free(s_urb[i]);
@@ -1162,9 +1234,7 @@ audio_channel_mode_t audio_output_get_channel_mode(void) {
   return channel_mode;
 }
 
-static volatile bool flush_requested = false;
 static volatile int source_rate = 44100;
-static volatile bool resample_reinit_needed = false;
 
 /* Expand n16 16-bit PCM samples to the device's subslot size, left-justified
  * (e.g. 16-bit -> 24-bit = value << 8). Writes n16 * subslot bytes. */
