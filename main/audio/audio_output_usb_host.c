@@ -640,6 +640,12 @@ static esp_err_t start_streaming(void) {
    * — silence either way, since teardown_device() flushed it. */
   flush_requested = true;
   s_streaming = true;
+  /* Prime ALL URBs before submitting ANY: fill_out_packets() advances the
+   * shared fractional accumulator, and the moment the first URB is
+   * submitted its completion callback (USB client task) starts calling it
+   * too — interleaving with this loop would race the accumulator and
+   * corrupt 44.1 kHz fractional packet sizing. With the split, the
+   * callback is the accumulator's only caller once submits begin. */
   for (int i = 0; i < NUM_URBS; i++) {
     ESP_RETURN_ON_ERROR(
         usb_host_transfer_alloc(alloc, PACKETS_PER_URB, &s_urb[i]), TAG,
@@ -650,8 +656,9 @@ static esp_err_t start_streaming(void) {
     s_urb[i]->context = NULL;
     memset(s_urb[i]->data_buffer, 0, alloc); /* prime with silence */
     fill_out_packets(s_urb[i]);              /* sets packet sizes + num_bytes */
-    ESP_RETURN_ON_ERROR(usb_host_transfer_submit(s_urb[i]), TAG, "submit");
   }
+  for (int i = 0; i < NUM_URBS; i++)
+    ESP_RETURN_ON_ERROR(usb_host_transfer_submit(s_urb[i]), TAG, "submit");
   ESP_LOGI(
       TAG,
       "Streaming: ep=0x%02x rate=%lu (%d+frac samp/frame) x %d pkt x %d urbs",
@@ -968,10 +975,14 @@ static void setup_device(uint8_t addr) {
    * already arriving. Devices whose DAC hisses while enabled-but-unclocked
    * (startup white noise) get clocked immediately. */
   if (start_streaming() != ESP_OK) {
-    ESP_LOGE(TAG, "start_streaming failed");
-    s_streaming = false;
-    usb_host_interface_release(s_client, s_dev, s_out_iface);
-    goto fail_close;
+    /* A mid-loop alloc/submit failure leaves earlier URBs allocated and
+     * possibly IN FLIGHT. Releasing the interface under them (the old
+     * cleanup) wedges the device, and the next connect would overwrite
+     * s_urb[] and orphan live transfers. teardown_device() waits them out
+     * and frees everything. */
+    ESP_LOGE(TAG, "start_streaming failed — teardown");
+    teardown_device();
+    return;
   }
 
   /* THE FIX: switch the DEVICE to the streaming alt (enables its endpoint).
@@ -1125,10 +1136,14 @@ static void teardown_device(void) {
 /* ── USB client (NEW_DEV / DEV_GONE) ─────────────────────────────────────── */
 static void client_event_cb(const usb_host_client_event_msg_t *msg, void *arg) {
   if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
-    if (!s_dev && !s_connect_pending) {
-      s_pending_addr = msg->new_dev.address;
-      s_connect_pending = true;
-    }
+    /* Latch unconditionally — NEW_DEV is edge-triggered and never retried.
+     * On a fast unplug/replug (or a device that resets itself) it can
+     * arrive while the old device's teardown hasn't cleared s_dev yet;
+     * gating on !s_dev here dropped the event and left the device dead
+     * until reboot. The setup task acts on the latch only once s_dev is
+     * free; a newer plug simply overwrites the latched address. */
+    s_pending_addr = msg->new_dev.address;
+    s_connect_pending = true;
   } else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
     s_disconnect_pending = true;
   }
@@ -1162,7 +1177,11 @@ static void usb_setup_task(void *arg) {
       s_disconnect_pending = false;
       teardown_device();
     }
-    if (s_connect_pending && s_client) {
+    /* Act on a latched NEW_DEV only when no device is open — teardown above
+     * runs first, so a replug connects in this same iteration. If the
+     * latched device vanished meanwhile, setup_device()'s open fails and
+     * cleans up harmlessly. */
+    if (s_connect_pending && s_client && !s_dev) {
       s_connect_pending = false;
       setup_device(s_pending_addr);
     }
