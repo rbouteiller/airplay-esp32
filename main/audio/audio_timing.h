@@ -24,8 +24,6 @@ typedef struct {
   size_t pending_frame_len;
   size_t pending_frame_capacity;
   bool pending_valid;
-  uint32_t late_drop_count;
-  bool late_drop_active;
   // Early-frame guard: counts consecutive early frames to detect a stuck
   // anchor. Reset whenever a new anchor is set or a late/on-time frame is
   // played.
@@ -45,6 +43,12 @@ typedef struct {
   // mutex (write flush_until_ts first, arm bool second; read bool first).
   bool deferred_flush_pending;
   uint32_t flush_until_ts;
+
+  // Persistent statistics for a late-frame drain episode.  Kept in the
+  // timing state so repeated DMA callbacks produce one summary log instead
+  // of one UART write per dropped frame.
+  uint32_t late_drop_count;
+  bool late_drop_active;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);

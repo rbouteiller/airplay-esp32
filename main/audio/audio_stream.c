@@ -26,36 +26,45 @@ static bool apply_aac_transient_mute(audio_receiver_state_t *state,
   return false;
 }
 
-bool audio_stream_process_frame(audio_receiver_state_t *state,
-                                uint32_t timestamp, const uint8_t *audio_data,
-                                size_t audio_len) {
-  if (!state || !state->decoder) {
+bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
+                                   uint32_t timestamp) {
+  if (!state) {
     return false;
   }
 
-  // Blanket gate: reject everything between seek_flush and the next anchor.
+  // Reject everything between a seek/track flush and the next anchor.  This
+  // check deliberately happens before decrypt/decode in the buffered TCP task.
   if (state->discard_all_until_anchor) {
     return false;
   }
 
-  // Post-seek RTP window gate: discard frames outside [discard_before_rtp,
-  // discard_above_rtp].  The TCP socket buffer can hold many seconds of
-  // pre-seek audio; both gates together handle both seek directions:
-  //   discard_before_rtp — forward seek: stale frames have lower RTP
-  //   discard_above_rtp  — backward seek: stale frames have much higher RTP
-  // Each self-disarms on the first frame that passes it.
+  // Post-seek RTP window gate.  TCP preserves order, so stale packets drain
+  // first and each gate can self-disarm on the first timestamp that passes.
   if (state->discard_before_rtp_valid) {
     if ((int32_t)(timestamp - state->discard_before_rtp) < 0) {
-      return false; // below lower bound — forward-seek stale frame
+      return false;
     }
     state->discard_before_rtp_valid = false;
   }
+
   if (state->discard_above_rtp_valid) {
     if ((int32_t)(timestamp - state->discard_above_rtp) > 0) {
-      return false; // above upper bound — backward-seek stale frame
+      return false;
     }
     state->discard_above_rtp_valid = false;
   }
+
+  return true;
+}
+
+bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
+                                         uint32_t timestamp,
+                                         const uint8_t *audio_data,
+                                         size_t audio_len) {
+  if (!state || !state->decoder) {
+    return false;
+  }
+
   size_t capacity_samples = 0;
   int16_t *decode_buffer =
       audio_buffer_get_decode_buffer(&state->buffer, &capacity_samples);
@@ -83,6 +92,16 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
   return audio_buffer_queue_decoded(&state->buffer, &state->stats, timestamp,
                                     decode_buffer, (size_t)decoded_samples,
                                     channels);
+}
+
+bool audio_stream_process_frame(audio_receiver_state_t *state,
+                                uint32_t timestamp, const uint8_t *audio_data,
+                                size_t audio_len) {
+  if (!audio_stream_accept_timestamp(state, timestamp)) {
+    return false;
+  }
+  return audio_stream_process_accepted_frame(state, timestamp, audio_data,
+                                             audio_len);
 }
 
 audio_stream_t *audio_stream_create_realtime(void) {

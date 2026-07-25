@@ -97,6 +97,18 @@ typedef struct {
   bool paused_rtp_valid;
 } audio_receiver_state_t;
 
+// Lightweight RTP gate used by the buffered TCP task before decrypt/decode.
+// Returns false for frames that belong to the pre-seek/old-track backlog.
+bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
+                                   uint32_t timestamp);
+
+// Decode and queue a frame whose timestamp has already passed the RTP gate.
+bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
+                                         uint32_t timestamp,
+                                         const uint8_t *audio_data,
+                                         size_t audio_len);
+
+// Convenience entry point for realtime paths: gate, decode and queue.
 bool audio_stream_process_frame(audio_receiver_state_t *state,
                                 uint32_t timestamp, const uint8_t *audio_data,
                                 size_t audio_len);

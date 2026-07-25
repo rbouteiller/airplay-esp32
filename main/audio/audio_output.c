@@ -106,31 +106,39 @@ static void playback_task(void *arg) {
       i2s_channel_enable(tx_handle);
     }
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
-    if (samples > 0) {
- //     ESP_LOGD(TAG, "Read %u samples from receiver", (unsigned int)samples);
-      int16_t *play_buf = pcm;
-      size_t play_samples = samples;
-      /*
-      if (audio_resample_is_active()) {
-        play_samples = audio_resample_process(pcm, samples, resample_buf,
-                                              MAX_RESAMPLE_FRAMES);
+   if (samples > 0) {
+    int16_t *play_buf = pcm;
+    size_t play_samples = samples;
+
+    if (audio_resample_is_active()) {
+        play_samples = audio_resample_process(
+            pcm,
+            samples,
+            resample_buf,
+            MAX_RESAMPLE_FRAMES
+        );
         play_buf = resample_buf;
-      }
-      */
- //     ESP_LOGD(TAG, "Resampled to %u samples", (unsigned int)play_samples);
-      apply_volume(play_buf, play_samples * 2);
-      apply_channel_mode(play_buf, play_samples);
-      led_audio_feed(play_buf, play_samples);
-      i2s_channel_write(tx_handle, play_buf, play_samples * 4, &written,
-                        portMAX_DELAY);
-//      ESP_LOGD(TAG, "I2S write: %u bytes written", (unsigned int)written);
-  //    taskYIELD();
-    } else {
+    }
+
+    apply_volume(play_buf, play_samples * 2);
+    apply_channel_mode(play_buf, play_samples);
+
+    led_audio_feed(play_buf, play_samples);
+
+    i2s_channel_write(
+        tx_handle,
+        play_buf,
+        play_samples * 2 * sizeof(int16_t),
+        &written,
+        portMAX_DELAY
+    );
+	}else {
       // ESP_LOGW(TAG, "Receiver underflow - playing silence");
       led_audio_feed(silence, FRAME_SAMPLES);
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written,
                         portMAX_DELAY);
-     // vTaskDelay(1);
+    //  vTaskDelay(1);
+  
     }
   }
 
