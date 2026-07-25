@@ -162,6 +162,9 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->quick_start = false;
   timing->deferred_flush_pending = false;
   timing->flush_until_ts = 0;
+
+  timing->late_drop_count = 0;
+  timing->late_drop_active = false;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -273,73 +276,67 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   const audio_format_t *format = &stream->format;
   int buffered_frames = audio_buffer_get_frame_count(buffer);
 
-  size_t dropped_frames = 0;
-  int64_t first_late_us = 0;
-  int64_t last_late_us = 0;
   // Unbuffered realtime streams (ALAC/UDP) get a looser early/late threshold
   // than buffered AirPlay 2 streams, because they have little jitter buffer to
-  // absorb scheduling hiccups and would otherwise drop frames (audible
-  // drop-outs) whenever the pipeline stalls — e.g. while artwork/metadata is
-  // received on the RTSP connection.
-  const int64_t timing_threshold_us = audio_stream_uses_buffer(stream->type)
-                                          ? TIMING_THRESHOLD_US
-                                          : RT_TIMING_THRESHOLD_US;
+  // absorb scheduling hiccups and would otherwise drop frames.
+  const int64_t timing_threshold_us =
+      audio_stream_uses_buffer(stream->type)
+          ? TIMING_THRESHOLD_US
+          : RT_TIMING_THRESHOLD_US;
 
   // Wait for enough buffer before starting.
   // In quick_start mode (after a seek/skip), start as soon as 1 frame is
-  // available to minimise the gap between tracks.  Anchor-based timing
-  // still applies — if the frame is early, silence is output until its
-  // scheduled play time, just like shairport-sync.
-  // Normal startup waits for target_buffer_frames to build jitter margin.
+  // available to minimise the gap between tracks.
   if (!timing->playout_started && !timing->pending_valid) {
-    int required = timing->quick_start ? 1 : (int)timing->target_buffer_frames;
+    int required =
+        timing->quick_start ? 1 : (int)timing->target_buffer_frames;
+
     if (buffered_frames < required) {
       return 0;
     }
+
     // Wait for anchor before playing.
-    // Normal startup: allow a 1-second fallback so a stream with no anchor
-    // (e.g. AirPlay 1 without NTP) can still start.
+    // Allow a 1-second fallback if no anchor arrives.
     if (!timing->anchor_valid) {
       int64_t now_us = esp_timer_get_time();
+
       if (timing->ready_time_us == 0) {
         timing->ready_time_us = now_us;
       }
+
       if (now_us - timing->ready_time_us < 1000000) {
-        return 0; // Still waiting for anchor
+        return 0;
       }
-      // Waited 1 second, no anchor - proceed without sync
     }
   }
 
-  // Determine sync mode: PTP (AirPlay 2), NTP (AirPlay 1), or local fallback
+  // Determine sync mode: PTP, NTP or local fallback.
   sync_mode_t sync_mode = SYNC_MODE_NONE;
+
   if (ptp_clock_is_locked()) {
     sync_mode = SYNC_MODE_PTP;
   } else if (ntp_clock_is_locked()) {
     sync_mode = SYNC_MODE_NTP;
   }
 
-  // Drain up to MAX_DRAIN_ATTEMPTS late/invalid frames within a SINGLE
-  // DMA callback.  The previous limit of 8 was the root cause of run-away
-  // lateness: each call that returned silence (instead of playing a frame)
-  // forfeited ~23 ms of RTP advancement while wall time kept moving, so
-  // every late frame we dropped MADE us more late.  Draining many frames
-  // in one pass advances RTP at zero wall-time cost and lets the buffer
-  // skip past stale data without the DMA ever idling.
+  // Drain many stale frames within one call.
   enum { MAX_DRAIN_ATTEMPTS = 256 };
+
   for (int attempt = 0; attempt < MAX_DRAIN_ATTEMPTS; attempt++) {
     size_t item_size = 0;
     void *item = NULL;
     bool from_pending = false;
 
-    // Get frame from pending or buffer
+    // Get frame from pending storage or from the sorted audio buffer.
     if (timing->pending_valid) {
       item_size = timing->pending_frame_len;
+
       if (item_size < sizeof(audio_frame_header_t)) {
         timing->pending_valid = false;
         timing->pending_frame_len = 0;
         continue;
       }
+
       item = timing->pending_frame;
       from_pending = true;
     } else {
@@ -347,8 +344,12 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         if (stats) {
           stats->buffer_underruns++;
         }
+
+        // Не принтираме тук. Изхвърлянето може да продължи
+        // при следващото извикване на функцията.
         return 0;
       }
+
       buffered_frames = audio_buffer_get_frame_count(buffer);
 
       if (item_size < sizeof(audio_frame_header_t)) {
@@ -358,11 +359,14 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
     }
 
     audio_frame_header_t *hdr = (audio_frame_header_t *)item;
+
     size_t frame_samples = hdr->samples_per_channel;
-    size_t channels = hdr->channels ? hdr->channels : format->channels;
+    size_t channels =
+        hdr->channels ? hdr->channels : format->channels;
+
     int16_t *pcm = (int16_t *)(hdr + 1);
 
-    // Validate frame
+    // Validate frame.
     if (frame_samples == 0 || channels == 0) {
       if (from_pending) {
         timing->pending_valid = false;
@@ -370,11 +374,14 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       } else {
         audio_buffer_return(buffer, item);
       }
+
       continue;
     }
 
     size_t expected_bytes =
-        sizeof(*hdr) + frame_samples * channels * sizeof(int16_t);
+        sizeof(*hdr) +
+        frame_samples * channels * sizeof(int16_t);
+
     if (item_size < expected_bytes) {
       if (from_pending) {
         timing->pending_valid = false;
@@ -382,6 +389,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       } else {
         audio_buffer_return(buffer, item);
       }
+
       continue;
     }
 
@@ -389,174 +397,196 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       frame_samples = samples;
     }
 
-    // Deferred flush check (AirPlay 2 FLUSHBUFFERED with flushFromSeq):
-    // keep playing until the frame whose RTP timestamp reaches flush_until_ts,
-    // then bulk-flush the remainder of the buffer and start fresh.
-    // Signed 32-bit subtraction handles RTP wraparound correctly.
+    // Deferred flush check.
     if (timing->deferred_flush_pending) {
-      if ((int32_t)(hdr->rtp_timestamp - timing->flush_until_ts) >= 0) {
+      if ((int32_t)(hdr->rtp_timestamp -
+                    timing->flush_until_ts) >= 0) {
         ESP_LOGI(TAG,
-                 "Deferred flush triggered at ts=%" PRIu32 " (until_ts=%" PRIu32
-                 ")",
-                 hdr->rtp_timestamp, timing->flush_until_ts);
+                 "Deferred flush triggered at ts=%" PRIu32
+                 " (until_ts=%" PRIu32 ")",
+                 hdr->rtp_timestamp,
+                 timing->flush_until_ts);
+
         if (from_pending) {
           timing->pending_valid = false;
           timing->pending_frame_len = 0;
         } else {
           audio_buffer_return(buffer, item);
         }
+
         audio_buffer_flush(buffer);
+
         timing->deferred_flush_pending = false;
         timing->playout_started = false;
         timing->ready_time_us = 0;
         timing->consecutive_early_frames = 0;
-        // quick_start so the first frame of the next track starts playing
-        // as soon as 1 frame arrives, with normal anchor timing applied.
+
+        // Запазваме брояча на изхвърлените late кадри.
+        // Той ще бъде принтиран, когато започне реално възпроизвеждане.
         timing->quick_start = true;
+
         return 0;
       }
     }
 
     // Handle early/late frames based on anchor timing.
-    //
-    // After a seek/flush, anchor-based timing is applied immediately from the
-    // first frame — no bypass.  With a stable PTP clock the anchor is
-    // accurate, so early frames are held as pending (silence output) until
-    // their scheduled play time, and late frames are dropped.  This mirrors
-    // shairport-sync's approach and guarantees the first audible sample is
-    // correctly synchronised.
     if (timing->anchor_valid && format->sample_rate > 0) {
       int64_t early_us = 0;
-      if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
+
+      if (compute_early_us(timing,
+                           format,
+                           hdr->rtp_timestamp,
+                           sync_mode,
                            &early_us)) {
+
         if (early_us > timing_threshold_us) {
-          // Only advance the stuck-anchor counter for NEW frames taken from
-          // the buffer — not for pending re-checks of the same early frame.
-          // A pending frame is re-examined every DMA callback (~8 ms) while
-          // we wait for wall-clock to reach its scheduled play time.  Counting
-          // those re-checks would fire the stuck-anchor detector in
-          // (MAX_CONSECUTIVE_EARLY × 8 ms) = 6 s even for a legitimately
-          // early frame that just needs to wait its pre-buffer depth (~1.5 s).
+          // Count only new early frames, not repeated checks of pending frame.
           if (!from_pending) {
             timing->consecutive_early_frames++;
-            // Log the first early frame after each anchor set (shows lead
-            // time before audio starts) and every 50 new frames after that
-            // (confirms the counter only counts real buffer reads, not
-            // pending re-checks).
+
             if (timing->consecutive_early_frames == 1) {
               ESP_LOGI(TAG,
-                       "First early frame: rtp=%" PRIu32 " early=%.1f ms"
-                       " quick_start=%d buffered=%d",
-                       hdr->rtp_timestamp, (float)early_us / 1000.0f,
-                       timing->quick_start, buffered_frames);
-            } else if (timing->consecutive_early_frames % 50 == 0) {
-              ESP_LOGD(TAG, "Early counter: %d/%d early=%.1f ms rtp=%" PRIu32,
-                       timing->consecutive_early_frames, MAX_CONSECUTIVE_EARLY,
-                       (float)early_us / 1000.0f, hdr->rtp_timestamp);
+                       "First early frame: rtp=%" PRIu32
+                       " early=%.1f ms quick_start=%d buffered=%d",
+                       hdr->rtp_timestamp,
+                       (float)early_us / 1000.0f,
+                       timing->quick_start,
+                       buffered_frames);
+            } else if (
+                timing->consecutive_early_frames % 50 == 0) {
+              ESP_LOGD(TAG,
+                       "Early counter: %d/%d early=%.1f ms "
+                       "rtp=%" PRIu32,
+                       timing->consecutive_early_frames,
+                       MAX_CONSECUTIVE_EARLY,
+                       (float)early_us / 1000.0f,
+                       hdr->rtp_timestamp);
             }
           }
 
-          // If we have had an implausibly long run of early frames the anchor
-          // is probably stuck or wrong — give up on it so playback can
-          // continue.  This threshold is high enough (~17 s at 23 ms/frame)
-          // that it never fires during normal pre-buffered-audio scenarios.
-          if (timing->consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
+          if (timing->consecutive_early_frames >
+              MAX_CONSECUTIVE_EARLY) {
             ESP_LOGW(TAG,
-                     "Invalidating stuck anchor: consecutive=%d, early=%lld ms",
-                     timing->consecutive_early_frames, early_us / 1000LL);
+                     "Invalidating stuck anchor: "
+                     "consecutive=%d, early=%lld ms",
+                     timing->consecutive_early_frames,
+                     early_us / 1000LL);
+
             timing->anchor_valid = false;
             timing->consecutive_early_frames = 0;
-            // Fall through to play the frame normally
+
+            // Continue below and play the frame normally.
           } else {
-            // Frame is early — store it as pending and output silence.
-            // The pending frame is re-checked on every subsequent call;
-            // once wall-clock catches up it will be played on time.
-            // This is the normal path for pre-buffered audio after a pause.
+            // Store early frame as pending and output silence.
             static int early_count = 0;
             early_count++;
+
             if (early_count % 100 == 1) {
               ESP_LOGD(TAG,
-                       "Frame too early #%d: %lld ms, buffered=%d, pending=%d",
-                       early_count, early_us / 1000LL, buffered_frames,
+                       "Frame too early #%d: %lld ms, "
+                       "buffered=%d, pending=%d",
+                       early_count,
+                       early_us / 1000LL,
+                       buffered_frames,
                        timing->pending_valid ? 1 : 0);
             }
-            if (!from_pending && timing->pending_frame &&
-                item_size <= timing->pending_frame_capacity) {
-              memcpy(timing->pending_frame, item, item_size);
+
+            if (!from_pending &&
+                timing->pending_frame &&
+                item_size <=
+                    timing->pending_frame_capacity) {
+
+              memcpy(timing->pending_frame,
+                     item,
+                     item_size);
+
               timing->pending_frame_len = item_size;
               timing->pending_valid = true;
+
               audio_buffer_return(buffer, item);
             }
-            memset(out, 0, samples * channels * sizeof(int16_t));
+
+            memset(out,
+                   0,
+                   samples * channels * sizeof(int16_t));
+
+            // Не принтираме late брояча тук.
+            // Все още не е намерен нормален кадър.
             return samples;
           }
+
         } else if (early_us < -timing_threshold_us) {
-          // Reset consecutive early counter on late/normal frames
           timing->consecutive_early_frames = 0;
 
-          // Late frame — drop it and continue draining within the SAME call.
-          // The 256-attempt drain loop chews through stale frames at zero
-          // wall-time cost, skipping past arbitrarily many stale frames in
-          // one pass without the DMA ever idling.
-          if (dropped_frames == 0) {
-            first_late_us = -early_us;
-          }
-
-          last_late_us = -early_us;
-          dropped_frames++;
+          // Само натрупваме броя.
+          // Няма лог за всеки кадър и няма лог при всяко извикване.
+          timing->late_drop_count++;
+          timing->late_drop_active = true;
 
           if (stats) {
             stats->late_frames++;
           }
+
           if (from_pending) {
             timing->pending_valid = false;
             timing->pending_frame_len = 0;
           } else {
             audio_buffer_return(buffer, item);
           }
+
           continue;
         }
       }
     }
 
-    // Frame is on time (or anchor-invalid) — reset counter.
+    // Frame is on time or anchor is invalid.
     timing->consecutive_early_frames = 0;
 
-    // Copy PCM data to output
-    memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
+    // Запазваме RTP timestamp, преди да върнем item в буфера.
+    uint32_t played_rtp_timestamp =
+        hdr->rtp_timestamp;
 
-    // Cleanup
+    // Copy PCM data to output.
+    memcpy(out,
+           pcm,
+           frame_samples * channels * sizeof(int16_t));
+
+    // Cleanup.
     if (from_pending) {
       timing->pending_valid = false;
       timing->pending_frame_len = 0;
     } else {
       audio_buffer_return(buffer, item);
     }
-    if (dropped_frames) {
-    ESP_LOGW(TAG,
-             "Dropped %u late frames (%lld -> %lld ms), buffer=%d",
-             (unsigned)dropped_frames,
-             first_late_us / 1000LL,
-             last_late_us / 1000LL,
-             audio_buffer_get_frame_count(buffer));
-    }
+
     if (!timing->playout_started) {
       timing->playout_started = true;
+
       bool was_quick = timing->quick_start;
       timing->quick_start = false;
-      ESP_LOGI(TAG, "Playout started%s: rtp=%" PRIu32,
-               was_quick ? " (quick_start)" : "", hdr->rtp_timestamp);
+
+      ESP_LOGI(TAG,
+               "Playout started%s: rtp=%" PRIu32,
+               was_quick ? " (quick_start)" : "",
+               played_rtp_timestamp);
+    }
+
+    // Принтира се само веднъж, когато след всички late кадри
+    // най-накрая бъде намерен кадър за възпроизвеждане.
+    if (timing->late_drop_active) {
+      ESP_LOGW(TAG,
+               "Total dropped late frames: %" PRIu32,
+               timing->late_drop_count);
+
+      timing->late_drop_count = 0;
+      timing->late_drop_active = false;
     }
 
     return frame_samples;
   }
-  if (dropped_frames) {
-    ESP_LOGW(TAG,
-             "Dropped %u late frames (%lld -> %lld ms), buffer=%d",
-             (unsigned)dropped_frames,
-             first_late_us / 1000LL,
-             last_late_us / 1000LL,
-             audio_buffer_get_frame_count(buffer));
-  }
+
+  // Достигнат е лимитът от 256 опита.
+  // Не принтираме нищо, защото изхвърлянето ще продължи
+  // при следващото извикване.
   return 0;
 }

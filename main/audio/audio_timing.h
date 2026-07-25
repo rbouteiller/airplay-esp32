@@ -24,6 +24,8 @@ typedef struct {
   size_t pending_frame_len;
   size_t pending_frame_capacity;
   bool pending_valid;
+  uint32_t late_drop_count;
+  bool late_drop_active;
   // Early-frame guard: counts consecutive early frames to detect a stuck
   // anchor. Reset whenever a new anchor is set or a late/on-time frame is
   // played.
