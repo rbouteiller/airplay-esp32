@@ -273,6 +273,9 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
   const audio_format_t *format = &stream->format;
   int buffered_frames = audio_buffer_get_frame_count(buffer);
 
+  size_t dropped_frames = 0;
+  int64_t first_late_us = 0;
+  int64_t last_late_us = 0;
   // Unbuffered realtime streams (ALAC/UDP) get a looser early/late threshold
   // than buffered AirPlay 2 streams, because they have little jitter buffer to
   // absorb scheduling hiccups and would otherwise drop frames (audible
@@ -495,7 +498,13 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
           // The 256-attempt drain loop chews through stale frames at zero
           // wall-time cost, skipping past arbitrarily many stale frames in
           // one pass without the DMA ever idling.
-          ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
+          if (dropped_frames == 0) {
+            first_late_us = -early_us;
+          }
+
+          last_late_us = -early_us;
+          dropped_frames++;
+
           if (stats) {
             stats->late_frames++;
           }
@@ -523,7 +532,14 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
     } else {
       audio_buffer_return(buffer, item);
     }
-
+    if (dropped_frames) {
+    ESP_LOGW(TAG,
+             "Dropped %u late frames (%lld -> %lld ms), buffer=%d",
+             (unsigned)dropped_frames,
+             first_late_us / 1000LL,
+             last_late_us / 1000LL,
+             audio_buffer_get_frame_count(buffer));
+    }
     if (!timing->playout_started) {
       timing->playout_started = true;
       bool was_quick = timing->quick_start;
@@ -534,6 +550,13 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
 
     return frame_samples;
   }
-
+  if (dropped_frames) {
+    ESP_LOGW(TAG,
+             "Dropped %u late frames (%lld -> %lld ms), buffer=%d",
+             (unsigned)dropped_frames,
+             first_late_us / 1000LL,
+             last_late_us / 1000LL,
+             audio_buffer_get_frame_count(buffer));
+  }
   return 0;
 }
