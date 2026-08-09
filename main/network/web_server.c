@@ -1442,6 +1442,8 @@ esp_err_t web_server_start(uint16_t port) {
                                  .method = HTTP_GET,
                                  .handler = captive_windows_handler};
   httpd_register_uri_handler(s_server, &windows_captive);
+  windows_captive.uri = "/redirect";
+  httpd_register_uri_handler(s_server, &windows_captive);
 
 #ifdef CONFIG_DAC_TAS58XX
   httpd_uri_t eq_page_uri = {
