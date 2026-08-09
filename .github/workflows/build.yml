@@ -29,6 +29,9 @@ jobs:
           - name: esparagus-audio-brick-bt
             target: esp32
             sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esparagus-audio-brick;sdkconfig.defaults.bt"
+          - name: smartamp
+            target: esp32
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.bt;sdkconfig.defaults.smartamp"
     steps:
       - uses: actions/checkout@v6
         with:
