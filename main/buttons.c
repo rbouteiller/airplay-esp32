@@ -65,6 +65,9 @@ static QueueHandle_t s_action_queue;
 // Post a button action to the dedicated task (safe from timer callbacks)
 static void post_button_action(button_id_t id) {
   int action = (int)id;
+  if (s_action_queue == NULL) {
+    return;
+  }
   // Non-blocking: drop if queue is full (better than blocking the timer task)
   xQueueSend(s_action_queue, &action, 0);
 }
@@ -294,11 +297,27 @@ esp_err_t buttons_init(void) {
   buttons[BTN_LONG_PRESS].gpio = -1;
   buttons[BTN_CHANNEL_CYCLE].gpio = -1;
 
+  if (CONFIG_BTN_PLAY_PAUSE_GPIO < 0 && CONFIG_BTN_VOLUME_UP_GPIO < 0 &&
+      CONFIG_BTN_VOLUME_DOWN_GPIO < 0 && CONFIG_BTN_NEXT_GPIO < 0 &&
+      CONFIG_BTN_PREV_GPIO < 0) {
+    ESP_LOGI(TAG, "No buttons configured");
+    return ESP_OK;
+  }
+
   // Ensure the shared GPIO ISR service is installed (idempotent)
   esp_err_t err = board_gpio_isr_init();
   if (err != ESP_OK) {
     return err;
   }
+
+  // Queue + task must exist before the first ISR fires: the debounce callback
+  // posts to the queue, and xQueueSend() on a NULL handle asserts and reboots.
+  // Stack 4096 is enough for mDNS + HTTP operations in DACP.
+  s_action_queue = xQueueCreate(ACTION_QUEUE_LEN, sizeof(int));
+  if (s_action_queue == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+  task_create_spiram(button_action_task, "btn_act", 4096, NULL, 5, NULL, NULL);
 
   // Configure each button from Kconfig (adds ISR handlers)
   configure_button(BTN_PLAY_PAUSE, CONFIG_BTN_PLAY_PAUSE_GPIO, false);
@@ -306,24 +325,6 @@ esp_err_t buttons_init(void) {
   configure_button(BTN_VOLUME_DOWN, CONFIG_BTN_VOLUME_DOWN_GPIO, true);
   configure_button(BTN_NEXT, CONFIG_BTN_NEXT_GPIO, false);
   configure_button(BTN_PREV, CONFIG_BTN_PREV_GPIO, false);
-
-  bool any_configured = false;
-  for (int i = BTN_PLAY_PAUSE; i <= BTN_PREV; i++) {
-    if (buttons[i].gpio >= 0) {
-      any_configured = true;
-      break;
-    }
-  }
-
-  if (!any_configured) {
-    ESP_LOGI(TAG, "No buttons configured");
-    return ESP_OK;
-  }
-
-  // Queue + task for dispatching actions off the timer daemon task.
-  // Stack 4096 is enough for mDNS + HTTP operations in DACP.
-  s_action_queue = xQueueCreate(ACTION_QUEUE_LEN, sizeof(int));
-  task_create_spiram(button_action_task, "btn_act", 4096, NULL, 5, NULL, NULL);
 
   ESP_LOGI(TAG, "Buttons initialized (interrupt-driven)");
   return ESP_OK;

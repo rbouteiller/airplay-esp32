@@ -68,7 +68,7 @@ input:focus{outline:none;border-color:#e94560}
 <button class='btn btn-secondary' onclick='saveBrightness()'>Save Brightness</button>
 <div id='brightness-msg'></div>
 <div id='chan-group'>
-<div class='form-group' style='margin-top:18px'><label for='chan-mode'>Output Channel</label>
+<div class='form-group' style='margin-top:18px'><label for='chan-mode' id='chan-label'>Output Channel</label>
 <select id='chan-mode' onchange='saveChannel()'>
 <option value='0'>Stereo</option>
 <option value='1'>Left only</option>
@@ -99,6 +99,8 @@ input:focus{outline:none;border-color:#e94560}
 <div class='info-item'><label>Device Name</label><span id='info-name'>-</span></div>
 <div class='info-item'><label>Free Memory</label><span id='info-heap'>-</span></div>
 <div class='info-item'><label>Firmware</label><span id='info-fw'>-</span></div>
+<div class='info-item'><label>Uptime</label><span id='info-uptime'>-</span></div>
+<div class='info-item'><label>Last reset</label><span id='info-reset'>-</span></div>
 <div class='info-item'><label>WiFi SSID</label><span id='info-ssid'>-</span></div>
 <div class='info-item'><label>WiFi RSSI</label><span id='info-rssi'>-</span></div>
 <div class='info-item'><label>WiFi Channel</label><span id='info-chan'>-</span></div>
@@ -145,12 +147,24 @@ async function saveBrightness(){
 async function loadChannel(){
   try{var r=await fetch('/api/audio/channel');var d=await r.json();
     if(d.success){document.getElementById('chan-mode').value=String(d.mode);
-      chanLocked=!!d.locked;}}
+      chanLocked=!!d.locked;chanDsp=!!d.dsp;}}
   catch(e){console.warn('Could not load channel mode',e);}
+  applyChanLabels();
   applyAmpLayout();}
 var dualDevices=1;
 var dualMode=0;
+var dualLoaded=false;
 var chanLocked=false;
+var chanDsp=false;
+/* A bi-amp flow crosses the two outputs over into one speaker, so the choice
+   is which input channel to feed it — there is no stereo to pass through. */
+function applyChanLabels(){
+  document.getElementById('chan-label').textContent=
+    chanDsp?'Input Channel':'Output Channel';
+  var o=document.getElementById('chan-mode').options;
+  o[0].text=chanDsp?'Both (L+R)/2':'Stereo';
+  o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
+}
 var DUAL_WARN={
   0:'Switch to 2.1 (Satellites / Sub)?\n\nThe second amplifier is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single subwoofer.\n\nRewire before restarting.',
   1:'Switch to Bi-Amp?\n\nBoth amplifiers run as stereo BTL, with OUT_A driving the woofer and OUT_B the tweeter of one speaker.\n\nIf OUT_A and OUT_B are still bridged for a PBTL subwoofer you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
@@ -216,6 +230,10 @@ async function loadInfo(){
       document.getElementById('info-name').textContent=i.device_name||'-';
       document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
       document.getElementById('info-fw').textContent=i.firmware_version||'-';
+      function fmtUptime(s){if(s==null)return '-';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+        return (d?d+'d ':'')+(d||h?h+'h ':'')+m+'m '+(s%60)+'s';}
+      document.getElementById('info-uptime').textContent=fmtUptime(i.uptime_s);
+      document.getElementById('info-reset').textContent=i.reset_reason||'-';
       function rssiLabel(r){if(r==null)return '-';var q='';if(r>=-55)q=' (excellent)';else if(r>=-65)q=' (good)';else if(r>=-75)q=' (fair)';else q=' (poor)';return r+' dBm'+q;}
       document.getElementById('info-ssid').textContent=i.wifi_ssid||'-';
       document.getElementById('info-rssi').textContent=rssiLabel(i.wifi_rssi);
@@ -223,10 +241,13 @@ async function loadInfo(){
       document.getElementById('info-phy').textContent=i.wifi_phy||'-';
       document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
+      /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
+         warning on the device for every page load. */
+      if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
       document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
 window.onload=function(){
   document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
     document.getElementById('fw-name').textContent=f?f.name:'No file selected';
     document.getElementById('ota-btn').disabled=!f;};
-  loadInfo();loadBrightness();loadChannel();loadDual();setInterval(loadInfo,30000);};
+  loadInfo();loadBrightness();loadChannel();setInterval(loadInfo,30000);};
 </script></body></html>

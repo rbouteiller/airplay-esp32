@@ -21,6 +21,7 @@
 #include "rtsp_server.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -438,6 +439,7 @@ static esp_err_t channel_mode_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
   cJSON_AddNumberToObject(json, "mode", audio_output_get_channel_mode());
   cJSON_AddBoolToObject(json, "locked", audio_output_channel_mode_locked());
+  cJSON_AddBoolToObject(json, "dsp", audio_output_channel_mode_in_dsp());
   cJSON_AddBoolToObject(json, "success", true);
   char *json_str = cJSON_Print(json);
   httpd_resp_set_type(req, "application/json");
@@ -896,6 +898,33 @@ static esp_err_t ota_update_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static const char *reset_reason_str(esp_reset_reason_t r) {
+  switch (r) {
+  case ESP_RST_POWERON:
+    return "poweron";
+  case ESP_RST_EXT:
+    return "external";
+  case ESP_RST_SW:
+    return "software";
+  case ESP_RST_PANIC:
+    return "panic";
+  case ESP_RST_INT_WDT:
+    return "int_wdt";
+  case ESP_RST_TASK_WDT:
+    return "task_wdt";
+  case ESP_RST_WDT:
+    return "other_wdt";
+  case ESP_RST_DEEPSLEEP:
+    return "deepsleep";
+  case ESP_RST_BROWNOUT:
+    return "brownout";
+  case ESP_RST_SDIO:
+    return "sdio";
+  default:
+    return "unknown";
+  }
+}
+
 static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
   cJSON *info = cJSON_CreateObject();
@@ -957,6 +986,10 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   }
   const esp_app_desc_t *app_desc = esp_app_get_description();
   cJSON_AddStringToObject(info, "firmware_version", app_desc->version);
+  cJSON_AddStringToObject(info, "reset_reason",
+                          reset_reason_str(esp_reset_reason()));
+  cJSON_AddNumberToObject(info, "uptime_s",
+                          (double)(esp_timer_get_time() / 1000000));
 #ifdef CONFIG_DAC_TAS58XX
   cJSON_AddBoolToObject(info, "eq_supported", true);
 #else
@@ -966,6 +999,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "sub_supported", dac_has_sub());
 #else
   cJSON_AddBoolToObject(info, "sub_supported", false);
+#endif
+#ifdef CONFIG_DAC_TAS58XX
+  cJSON_AddBoolToObject(info, "dual_supported", true);
+#else
+  cJSON_AddBoolToObject(info, "dual_supported", false);
 #endif
 
   cJSON_AddItemToObject(json, "info", info);

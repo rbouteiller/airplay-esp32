@@ -61,6 +61,28 @@ static volatile int source_rate = 44100;
 static volatile bool resample_reinit_needed = false;
 static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_STEREO;
 
+/* A bi-amp hybrid flow drives one output per crossover way, so there is no
+ * left and right to pick from downstream — the DSP's input mixer makes the
+ * selection instead, and the software downmix has to stand aside. */
+bool audio_output_channel_mode_in_dsp(void) {
+#ifdef CONFIG_DAC_TAS57XX
+  return dac_tas57xx_has_input_mix();
+#else
+  return false;
+#endif
+}
+
+static void push_channel_mode_to_dsp(audio_channel_mode_t mode) {
+#ifdef CONFIG_DAC_TAS57XX
+  dac_tas57xx_set_input_source(mode == AUDIO_CHANNEL_LEFT ? TAS57XX_INPUT_LEFT
+                               : mode == AUDIO_CHANNEL_RIGHT
+                                   ? TAS57XX_INPUT_RIGHT
+                                   : TAS57XX_INPUT_MIX);
+#else
+  (void)mode;
+#endif
+}
+
 static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
   // Ramp toward the target gain instead of applying volume changes
@@ -95,6 +117,9 @@ static void apply_volume(int16_t *buf, size_t n) {
 // track is heard from both speakers; MONO plays the (L+R)/2 downmix on both
 // outputs; STEREO leaves the buffer untouched.
 static void apply_channel_mode(int16_t *buf, size_t frames) {
+  if (audio_output_channel_mode_in_dsp()) {
+    return;
+  }
   audio_channel_mode_t mode = channel_mode;
   if (mode == AUDIO_CHANNEL_STEREO) {
     return;
@@ -188,6 +213,7 @@ esp_err_t audio_output_init(void) {
     // fitted, so keep it for if the board is ever reconfigured.
     channel_mode = AUDIO_CHANNEL_STEREO;
   }
+  push_channel_mode_to_dsp(channel_mode);
 
   i2s_chan_config_t chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -285,6 +311,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   i2s_channel_enable(tx_handle);
+  dac_on_i2s_started();
 }
 
 void audio_output_flush(void) {
@@ -367,6 +394,7 @@ void audio_output_set_channel_mode(audio_channel_mode_t mode) {
   }
   channel_mode = mode;
   settings_set_channel_mode((uint8_t)mode);
+  push_channel_mode_to_dsp(mode);
   ESP_LOGI(TAG, "Channel mode: %s",
            mode == AUDIO_CHANNEL_LEFT    ? "LEFT only"
            : mode == AUDIO_CHANNEL_RIGHT ? "RIGHT only"

@@ -146,7 +146,7 @@ def get_page_comment(page):
     return ""
 
 
-def convert(cfg_path):
+def convert(cfg_path, dev='98'):
     with open(cfg_path) as f:
         lines = f.readlines()
 
@@ -176,6 +176,8 @@ def convert(cfg_path):
             continue
         if stripped.startswith('w '):
             parts = stripped.split()
+            if parts[1].lower() != dev:
+                continue
             reg = int(parts[2], 16)
             data_bytes = parts[3:]
             data_len = len(data_bytes)
@@ -223,7 +225,7 @@ def convert(cfg_path):
     return '\n'.join(out)
 
 
-def convert_bin(cfg_path):
+def convert_bin(cfg_path, dev='98'):
     """Convert a .cfg file to a raw binary packed byte stream."""
     with open(cfg_path) as f:
         lines = f.readlines()
@@ -235,6 +237,8 @@ def convert_bin(cfg_path):
             continue
         if stripped.startswith('w '):
             parts = stripped.split()
+            if parts[1].lower() != dev:
+                continue
             reg = int(parts[2], 16)
             data_bytes = [int(b, 16) for b in parts[3:]]
             data.append(reg)
@@ -247,17 +251,24 @@ def convert_bin(cfg_path):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} [--bin] <cfg_file>", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} [--bin] [--addr XX] <cfg_file>",
+              file=sys.stderr)
         sys.exit(1)
 
-    bin_mode = '--bin' in sys.argv
-    cfg_file = [a for a in sys.argv[1:] if a != '--bin'][0]
+    args = sys.argv[1:]
+    bin_mode = '--bin' in args
+    dev = '98'
+    if '--addr' in args:
+        i = args.index('--addr')
+        dev = args[i + 1].lower()
+        del args[i:i + 2]
+    cfg_file = [a for a in args if a != '--bin'][0]
 
     if bin_mode:
         out_path = cfg_file.rsplit('.', 1)[0] + '.bin'
-        data = convert_bin(cfg_file)
+        data = convert_bin(cfg_file, dev)
         with open(out_path, 'wb') as f:
             f.write(data)
         print(f"Wrote {len(data)} bytes to {out_path}", file=sys.stderr)
     else:
-        print(convert(cfg_file))
+        print(convert(cfg_file, dev))

@@ -6,7 +6,38 @@ if DAC_TAS57XX
         default -30
         help
             Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
-            The TAS57xx register range is 0 dB to -127 dB.
+            The usable P0-R61/R62 range is 0 dB to -103 dB; the boost half of
+            the register (up to +24 dB) is deliberately not used.
             A value of -30 means AirPlay full volume maps to -30 dB on the DAC.
+
+    config TAS57XX_FORCE_BCK_PLL
+        bool "Always derive the PLL from BCK"
+        default n
+        help
+            By default the driver puts the PLL on MCLK when it detects one on
+            the SCK pin, and falls back to BCK otherwise. Set this to keep the
+            PLL on BCK even when MCLK is present, so the clock-error masks that
+            a no-MCLK board needs are exercised on a board that has one.
+
+            Only useful for testing whether a flow runs without MCLK wired.
+
+    config TAS57XX_FAULT_MONITOR
+        bool "Poll and log amplifier fault status"
+        default n
+        help
+            Periodically read the TAS57xx read-only status registers over I2C
+            and log power-state transitions, output short detection, auto-mute
+            and SPK_MUTE (external undervoltage) events.
+
+            Useful for diagnosing intermittent audio loss on boards where the
+            SPK_FAULT pin is not wired to the ESP32, since over-temperature,
+            over-current and DC-offset faults are otherwise invisible to
+            software. Costs a few I2C reads per interval.
+
+    config TAS57XX_FAULT_POLL_MS
+        int "Fault poll interval (ms)"
+        depends on TAS57XX_FAULT_MONITOR
+        range 100 60000
+        default 1000
 
 endif # DAC_TAS57XX

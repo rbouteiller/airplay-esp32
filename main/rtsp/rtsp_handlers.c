@@ -1451,9 +1451,15 @@ static void format_time_mmss(uint32_t seconds, char *out, size_t out_size) {
  *   asgn = genre
  *   asai = album id (64-bit)
  */
+#define DMAP_MAX_NESTING 8
+
 static void parse_dmap_metadata(const uint8_t *data, size_t len,
-                                rtsp_metadata_t *meta) {
+                                rtsp_metadata_t *meta, int depth) {
   size_t pos = 0;
+
+  if (depth > DMAP_MAX_NESTING) {
+    return;
+  }
 
   while (pos + 8 <= len) {
     // Read 4-byte tag
@@ -1467,7 +1473,9 @@ static void parse_dmap_metadata(const uint8_t *data, size_t len,
                         ((uint32_t)data[pos + 2] << 8) | data[pos + 3];
     pos += 4;
 
-    if (pos + item_len > len) {
+    // Subtraction, not pos + item_len: that addition wraps on 32-bit size_t
+    // for a hostile length and would let a malformed frame read out of bounds.
+    if (item_len > len - pos) {
       break; // Malformed
     }
 
@@ -1503,7 +1511,7 @@ static void parse_dmap_metadata(const uint8_t *data, size_t len,
     } else if (strcmp(tag, "mlit") == 0 || strcmp(tag, "cmst") == 0 ||
                strcmp(tag, "mdst") == 0) {
       // Container tags - recurse into them
-      parse_dmap_metadata(data + pos, item_len, meta);
+      parse_dmap_metadata(data + pos, item_len, meta, depth + 1);
     }
 
     pos += item_len;
@@ -1596,7 +1604,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
     // DMAP-tagged metadata (AirPlay 1)
     if (body && body_len > 0) {
       ESP_LOGI(TAG, "Received DMAP metadata (%zu bytes)", body_len);
-      parse_dmap_metadata(body, body_len, &event_data.metadata);
+      parse_dmap_metadata(body, body_len, &event_data.metadata, 0);
       has_metadata = true;
     }
   } else if (strstr(req->content_type, "image/jpeg") ||

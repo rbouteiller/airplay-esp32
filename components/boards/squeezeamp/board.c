@@ -73,7 +73,9 @@ static i2c_master_bus_handle_t s_i2c_disp_bus_handle = NULL;
 
 static esp_err_t init_mute_gpio(void);
 static esp_err_t init_spkfault_gpio(void);
+#if BOARD_JACK_GPIO >= 0
 static esp_err_t init_jack_gpio(void);
+#endif
 static esp_err_t init_gpio_isr_task(void);
 static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data);
@@ -96,6 +98,7 @@ static void IRAM_ATTR spkfault_isr_handler(void *arg) {
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
+#if BOARD_JACK_GPIO >= 0
 // Headphone jack ISR - notifies the task (debounced in task)
 static void IRAM_ATTR jack_isr_handler(void *arg) {
   (void)arg;
@@ -108,6 +111,7 @@ static void IRAM_ATTR jack_isr_handler(void *arg) {
 
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
+#endif /* BOARD_JACK_GPIO >= 0 */
 
 // Task to handle speaker fault and jack events (runs I2C-safe operations)
 static void spkfault_task(void *arg) {
@@ -141,6 +145,7 @@ static void spkfault_task(void *arg) {
         }
       }
 
+#if BOARD_JACK_GPIO >= 0
       // Handle headphone jack with debounce
       if (notification & JACK_NOTIFY_CHANGED) {
         // Wait for debounce period
@@ -151,15 +156,18 @@ static void spkfault_task(void *arg) {
 
         if (jack_inserted && !headphone_inserted) {
           headphone_inserted = true;
+          ESP_LOGI(TAG, "Headphone inserted - speaker off");
           dac_enable_speaker(false);
         } else if (!jack_inserted && headphone_inserted) {
           headphone_inserted = false;
+          ESP_LOGI(TAG, "Headphone removed - speaker on");
           // Only re-enable speaker if no fault active
           if (!speaker_fault_active) {
             dac_enable_speaker(true);
           }
         }
       }
+#endif /* BOARD_JACK_GPIO >= 0 */
     }
   }
 }
@@ -330,12 +338,16 @@ esp_err_t iot_board_init(void) {
     return err;
   }
 
+#if BOARD_JACK_GPIO >= 0
   // Configure headphone jack detection
   err = init_jack_gpio();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize jack GPIO: %s", esp_err_to_name(err));
     return err;
   }
+#else
+  ESP_LOGI(TAG, "Headphone jack detection disabled");
+#endif
 
   // Register for RTSP events to control DAC power
   rtsp_events_register(on_rtsp_event, NULL);
@@ -353,7 +365,9 @@ esp_err_t iot_board_deinit(void) {
     return ESP_OK;
   }
 
+#if BOARD_JACK_GPIO >= 0
   gpio_isr_handler_remove(BOARD_JACK_GPIO);
+#endif
   gpio_isr_handler_remove(BOARD_SPKFAULT_GPIO);
   if (gpio_task_handle != NULL) {
     vTaskDelete(gpio_task_handle);
@@ -446,9 +460,11 @@ static esp_err_t init_spkfault_gpio(void) {
   return ESP_OK;
 }
 
+#if BOARD_JACK_GPIO >= 0
 static esp_err_t init_jack_gpio(void) {
   // Note: GPIO 34-39 on ESP32 are input-only and have no internal pull-up.
   // An external pull-up resistor is required on the jack detect pin.
+  // Without one the pin floats and spuriously toggles the speaker.
   gpio_config_t jack_cfg = {
       .pin_bit_mask = (1ULL << BOARD_JACK_GPIO),
       .mode = GPIO_MODE_INPUT,
@@ -470,6 +486,7 @@ static esp_err_t init_jack_gpio(void) {
   ESP_LOGI(TAG, "Headphone jack detection enabled on GPIO %d", BOARD_JACK_GPIO);
   return ESP_OK;
 }
+#endif /* BOARD_JACK_GPIO >= 0 */
 
 // Override the abort() function to mute GPIO during system panics
 // This is called by ESP-IDF during panic/abort situations via -Wl,--wrap=abort

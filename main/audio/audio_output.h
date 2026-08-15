@@ -95,3 +95,10 @@ audio_channel_mode_t audio_output_get_channel_mode(void);
  * which case the mode is forced to STEREO and set/cycle are ignored.
  */
 bool audio_output_channel_mode_locked(void);
+
+/**
+ * True when a DSP flow makes the channel selection instead of the software
+ * downmix. The outputs are then crossover ways rather than left and right, so
+ * STEREO means the (L+R)/2 mix and only LEFT and RIGHT pick a single channel.
+ */
+bool audio_output_channel_mode_in_dsp(void);

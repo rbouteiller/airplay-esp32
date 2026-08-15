@@ -35,6 +35,7 @@
 #include "iot_board.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -206,6 +207,8 @@ static void on_airplay_client_event(rtsp_event_t event,
 #endif
 
 void app_main(void) {
+  ESP_LOGW(TAG, "Boot: reset reason %d", (int)esp_reset_reason());
+
   // Initialize NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||

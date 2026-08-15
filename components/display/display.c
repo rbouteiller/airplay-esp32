@@ -27,6 +27,10 @@ typedef enum {
 
 static u8g2_t s_u8g2;
 
+// Written from whichever task emits the RTSP event (RTSP server, Bluedroid
+// AVRCP callback, button action task, DACP client), read by the render task.
+static portMUX_TYPE s_display_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static struct {
   char title[METADATA_STRING_MAX];
   char artist[METADATA_STRING_MAX];
@@ -37,6 +41,17 @@ static struct {
   bool dirty;           // set by event callback, cleared by render
   int64_t sync_time_us; // esp_timer_get_time() when position was last synced
 } s_display;
+
+// Consistent copy of s_display taken once per frame, so widths measured for a
+// string always match the string that then gets drawn.
+typedef struct {
+  char title[METADATA_STRING_MAX];
+  char artist[METADATA_STRING_MAX];
+  char album[METADATA_STRING_MAX];
+  uint32_t duration_secs;
+  uint32_t position_secs;
+  display_state_t state;
+} display_snapshot_t;
 
 // Scroll configuration
 #define SCROLL_PX_PER_TICK 2
@@ -135,8 +150,9 @@ static void draw_scrolling_line(u8g2_t *u8g2, int idx, int y, const char *str,
  */
 /**
  * Get the estimated playback position based on wall-clock interpolation.
+ * Caller must hold s_display_mux.
  */
-static uint32_t get_estimated_position(void) {
+static uint32_t estimated_position_locked(void) {
   uint32_t pos = s_display.position_secs;
   if (s_display.state == DISPLAY_STATE_PLAYING && s_display.sync_time_us > 0) {
     int64_t elapsed_us = esp_timer_get_time() - s_display.sync_time_us;
@@ -187,9 +203,21 @@ static void draw_progress(u8g2_t *u8g2, int y, uint32_t pos, uint32_t dur) {
 // ============================================================================
 
 static void display_render(void) {
-  u8g2_ClearBuffer(&s_u8g2);
+  display_snapshot_t snap;
 
-  switch (s_display.state) {
+  taskENTER_CRITICAL(&s_display_mux);
+  memcpy(snap.title, s_display.title, sizeof(snap.title));
+  memcpy(snap.artist, s_display.artist, sizeof(snap.artist));
+  memcpy(snap.album, s_display.album, sizeof(snap.album));
+  snap.duration_secs = s_display.duration_secs;
+  snap.position_secs = estimated_position_locked();
+  snap.state = s_display.state;
+  taskEXIT_CRITICAL(&s_display_mux);
+
+  u8g2_ClearBuffer(&s_u8g2);
+  s_scroll.active = false;
+
+  switch (snap.state) {
   case DISPLAY_STATE_STANDBY:
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14_tf);
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
@@ -210,16 +238,15 @@ static void display_render(void) {
 
   case DISPLAY_STATE_PLAYING:
   case DISPLAY_STATE_PAUSED: {
-    s_scroll.active = false;
-    bool paused = (s_display.state == DISPLAY_STATE_PAUSED);
+    bool paused = (snap.state == DISPLAY_STATE_PAUSED);
     int disp_w = u8g2_GetDisplayWidth(&s_u8g2);
     int top_max_w = paused ? disp_w - PAUSE_INDICATOR_W : disp_w;
 
 #if defined(CONFIG_DISPLAY_HEIGHT_32)
     // Compact 2-line layout: "Title - Artist" (scrolling) + progress bar
     char line[METADATA_STRING_MAX * 2 + 4];
-    const char *title = s_display.title[0] ? s_display.title : "---";
-    const char *artist = s_display.artist[0] ? s_display.artist : "";
+    const char *title = snap.title[0] ? snap.title : "---";
+    const char *artist = snap.artist[0] ? snap.artist : "";
     if (artist[0]) {
       snprintf(line, sizeof(line), "%s - %s", title, artist);
     } else {
@@ -231,29 +258,26 @@ static void display_render(void) {
 
     // Line 2: Progress bar
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
-    draw_progress(&s_u8g2, 30, get_estimated_position(),
-                  s_display.duration_secs);
+    draw_progress(&s_u8g2, 30, snap.position_secs, snap.duration_secs);
 #else
     // Full 4-line layout for 128x64 displays
     // Line 1: Title (larger font, clipped for pause indicator)
     u8g2_SetFont(&s_u8g2, u8g2_font_7x14B_tf);
-    draw_scrolling_line(&s_u8g2, 0, 13,
-                        s_display.title[0] ? s_display.title : "---",
+    draw_scrolling_line(&s_u8g2, 0, 13, snap.title[0] ? snap.title : "---",
                         top_max_w);
 
     // Line 2: Artist
     u8g2_SetFont(&s_u8g2, u8g2_font_6x13_tf);
-    draw_scrolling_line(&s_u8g2, 1, 28,
-                        s_display.artist[0] ? s_display.artist : "", disp_w);
+    draw_scrolling_line(&s_u8g2, 1, 28, snap.artist[0] ? snap.artist : "",
+                        disp_w);
 
     // Line 3: Album
-    draw_scrolling_line(&s_u8g2, 2, 42,
-                        s_display.album[0] ? s_display.album : "", disp_w);
+    draw_scrolling_line(&s_u8g2, 2, 42, snap.album[0] ? snap.album : "",
+                        disp_w);
 
     // Line 4: Progress bar with times
     u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tf);
-    draw_progress(&s_u8g2, 62, get_estimated_position(),
-                  s_display.duration_secs);
+    draw_progress(&s_u8g2, 62, snap.position_secs, snap.duration_secs);
 #endif
 
     // Paused indicator (top-right)
@@ -278,6 +302,8 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data) {
   (void)user_data;
 
+  taskENTER_CRITICAL(&s_display_mux);
+
   switch (event) {
   case RTSP_EVENT_CLIENT_CONNECTED:
     s_display.state = DISPLAY_STATE_CONNECTED;
@@ -299,7 +325,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
   case RTSP_EVENT_PAUSED:
     // Freeze position at current estimate before pausing
-    s_display.position_secs = get_estimated_position();
+    s_display.position_secs = estimated_position_locked();
     s_display.sync_time_us = 0;
     s_display.state = DISPLAY_STATE_PAUSED;
     s_display.dirty = true;
@@ -329,12 +355,15 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       // progress-only updates arrive with zeroed strings.
       if (data->metadata.title[0]) {
         memcpy(s_display.title, data->metadata.title, METADATA_STRING_MAX);
+        s_display.title[METADATA_STRING_MAX - 1] = '\0';
       }
       if (data->metadata.artist[0]) {
         memcpy(s_display.artist, data->metadata.artist, METADATA_STRING_MAX);
+        s_display.artist[METADATA_STRING_MAX - 1] = '\0';
       }
       if (data->metadata.album[0]) {
         memcpy(s_display.album, data->metadata.album, METADATA_STRING_MAX);
+        s_display.album[METADATA_STRING_MAX - 1] = '\0';
       }
       if (data->metadata.duration_secs) {
         s_display.duration_secs = data->metadata.duration_secs;
@@ -352,6 +381,8 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     }
     break;
   }
+
+  taskEXIT_CRITICAL(&s_display_mux);
 }
 
 // ============================================================================
