@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
-#include "audio_output.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -20,10 +19,8 @@
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
 
-#include "ntp_clock.h"
 #include "ptp_clock.h"
 #include "rtsp_events.h"
-#include "dacp_client.h"
 
 static const char *TAG = "rtsp_server";
 
@@ -269,103 +266,8 @@ cleanup:
 
   // Immediate: stop audio and NTP
   audio_receiver_stop();
-  audio_output_flush();
-  ntp_clock_stop();
 
-  bool has_dacp_remote = conn && conn->protocol_version == 1 &&
-                         conn->dacp_id[0] != '\0' &&
-                         conn->active_remote[0] != '\0';
-
-  // iOS v1 pause handling needs DACP to distinguish pause from disconnect.
-  // Third-party RAOP clients often have no DACP remote; disconnect them
-  // immediately instead of delaying slot cleanup with an iOS-only grace path.
-  if (has_dacp_remote) {
-    if (!slot->should_stop) {
-      s_resume_requested = false;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
-
-      // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
-      for (int i = 0; i < 6 && !slot->should_stop; i++) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (s_resume_requested) {
-          ESP_LOGI(TAG,
-                   "Resume requested during Phase 1 — skipping to Phase 2");
-          break;
-        }
-      }
-
-      // Phase 2: wait for reconnect as long as DACP service is advertised.
-      // Re-probe every ~5 s. The phone unadvertises the service when the
-      // user switches away, so disappearance = genuine disconnect.
-      if (!slot->should_stop) {
-        bool stay = dacp_probe_service() || s_resume_requested;
-        if (s_resume_requested) {
-          s_resume_requested = false;
-          ESP_LOGI(TAG, "Resume requested via button — waiting for reconnect");
-          stay = true;
-        }
-        if (stay) {
-          ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
-        }
-        while (stay && !slot->should_stop) {
-          // Wait 5 s between probes (10 × 500 ms), checking flags each tick
-          for (int i = 0; i < 10 && !slot->should_stop; i++) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            if (s_resume_requested) {
-              s_resume_requested = false;
-              ESP_LOGI(TAG,
-                       "Resume requested via button — extending grace period");
-            }
-          }
-          if (slot->should_stop) {
-            break;
-          }
-          // Re-probe: still advertised?
-          stay = dacp_probe_service();
-          if (stay) {
-            ESP_LOGD(TAG, "DACP still advertised — continuing wait");
-          } else {
-            ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
-          }
-        }
-      }
-
-      if (slot->is_old) {
-        // New client connected during grace period — treat as reconnect
-        ESP_LOGI(TAG, "Client reconnected during grace period");
-      } else {
-        ESP_LOGI(TAG, "Grace period expired — full disconnect");
-        dacp_clear_session();
-        rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-      }
-    } else {
-      // Forcefully stopped (server shutdown or replaced by new client)
-      dacp_clear_session();
-      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-    }
-  } else {
-    // v2 / unknown — no grace period, clear immediately.
-    dacp_clear_session();
-    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-  }
-
-  // When being replaced by a new client (is_old), skip global state changes —
-  // the new session's SETUP already manages PTP and the event port task.
-  if (!slot->is_old) {
-    ptp_clock_init(); // Restart PTP (stopped during v1 SETUP to free sockets)
-    rtsp_stop_event_port_task();
-  } else if (rtsp_event_port_listen_socket() >= 0 &&
-             rtsp_event_port_listen_socket() == conn->event_socket) {
-    // Old task still using our socket — stop it before closing
-    rtsp_stop_event_port_task();
-  }
-
-  if (conn->event_socket >= 0) {
-    close(conn->event_socket);
-    conn->event_socket = -1;
-  }
-
-  rtsp_conn_cleanup(conn);
+  // AP2 RAW RX: no AirPlay 1 DACP grace/reconnect path.
   rtsp_conn_free(conn);
 
   slot->conn = NULL;
@@ -492,8 +394,9 @@ static void server_task(void *pvParameters) {
     // Start new client task immediately.
     clients[new_slot].task = NULL;
     BaseType_t task_ret =
-        xTaskCreate(client_task, "rtsp_client", CLIENT_STACK_SIZE,
-                    (void *)(intptr_t)new_slot, 5, &clients[new_slot].task);
+        xTaskCreatePinnedToCore(client_task, "rtsp_client", CLIENT_STACK_SIZE,
+                                (void *)(intptr_t)new_slot, 5,
+                                &clients[new_slot].task, 0);
     if (task_ret != pdPASS || clients[new_slot].task == NULL) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);
@@ -544,8 +447,8 @@ esp_err_t rtsp_server_start(void) {
   }
 
   BaseType_t task_ret =
-      xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,
-                  &server_task_handle);
+      xTaskCreatePinnedToCore(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,
+                              &server_task_handle, 0);
   if (task_ret != pdPASS || server_task_handle == NULL) {
     return ESP_FAIL;
   }

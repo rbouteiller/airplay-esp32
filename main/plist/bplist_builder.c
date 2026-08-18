@@ -1,6 +1,6 @@
 #include <string.h>
 
-#include "audio_stream.h"
+#include "audio_receiver.h"
 #include "plist.h"
 
 static bool bplist_has_room(size_t pos, size_t need, size_t capacity) {
@@ -273,7 +273,7 @@ size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
   out[pos++] = audio_buffer_size & 0xFF;
 
   offsets[obj++] = pos;
-  if (audio_stream_uses_buffer((audio_stream_type_t)stream_type)) {
+  if ((stream_type == AUDIO_STREAM_BUFFERED)) {
     out[pos++] = 0xD4;
     out[pos++] = 1;
     out[pos++] = 2;

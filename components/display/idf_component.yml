@@ -1,9 +1,0 @@
-dependencies:
-  espressif/esp_lvgl_port:
-    version: "~2.3.0"
-    rules:
-      - if: "target == esp32s3"
-  lvgl/lvgl:
-    version: ">=9,<10"
-    rules:
-      - if: "target == esp32s3"

@@ -500,8 +500,8 @@ esp_err_t ptp_clock_init(void) {
 
   // Start task
   ptp.running = true;
-  BaseType_t ret = task_create_spiram(ptp_task, "ptp_clock", 4096, NULL, 6,
-                                      &ptp.task_handle, &ptp.task_mem);
+  BaseType_t ret = task_create_pinned_spiram(ptp_task, "ptp_clock", 4096, NULL, 6,
+                                             &ptp.task_handle, 0, &ptp.task_mem);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create PTP task");
     close(ptp.event_socket);

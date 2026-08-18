@@ -115,7 +115,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     // Defer scan+connect to a separate task — the blocking scan uses too
     // much stack to run inside the sys_evt event loop (2–4 KB).
-    xTaskCreate(scan_and_connect_task, "wifi_scan", 4096, NULL, 3, NULL);
+    xTaskCreatePinnedToCore(scan_and_connect_task, "wifi_scan", 4096, NULL, 3, NULL, 0);
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     s_sta_connected = false;

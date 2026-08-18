@@ -1,71 +1,31 @@
-# Default values
-
-# PSRAM support
+# Minimal AP2 RAW RX debug defaults
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 
-# FLASH mode
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_ESPTOOLPY_FLASHMODE="qio"
+# ESP32-S3 N8R8 uses quad flash + octal PSRAM.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHMODE="dio"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
-# CPU frequency
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 
-# WiFi
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
-
-# libsodium: disable mbedTLS SHA wrapper — ESP32 hardware SHA acceleration
-# is incompatible with libsodium's state management pattern.
-# (The Kconfig guard for this was removed in libsodium 1.0.21)
 CONFIG_LIBSODIUM_USE_MBEDTLS_SHA=n
-
-# mDNS
-CONFIG_MDNS_MAX_SERVICES=10
+CONFIG_MDNS_MAX_SERVICES=4
 CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
 CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
-
-# mbedTLS: use default allocator so RSA MPI buffers can spill to SPIRAM
-# when internal DRAM is tight (audio task stacks pre-allocated there).
 CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
-
-# LWIP - increase socket limits for AirPlay
-CONFIG_LWIP_MAX_SOCKETS=16
-
-# Enable SO_RCVBUF so the buffered-audio socket can use a small receive
-# buffer.  We do our own jitter buffering in audio_buffer; the kernel
-# should hold no more than a couple of MSS so back-pressure to the
-# sender is responsive when our PCM ring runs full.
+CONFIG_LWIP_MAX_SOCKETS=24
 CONFIG_LWIP_SO_RCVBUF=y
-
-# Deepen the UDP receive mailbox.  The default of 6 overflows under the
-# bursty RTP delivery of AirPlay realtime (ALAC) unbuffered streams,
-# dropping datagrams before the audio task can drain them (~8% loss).
-# The mailbox holds pbuf pointers only (~4 bytes/slot), so this is cheap
-# and cuts realtime UDP loss to ~1-2%.
-CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
-
-# Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_DEFAULT_LEVEL=3
 CONFIG_LOG_COLORS=y
-
-# Partition table
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions.csv"
-
-# Compiler optimization
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-
-# HTTP server — limit open sockets to avoid LWIP socket exhaustion.
-# Default is 7; with RTSP + audio + NTP + PTP + WiFi the budget is tight.
-CONFIG_HTTPD_WS_SUPPORT=y
-
-# Memory Tweaks
-# Push allocations > 1024 bytes to SPIRAM, keeping internal DRAM free for
-# semaphores, DMA descriptors and WiFi management structures that *must*
-# live in internal DRAM.  Default is 16384 — far too aggressive
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_HTTPD_WS_SUPPORT=y

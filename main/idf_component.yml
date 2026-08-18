@@ -1,17 +1,4 @@
 dependencies:
-  espressif/esp_hosted:
-    version: "*"
-    rules:
-      - if: "target == esp32p4"
-  espressif/esp_wifi_remote:
-    version: "*"
-    rules:
-      - if: "target == esp32p4"
   espressif/mdns: "^1.11.1"
   espressif/libsodium: "^1.0.21"
   espressif/esp_audio_codec: "^2.5.0"
-  espressif/led_strip: "^3.0.3"
-  espressif/usb_device_uac:
-    version: "^1.2.3"
-    rules:
-      - if: "idf_version >=5.0 && (target in [esp32s2, esp32s3, esp32p4])"

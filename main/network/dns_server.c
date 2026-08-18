@@ -139,7 +139,7 @@ esp_err_t dns_server_start(uint32_t redirect_ip) {
     return ESP_FAIL;
   }
 
-  task_create_spiram(dns_server_task, "dns_server", 4096, NULL, 5, &s_dns_task,
+  task_create_pinned_spiram(dns_server_task, "dns_server", 4096, NULL, 5, &s_dns_task, 0,
                      NULL);
 
   ESP_LOGI(TAG, "DNS server started, redirecting to " IPSTR,

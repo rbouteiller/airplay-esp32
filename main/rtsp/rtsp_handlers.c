@@ -17,14 +17,8 @@
 #include "freertos/task.h"
 #include "sodium.h"
 
-#include "audio_output.h"
 #include "audio_receiver.h"
-#include "audio_stream.h"
-#ifdef CONFIG_BT_A2DP_ENABLE
-#include "dac.h"
-#endif
 #include "hap.h"
-#include "ntp_clock.h"
 #include "ptp_clock.h"
 #include "plist.h"
 #include "rtsp_fairplay.h"
@@ -34,7 +28,6 @@
 #include "tlv8.h"
 
 #include "rtsp_events.h"
-#include "dacp_client.h"
 
 static const char *TAG = "rtsp_handlers";
 
@@ -50,10 +43,6 @@ static void configure_codec(audio_format_t *fmt, const char *name, int64_t sr,
   fmt->channels = 2;
   fmt->bits_per_sample = 16;
   fmt->frame_size = (int)spf;
-  fmt->max_samples_per_frame = (uint32_t)spf;
-  fmt->sample_size = 16;
-  fmt->num_channels = 2;
-  fmt->sample_rate_config = (uint32_t)sr;
 }
 
 // Codec registry - add new codecs here
@@ -149,21 +138,11 @@ static void ensure_stream_ports(rtsp_conn_t *conn, bool buffered) {
 }
 
 static bool start_ntp_timing_or_fail(int socket, rtsp_conn_t *conn,
-                                     const rtsp_request_t *req) {
-  if (conn->client_timing_port == 0 || conn->client_ip == 0) {
-    return true;
-  }
-
-  esp_err_t err =
-      ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start NTP timing client: %s",
-             esp_err_to_name(err));
-    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
-                       NULL, 0);
-    return false;
-  }
-  return true;
+                                    const rtsp_request_t *req) {
+  (void)conn;
+  ESP_LOGW(TAG, "Rejecting AirPlay 1/NTP timing in AP2 RAW RX build");
+  rtsp_send_response(socket, conn, 461, "Unsupported Transport", req->cseq, NULL, NULL, 0);
+  return false;
 }
 
 static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
@@ -289,8 +268,9 @@ esp_err_t rtsp_start_event_port_task(int listen_socket) {
   event_listen_socket = -1;
   event_task_handle = NULL;
   BaseType_t ret =
-      xTaskCreate(event_port_task, "event_port", EVENT_STACK_SIZE,
-                  (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+      xTaskCreatePinnedToCore(event_port_task, "event_port", EVENT_STACK_SIZE,
+                              (void *)(intptr_t)listen_socket, 5,
+                              &event_task_handle, 0);
   if (ret != pdPASS) {
     event_task_handle = NULL;
     ESP_LOGE(TAG, "Failed to create event port task");
@@ -469,7 +449,7 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
   }
   // Update DACP client session when both identifiers are available
   if (conn->dacp_id[0] != '\0' && conn->active_remote[0] != '\0') {
-    dacp_set_session(conn->dacp_id, conn->active_remote, conn->client_ip);
+    /* DACP removed in AP2-only debug build */
   }
 
   // Find handler in dispatch table
@@ -883,46 +863,16 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
     }
   }
 
-  const char *fmtp = strstr(sdp, "a=fmtp:");
-  if (fmtp) {
-    unsigned int frame_len, bit_depth, pb, mb, kb, num_ch, max_run, max_frame,
-        avg_rate, rate;
-    unsigned int compat;
-    // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion)
-    int matched = sscanf(fmtp, "a=fmtp:%*d %u %u %u %u %u %u %u %u %u %u %u",
-                         &frame_len, &compat, &bit_depth, &pb, &mb, &kb,
-                         &num_ch, &max_run, &max_frame, &avg_rate, &rate);
-    if (matched >= 7) {
-      format.max_samples_per_frame = frame_len;
-      format.sample_size = bit_depth;
-      format.rice_history_mult = pb;
-      format.rice_initial_history = mb;
-      format.rice_limit = kb;
-      format.num_channels = num_ch;
-      format.channels = (int)num_ch;
-      format.bits_per_sample = (int)bit_depth;
-      if (matched >= 8) {
-        format.max_run = max_run;
-      }
-      if (matched >= 9) {
-        format.max_coded_frame_size = max_frame;
-      }
-      if (matched >= 10) {
-        format.avg_bit_rate = avg_rate;
-      }
-      if (matched >= 11) {
-        format.sample_rate_config = rate;
-        format.sample_rate = (int)rate;
-      }
-    }
-  }
-
-  if ((strstr(format.codec, "AAC") || strstr(format.codec, "aac") ||
-       strstr(format.codec, "mpeg4-generic") ||
-       strstr(format.codec, "MPEG4-GENERIC")) &&
-      format.max_samples_per_frame == 0) {
+  /*
+   * Legacy ALAC rice/magic-cookie fields were deliberately removed from the
+   * V5 AAC-only audio format.  This project only decodes AP2 AAC type=103.  Keep SDP
+   * parsing generic enough for RTSP negotiation, but do not carry ALAC state
+   * into the audio engine.
+   */
+  if (strstr(format.codec, "AAC") || strstr(format.codec, "aac") ||
+      strstr(format.codec, "mpeg4-generic") ||
+      strstr(format.codec, "MPEG4-GENERIC")) {
     format.frame_size = 1024;
-    format.max_samples_per_frame = 1024;
   }
 
   // AirPlay v1: parse RSA-encrypted AES key and IV from SDP. Triggered by
@@ -1230,6 +1180,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
 
     if (is_bplist) {
+      conn->protocol_version = 2;
       uint8_t plist_body[128];
       size_t plist_len = bplist_build_initial_setup(
           plist_body, sizeof(plist_body), conn->event_port);
@@ -1256,7 +1207,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "SETUP: Stream setup, stream_type=%lld",
            (long long)stream_type);
 
-  bool buffered = audio_stream_uses_buffer((audio_stream_type_t)stream_type);
+  bool buffered = (stream_type == AUDIO_STREAM_BUFFERED);
   if (buffered) {
     esp_err_t err = audio_receiver_start_buffered(0);
     if (err != ESP_OK) {
@@ -1267,7 +1218,16 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     conn->buffered_port = audio_receiver_get_buffered_port();
   }
 
-  ensure_stream_ports(conn, buffered);
+  // AirPlay 2 buffered audio (type 103) uses the TCP dataPort plus PTP.
+  // Do not allocate the legacy UDP control/timing ports here: they are not
+  // used by this minimal AP2 receiver and only consume scarce lwIP sockets.
+  if (!buffered) {
+    ensure_stream_ports(conn, false);
+  } else {
+    conn->data_port = 0;
+    conn->control_port = 0;
+    conn->timing_port = 0;
+  }
 
   uint16_t response_data_port =
       buffered ? conn->buffered_port : conn->data_port;
@@ -1363,11 +1323,6 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                                       conn->client_control_port);
   }
 
-#ifdef CONFIG_BT_A2DP_ENABLE
-  // Apply saved AirPlay volume before playback starts — the DAC may have
-  // been left at a different level by Bluetooth A2DP.
-  dac_set_volume(conn->volume_db);
-#endif
 
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
@@ -1387,20 +1342,24 @@ static void handle_record(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "RECORD received - starting playback, stream_paused was %d",
            conn->stream_paused);
 
-#ifdef CONFIG_BT_A2DP_ENABLE
-  // Ensure DAC is at the saved AirPlay volume before any audio plays —
-  // Bluetooth A2DP may have left it at a different level.
-  dac_set_volume(conn->volume_db);
-#endif
 
   if (conn->stream_paused) {
-    // Resuming from PAUSE: the stream listener is still running and the
-    // timing anchor has been preserved.  Just re-enable playout; the
-    // pause-duration offset in audio_timing will re-align the timestamps.
-    ESP_LOGI(TAG, "RECORD: resuming from pause, skipping stream restart");
+    ESP_LOGI(TAG, "RECORD: resuming control session");
+    audio_receiver_set_playing(true);
+  } else if (conn->stream_type == AUDIO_STREAM_NONE) {
+    /*
+     * AirPlay 2 can send RECORD on the initial/control SETUP before the
+     * buffered audio streams[] SETUP arrives.  The full receiver used to
+     * silently fall through to its realtime receiver here, which kept the
+     * RTSP session alive.  This minimal AP2 build has intentionally removed
+     * the realtime/AirPlay-1 audio path, so do NOT fail and disconnect the
+     * sender merely because the stream type has not been announced yet.
+     * A later SETUP with streams[type=103] creates the buffered TCP listener.
+     */
+    ESP_LOGI(TAG,
+             "RECORD before audio stream SETUP - acknowledging and waiting for AP2 buffered stream");
     audio_receiver_set_playing(true);
   } else {
-    // Fresh start or post-teardown reconnect: full stream restart.
     if (!start_audio_receiver_or_fail(socket, conn, req, conn->stream_type)) {
       return;
     }
@@ -1451,9 +1410,15 @@ static void format_time_mmss(uint32_t seconds, char *out, size_t out_size) {
  *   asgn = genre
  *   asai = album id (64-bit)
  */
+#define DMAP_MAX_NESTING 8
+
 static void parse_dmap_metadata(const uint8_t *data, size_t len,
-                                rtsp_metadata_t *meta) {
+                                rtsp_metadata_t *meta, int depth) {
   size_t pos = 0;
+
+  if (depth > DMAP_MAX_NESTING) {
+    return;
+  }
 
   while (pos + 8 <= len) {
     // Read 4-byte tag
@@ -1467,7 +1432,9 @@ static void parse_dmap_metadata(const uint8_t *data, size_t len,
                         ((uint32_t)data[pos + 2] << 8) | data[pos + 3];
     pos += 4;
 
-    if (pos + item_len > len) {
+    // Subtraction, not pos + item_len: that addition wraps on 32-bit size_t
+    // for a hostile length and would let a malformed frame read out of bounds.
+    if (item_len > len - pos) {
       break; // Malformed
     }
 
@@ -1503,7 +1470,7 @@ static void parse_dmap_metadata(const uint8_t *data, size_t len,
     } else if (strcmp(tag, "mlit") == 0 || strcmp(tag, "cmst") == 0 ||
                strcmp(tag, "mdst") == 0) {
       // Container tags - recurse into them
-      parse_dmap_metadata(data + pos, item_len, meta);
+      parse_dmap_metadata(data + pos, item_len, meta, depth + 1);
     }
 
     pos += item_len;
@@ -1596,7 +1563,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
     // DMAP-tagged metadata (AirPlay 1)
     if (body && body_len > 0) {
       ESP_LOGI(TAG, "Received DMAP metadata (%zu bytes)", body_len);
-      parse_dmap_metadata(body, body_len, &event_data.metadata);
+      parse_dmap_metadata(body, body_len, &event_data.metadata, 0);
       has_metadata = true;
     }
   } else if (strstr(req->content_type, "image/jpeg") ||
@@ -1703,7 +1670,7 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   // send a fresh SETRATEANCHORTIME (rate=1) anchor on resume that re-aligns
   // the buffered frames to the correct wall-clock position.
   audio_receiver_pause();
-  audio_output_flush();
+  /* no PCM/output path in AP2 RAW RX build */
   conn->stream_paused = true;
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1718,7 +1685,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   // Plain AirPlay 1 FLUSH — always immediate.
   ESP_LOGI(TAG, "FLUSH received");
   audio_receiver_seek_flush();
-  audio_output_flush();
+  /* no PCM/output path in AP2 RAW RX build */
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
@@ -1771,7 +1738,7 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   if (!has_deferred) {
     // Immediate flush: discard everything and reset now.
     audio_receiver_seek_flush();
-    audio_output_flush();
+    /* no PCM/output path in AP2 RAW RX build */
   }
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1809,7 +1776,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
     rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
   }
   audio_receiver_stop();
-  audio_output_flush();
+  /* no PCM/output path in AP2 RAW RX build */
   // Drop PTP lock + offset history.  AirPlay group rejoins reuse the same
   // PTP master clock_id; without this, ptp_clock_set_master_clock_id() on
   // the next session early-returns and reuses stale samples accumulated
@@ -1826,11 +1793,11 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
     // grace period can probe mDNS to differentiate pause from real
     // disconnect. v2 sessions clear immediately.
     if (conn->protocol_version != 1) {
-      dacp_clear_session();
+      /* DACP removed */
       conn->dacp_id[0] = '\0';
       conn->active_remote[0] = '\0';
     }
-    ntp_clock_stop();
+    /* NTP/AirPlay1 removed */
     conn->timing_port = 0;
   }
 
@@ -1894,7 +1861,7 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
     rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
     conn->stream_paused = true;
     audio_receiver_pause();
-    audio_output_flush();
+    /* no PCM/output path in AP2 RAW RX build */
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
              rate, conn->stream_paused);

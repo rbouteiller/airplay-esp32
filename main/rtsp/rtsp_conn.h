@@ -87,7 +87,7 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn);
 /**
  * Set volume in dB (converts to Q15 internally)
  * @param conn Connection state
- * @param volume_db Volume in dB (0 = max, -30 = mute)
+ * @param volume_db Volume in dB (0 = max, -144 = mute)
  */
 void rtsp_conn_set_volume(rtsp_conn_t *conn, float volume_db);
 
