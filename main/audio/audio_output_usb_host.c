@@ -1253,6 +1253,27 @@ audio_channel_mode_t audio_output_get_channel_mode(void) {
   return channel_mode;
 }
 
+void audio_output_set_channel_mode(audio_channel_mode_t mode) {
+  /* apply_channel_mode() implements STEREO/LEFT/RIGHT only; MONO would fall
+   * through to the LEFT path, so clamp it instead of mislabelling it. */
+  if (mode != AUDIO_CHANNEL_LEFT && mode != AUDIO_CHANNEL_RIGHT) {
+    mode = AUDIO_CHANNEL_STEREO;
+  }
+  channel_mode = mode;
+  ESP_LOGI(TAG, "Channel mode: %s",
+           mode == AUDIO_CHANNEL_LEFT    ? "LEFT only"
+           : mode == AUDIO_CHANNEL_RIGHT ? "RIGHT only"
+                                         : "STEREO");
+}
+
+/* Routing is done in software here, so nothing fixes it the way a multi-device
+ * DAC configuration does. Without this the weak default in
+ * audio_output_common.c would report the mode as locked, greying the control
+ * out in the web UI while the hardware button still cycled it. */
+bool audio_output_channel_mode_locked(void) {
+  return false;
+}
+
 static volatile int source_rate = 44100;
 
 /* Expand n16 16-bit PCM samples to the device's subslot size, left-justified
