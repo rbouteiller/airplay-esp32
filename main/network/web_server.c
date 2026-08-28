@@ -19,6 +19,7 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "rtsp_server.h"
+#include "rtsp_events.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -343,6 +344,56 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
 
+  return ESP_OK;
+}
+
+/* Copy a JSON string field into a fixed metadata slot. Absent or non-string
+ * fields are left zeroed, which listeners treat as "unchanged". */
+static void metadata_copy_field(const cJSON *json, const char *key, char *dst) {
+  const cJSON *item = cJSON_GetObjectItem(json, key);
+  if (cJSON_IsString(item) && item->valuestring != NULL) {
+    snprintf(dst, METADATA_STRING_MAX, "%s", item->valuestring);
+  }
+}
+
+static uint32_t metadata_uint_field(const cJSON *json, const char *key) {
+  const cJSON *item = cJSON_GetObjectItem(json, key);
+  if (cJSON_IsNumber(item) && item->valuedouble > 0) {
+    return (uint32_t)item->valuedouble;
+  }
+  return 0;
+}
+
+/* Push now-playing info from an external source, e.g. a host-side helper
+ * feeding metadata for USB audio, which UAC itself cannot carry. */
+static esp_err_t metadata_post_handler(httpd_req_t *req) {
+  char content[512];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  cJSON *json = cJSON_Parse(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  rtsp_event_data_t data = {0};
+  metadata_copy_field(json, "title", data.metadata.title);
+  metadata_copy_field(json, "artist", data.metadata.artist);
+  metadata_copy_field(json, "album", data.metadata.album);
+  metadata_copy_field(json, "genre", data.metadata.genre);
+  data.metadata.duration_secs = metadata_uint_field(json, "duration");
+  data.metadata.position_secs = metadata_uint_field(json, "position");
+  cJSON_Delete(json);
+
+  rtsp_events_emit(RTSP_EVENT_METADATA, &data);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
@@ -1307,7 +1358,8 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
   config.max_uri_handlers =
-      30; // Room for captive portal + EQ + speedtest + brightness + channel
+      31; // Room for captive portal + EQ + speedtest + brightness + channel
+          // + metadata
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -1431,6 +1483,11 @@ esp_err_t web_server_start(uint16_t port) {
                          .method = HTTP_POST,
                          .handler = ota_update_handler};
   httpd_register_uri_handler(s_server, &ota_uri);
+
+  httpd_uri_t metadata_uri = {.uri = "/api/metadata",
+                              .method = HTTP_POST,
+                              .handler = metadata_post_handler};
+  httpd_register_uri_handler(s_server, &metadata_uri);
 
   httpd_uri_t system_info_uri = {.uri = "/api/system/info",
                                  .method = HTTP_GET,

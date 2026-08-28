@@ -183,11 +183,18 @@ menu "Airplay ESP Configuration"
 
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
+        default OUTPUT_SAMPLE_RATE_48000 if DAC_TAS58XX
         default OUTPUT_SAMPLE_RATE_44100
-        depends on !DAC_TAS57XX && !DAC_TAS58XX && !AUDIO_OUTPUT_USB
+        depends on !DAC_TAS57XX && !AUDIO_OUTPUT_USB
         help
             Sample rate for I2S/SPDIF output. If the AirPlay source sends a
             different rate, the audio is resampled automatically.
+
+            TAS58xx defaults to 48000 because the driver's EQ coefficient
+            tables and its runtime biquad designs are computed for that rate;
+            at 44100 every band and crossover corner lands ~8% low. Selecting
+            44100 here avoids resampling but keeps that detuning until the
+            coefficient tables are made rate-aware.
 
         config OUTPUT_SAMPLE_RATE_44100
             bool "44100 Hz (native AirPlay, no resampling)"
@@ -213,6 +220,71 @@ menu "Airplay ESP Configuration"
             Must be a multiple of 4.
             ESP32-S3 (hardware FPU): 28 recommended.
             ESP32 (no FPU): 12 recommended.
+
+    endmenu
+
+    menu "USB Audio Input"
+        depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+
+    config USB_AUDIO_SINK
+        bool "USB Audio Class (UAC) input"
+        depends on AUDIO_OUTPUT_I2S
+        default n
+        help
+            Enumerate on the attached computer as a stereo USB speaker and
+            play the received audio through the same I2S DAC path AirPlay
+            uses, sharing the DAC's DSP and volume control.
+
+            AirPlay is suspended while the host is streaming and resumes
+            once the stream goes idle.
+
+            CONFIG_UAC_SAMPLE_RATE must equal the output sample rate
+            (no resampling is done on this path), CONFIG_UAC_SPEAKER_CHANNEL_NUM
+            must be 2 and CONFIG_UAC_MIC_CHANNEL_NUM should be 0.
+
+            This claims the USB OTG port, so USB-Serial-JTAG console output
+            is unavailable while the firmware runs. Use the UART console and
+            hold BOOT while resetting to reflash.
+
+    config USB_AUDIO_SINK_IDLE_MS
+        int "Idle timeout before AirPlay resumes (ms)"
+        depends on USB_AUDIO_SINK
+        range 200 30000
+        default 2000
+        help
+            How long the host stream must be silent before the output is
+            handed back to AirPlay. Too short causes churn between tracks;
+            too long delays AirPlay availability after unplugging.
+
+    # usb_device_uac hides its own VID/PID/string options when
+    # USB_DEVICE_UAC_AS_PART is set, because the descriptors become ours.
+    config USB_AUDIO_SINK_VID
+        hex "USB vendor ID"
+        depends on USB_AUDIO_SINK
+        default 0x303A
+
+    config USB_AUDIO_SINK_PID
+        hex "USB product ID"
+        depends on USB_AUDIO_SINK
+        default 0x8000
+
+    config USB_AUDIO_SINK_MANUFACTURER
+        string "USB manufacturer string"
+        depends on USB_AUDIO_SINK
+        default "Espressif"
+
+    config USB_AUDIO_SINK_PRODUCT
+        string "USB product string"
+        depends on USB_AUDIO_SINK
+        default "ESP32 Audio Device"
+        help
+            Name the host shows in its sound output list. Also used for the
+            audio interface, which is what Windows Device Manager displays.
+
+    config USB_AUDIO_SINK_SERIAL
+        string "USB serial number string"
+        depends on USB_AUDIO_SINK
+        default "12345678"
 
     endmenu
 

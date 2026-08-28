@@ -113,6 +113,7 @@ nav:
       - Custom board: boards/custom.md
   - Features:
       - Bluetooth A2DP: features/bluetooth.md
+      - USB audio (UAC): features/usb-audio.md
       - Ethernet (W5500): features/ethernet.md
       - OLED display: features/oled-display.md
       - ST7789 TFT display: features/tft-display.md
