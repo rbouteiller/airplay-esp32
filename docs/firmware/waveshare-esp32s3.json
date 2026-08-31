@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (Waveshare ESP32-S3)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "airplay2-receiver-waveshare-esp32s3.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -12,7 +12,6 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sodium.h"
@@ -21,6 +20,7 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #ifdef CONFIG_BT_A2DP_ENABLE
+#include "a2dp_sink.h"
 #include "dac.h"
 #endif
 #include "hap.h"
@@ -37,6 +37,10 @@
 #include "dacp_client.h"
 
 static const char *TAG = "rtsp_handlers";
+
+uint64_t airplay_features(void) {
+  return settings_airplay_v1() ? UINT64_C(0x5C4A00) : UINT64_C(0x1C340405C4A00);
+}
 
 // ============================================================================
 // Codec Registry
@@ -169,6 +173,14 @@ static bool start_ntp_timing_or_fail(int socket, rtsp_conn_t *conn,
 static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
                                          const rtsp_request_t *req,
                                          int64_t stream_type) {
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Tear the BT radio down here rather than waiting for the coex task's
+  // PLAYING event: that lands ~600 ms after RECORD, by which time these tasks
+  // have already tried and failed to allocate their stacks.
+  if (!bt_a2dp_sink_is_connected()) {
+    (void)bt_a2dp_sink_suspend();
+  }
+#endif
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
   esp_err_t err = audio_receiver_start_stream(
       conn->data_port, conn->control_port, conn->buffered_port);
@@ -449,6 +461,8 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
     return -1;
   }
 
+  ESP_LOGD(TAG, "<- %s %s", req.method, req.path);
+
   // Extract DACP headers if present (AirPlay 1 only — modern iOS AirPlay 2
   // does not send these; it uses MRP for remote control instead).
   // parse_raw_header uses a static buffer — copy before calling again.
@@ -498,27 +512,42 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
-  const char *public_methods =
-      "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, TEARDOWN, "
-      "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
-      "SETRATEANCHORTIME\r\n";
-
   // AirPlay v1: handle Apple-Challenge if present. Triggered by request
   // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
   // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
     conn->protocol_version = 1;
-    esp_netif_ip_info_t ip_info;
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+  }
+
+  // A classic-only sender inspects this list and gives up straight after
+  // OPTIONS if it sees the AirPlay 2 methods, so answer in the dialect this
+  // connection is speaking rather than the one the receiver advertises.
+  const char *public_methods =
+      (conn->protocol_version == 1 || settings_airplay_v1())
+          ? "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
+            "GET_PARAMETER, SET_PARAMETER\r\n"
+          : "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, "
+            "TEARDOWN, OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, "
+            "SETPEERS, SETRATEANCHORTIME\r\n";
+
+  if (challenge) {
+    // The sender verifies that the response embeds the address it connected
+    // to, so take it from the socket: hardcoding the WiFi netif yields 0.0.0.0
+    // on an Ethernet-attached board and the sender then walks away silently.
+    struct sockaddr_in local = {0};
+    socklen_t local_len = sizeof(local);
+    if (getsockname(socket, (struct sockaddr *)&local, &local_len) == 0 &&
+        local.sin_addr.s_addr != 0) {
       uint8_t mac[6];
       esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
       char response_b64[512];
-      if (rsa_apple_challenge_response(challenge, ip_info.ip.addr, mac,
+      if (rsa_apple_challenge_response(challenge, local.sin_addr.s_addr, mac,
                                        response_b64,
                                        sizeof(response_b64)) == 0) {
+        ESP_LOGI(TAG, "Apple-Challenge answered for local IP %s",
+                 inet_ntoa(local.sin_addr));
         char headers[768];
         snprintf(headers, sizeof(headers), "%sApple-Response: %s\r\n",
                  public_methods, response_b64);
@@ -547,14 +576,9 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     rtsp_get_device_id(device_id, sizeof(device_id));
     settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
-    uint64_t features =
-        ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
+    uint64_t features = airplay_features();
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-    int64_t protocol_version = 1;
-#else
-    int64_t protocol_version = 2;
-#endif
+    int64_t protocol_version = settings_airplay_v1() ? 1 : 2;
 
     if (request_uses_rtsp(req)) {
       static uint8_t body[1024];
@@ -1323,7 +1347,9 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     uint8_t plist_body[256];
     size_t plist_len = bplist_build_stream_setup(
         plist_body, sizeof(plist_body), stream_type, response_data_port,
-        conn->control_port, AP2_AUDIO_BUFFER_SIZE);
+        conn->control_port,
+        stream_type == 103 ? AP2_AUDIO_BUFFER_SIZE
+                           : AP2_REALTIME_AUDIO_BUFFER_SIZE);
     if (plist_len == 0) {
       audio_receiver_stop();
       rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
@@ -1747,7 +1773,7 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   // If flushFromSeq is present → deferred flush: keep playing existing buffered
   //   content until flushUntilTS is reached, then discard and start fresh.
   //   The phone simultaneously starts streaming the new track, which fills the
-  //   buffer beyond flushUntilTS; audio_timing_read detects the boundary and
+  //   buffer beyond flushUntilTS; the decode task detects the boundary and
   //   triggers the bulk-flush at the right moment.
   bool has_deferred = false;
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {

@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (ESP32-S2)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S2",
+      "parts": [
+        {
+          "path": "airplay2-receiver-esp32s2.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -29,6 +29,10 @@
 #include "a2dp_sink.h"
 #endif
 
+#ifdef CONFIG_USB_AUDIO_SINK
+#include "usb_hid_control.h"
+#endif
+
 static const char *TAG = "playback_ctrl";
 
 #define VOLUME_STEP_DB 3.0f
@@ -143,6 +147,11 @@ void playback_control_play_pause(void) {
     bt_a2dp_send_playpause();
     break;
 #endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_PLAY_PAUSE);
+    break;
+#endif
   default:
     ESP_LOGI(TAG, "Play/pause: no active source (source=%d)", s_source);
     break;
@@ -159,6 +168,11 @@ void playback_control_volume_up(void) {
     bt_a2dp_send_volume_up();
     break;
 #endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_VOLUME_UP);
+    break;
+#endif
   default:
     break;
   }
@@ -172,6 +186,11 @@ void playback_control_volume_down(void) {
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     bt_a2dp_send_volume_down();
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_VOLUME_DOWN);
     break;
 #endif
   default:
@@ -190,6 +209,11 @@ void playback_control_next(void) {
     bt_a2dp_send_next();
     break;
 #endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_NEXT);
+    break;
+#endif
   default:
     break;
   }
@@ -204,6 +228,11 @@ void playback_control_prev(void) {
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     bt_a2dp_send_prev();
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_PREV);
     break;
 #endif
   default:
@@ -233,6 +262,11 @@ void playback_control_toggle_mute(void) {
   case PLAYBACK_SOURCE_BLUETOOTH:
     // Bluetooth uses AVRCP absolute volume — no dedicated mute. Log.
     ESP_LOGI(TAG, "Bluetooth: mute toggle not supported (use source device)");
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_MUTE);
     break;
 #endif
   default:

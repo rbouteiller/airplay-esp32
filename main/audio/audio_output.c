@@ -56,6 +56,10 @@
 #endif
 
 static i2s_chan_handle_t tx_handle;
+// OUTPUT_RATE is only the boot/idle rate: the clock is retuned to follow
+// whichever source is active, so AirPlay and UAC each run native.
+static volatile uint32_t s_output_rate = OUTPUT_RATE;
+static volatile uint32_t s_pending_output_rate = 0;
 static volatile bool flush_requested = false;
 static volatile bool playback_running = false;
 static TaskHandle_t playback_task_handle = NULL;
@@ -77,6 +81,10 @@ static uint64_t output_submitted_frames;
 static uint64_t output_sent_frames;
 static uint64_t output_lost_frames;
 static uint32_t output_underruns;
+/* esp_timer reading taken when output_sent_frames last advanced, so the depth
+ * can be interpolated between interrupts instead of stepping a descriptor at a
+ * time.  Zero means no completion has been seen yet. */
+static int64_t output_sent_us;
 
 static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
                                            i2s_event_data_t *event,
@@ -87,6 +95,7 @@ static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
     __atomic_add_fetch(&output_sent_frames,
                        (uint64_t)(event->size / (2U * sizeof(int16_t))),
                        __ATOMIC_RELAXED);
+    __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
   }
   return false;
 }
@@ -95,6 +104,7 @@ static void output_cursor_reset(void) {
   __atomic_store_n(&output_submitted_frames, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&output_sent_frames, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&output_lost_frames, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&output_sent_us, 0, __ATOMIC_RELAXED);
 }
 
 /* Frames queued in the DMA ring ahead of the next write.  Called from the
@@ -214,9 +224,17 @@ static void playback_task(void *arg) {
 
   size_t written;
   while (playback_running) {
+    // Retuning touches the I2S channel, so it has to happen here between
+    // writes rather than in the caller's context.
+    uint32_t pending = s_pending_output_rate;
+    if (pending != 0) {
+      s_pending_output_rate = 0;
+      audio_output_set_sample_rate(pending);
+      resample_reinit_needed = true;
+    }
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
-      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2);
+      audio_resample_init((uint32_t)source_rate, s_output_rate, 2);
     }
     if (flush_requested) {
       flush_requested = false;
@@ -346,7 +364,7 @@ esp_err_t audio_output_init(void) {
   // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
   // clock setup; amplifiers that manage power from board RTSP events can ignore
   // the hook.
-  dac_on_i2s_started();
+  dac_on_i2s_started(OUTPUT_RATE);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 
@@ -397,9 +415,10 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_channel_disable(tx_handle);
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
+  s_output_rate = rate;
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
-  dac_on_i2s_started();
+  dac_on_i2s_started(rate);
 }
 
 void audio_output_flush(void) {
@@ -407,9 +426,17 @@ void audio_output_flush(void) {
 }
 
 void audio_output_set_source_rate(int rate) {
-  if (rate > 0 && rate != source_rate) {
+  if (rate <= 0) {
+    return;
+  }
+  if (rate != source_rate) {
     source_rate = rate;
     resample_reinit_needed = true;
+  }
+  // Prefer retuning the clock over resampling: the sinc converter costs more
+  // CPU than an ESP32 has spare beside AAC decode.
+  if ((uint32_t)rate != s_output_rate) {
+    s_pending_output_rate = (uint32_t)rate;
   }
 }
 
@@ -431,21 +458,40 @@ uint32_t audio_output_get_hardware_latency_us(void) {
   return (uint32_t)((((uint64_t)(2 * I2S_DMA_DESC_NUM - 1) * I2S_DMA_FRAME_NUM *
                       1000000ULL) /
                      2) /
-                    OUTPUT_RATE);
+                    s_output_rate);
 }
 
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
-  // Sample the queue depth first, then the clock: any DMA completion that
-  // lands between the two makes the reported depth slightly stale in the
-  // conservative direction (we believe the pipeline is fuller, i.e. that the
-  // next sample plays later, than it really is).  The error is bounded by
-  // one descriptor period and is absorbed by the position servo.
+  // Sample the queue depth first, then the completion timestamp: any DMA
+  // completion that lands between the two pairs a stale (deeper) depth with a
+  // fresh timestamp, so the interpolation below subtracts nothing and the
+  // result errs in the conservative direction (we believe the pipeline is
+  // fuller, i.e. that the next sample plays later, than it really is).
   uint32_t queued = output_queued_frames();
+  const int64_t sent_us = __atomic_load_n(&output_sent_us, __ATOMIC_RELAXED);
+  const int64_t sampled_us = esp_timer_get_time();
+
+  // The completion ISR only fires once per descriptor, so a raw depth steps in
+  // I2S_DMA_FRAME_NUM jumps -- 5.8 ms at 44.1 kHz, which swamps a servo trying
+  // to hold sub-millisecond alignment.  The DAC drains at a fixed rate between
+  // interrupts, so charge off the elapsed time since the last completion.  The
+  // clamp covers a late ISR: past one descriptor the next completion is
+  // already due and extrapolating further would invent drain that may not have
+  // happened.
+  if (sent_us > 0 && sampled_us > sent_us) {
+    uint64_t drained =
+        ((uint64_t)(sampled_us - sent_us) * s_output_rate) / 1000000ULL;
+    if (drained > I2S_DMA_FRAME_NUM) {
+      drained = I2S_DMA_FRAME_NUM;
+    }
+    queued = drained < queued ? queued - (uint32_t)drained : 0U;
+  }
+
   if (now_us) {
-    *now_us = esp_timer_get_time();
+    *now_us = sampled_us;
   }
   if (pipeline_us) {
-    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / OUTPUT_RATE);
+    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / s_output_rate);
   }
   return true;
 }

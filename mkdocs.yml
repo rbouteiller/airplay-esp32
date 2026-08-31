@@ -1,0 +1,130 @@
+# Built with Zensical (https://zensical.org/), the successor to Material for
+# MkDocs by the same team. Zensical reads this mkdocs.yml format natively, so
+# reverting to mkdocs + mkdocs-material needs no changes to this file.
+site_name: ESP32 AirPlay 2 Receiver
+site_description: >-
+  Turn a cheap ESP32 board into a wireless AirPlay 2 speaker.
+  ALAC and AAC decoding, Bluetooth A2DP, Ethernet, displays and OTA updates.
+site_url: https://rbouteiller.github.io/airplay-esp32/
+repo_url: https://github.com/rbouteiller/airplay-esp32
+repo_name: rbouteiller/airplay-esp32
+edit_uri: edit/main/docs/
+copyright: Non-commercial use only. Not affiliated with Apple Inc.
+
+theme:
+  name: material
+  # The icon-only mark, not the full logo: the full one carries an
+  # "airplay-ESP32" wordmark that would just repeat the site title beside it,
+  # and its white background shows as a box against the dark header.
+  logo: assets/logo_mark.png
+  favicon: assets/logo_mark.png
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    # Prev/next links matter here because getting started is a linear path.
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.tabs.link
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  # Declaring superfences at all replaces Zensical's built-in configuration for
+  # it, so the mermaid fence has to be restated here or diagrams stop rendering.
+  # This is also what mkdocs-material expects, so the block works under both.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+extra_css:
+  - assets/css/extra.css
+
+# Both of these are ES modules, so the script tags need type="module" or the
+# browser refuses to load them and the features silently do nothing.
+extra_javascript:
+  - path: https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module
+    type: module
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/rbouteiller/airplay-esp32
+
+# Broken internal links fail the build so docs cannot silently rot.
+strict: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Shopping list: getting-started/shopping-list.md
+      - Assembly: getting-started/assembly.md
+      - Flash the firmware: getting-started/flashing.md
+      - First boot: getting-started/first-boot.md
+  - Boards:
+      - boards/index.md
+      - ESP32-S3 + PCM5102A: boards/esp32s3-pcm5102a.md
+      - SqueezeAMP: boards/squeezeamp.md
+      - Esparagus Audio Brick: boards/esparagus-audio-brick.md
+      - Esparagus Audio Brick rev D: boards/esparagus-audio-brick-dual-dac.md
+      - Seeed XIAO ESP32-C5: boards/xiao-esp32c5.md
+      - Custom board: boards/custom.md
+  - Features:
+      - Bluetooth A2DP: features/bluetooth.md
+      - USB audio (UAC): features/usb-audio.md
+      - Ethernet (W5500): features/ethernet.md
+      - OLED display: features/oled-display.md
+      - ST7789 TFT display: features/tft-display.md
+      - Hardware buttons: features/buttons.md
+      - HybridFlow DSP (TAS57xx): features/hybridflow.md
+      - AirPlay tuning: features/airplay-tuning.md
+  - Reference:
+      - Build environments: reference/build-environments.md
+      - SPIFFS filesystem: reference/spiffs.md
+      - OTA updates: reference/ota.md
+      - Architecture: reference/architecture.md
+  - Troubleshooting: troubleshooting.md
+  - Contributing: contributing.md

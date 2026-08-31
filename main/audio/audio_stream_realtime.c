@@ -16,8 +16,10 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE          12
-#define AUDIO_RECV_STACK_SIZE    12288
+#define RTP_HEADER_SIZE 12
+// Must fit the ~11 KB largest free block that survives the Bluetooth teardown,
+// so keep it under that even though the heap has ~40 KB free at this point.
+#define AUDIO_RECV_STACK_SIZE    8192
 #define AUDIO_CTRL_STACK_SIZE    4096
 #define RESEND_WINDOW_BITS       64
 #define RESEND_RETRY_INTERVAL_US 250000 // Match common RAOP resend cadence
@@ -388,6 +390,8 @@ static void receiver_task(void *pvParameters) {
     }
   }
 
+  ESP_LOGI(TAG, "receiver task stack headroom: %u bytes",
+           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
   state->task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -559,9 +563,9 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
 
   stream->running = true;
 
-  ESP_LOGI(TAG, "Free heap: %lu internal (largest block %lu), %lu SPIRAM",
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+  ESP_LOGI(TAG, "Free heap: %lu DRAM (largest block %lu), %lu SPIRAM",
+           (unsigned long)heap_caps_get_free_size(AUDIO_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(AUDIO_DRAM_CAPS),
            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
   state->task_handle = NULL;

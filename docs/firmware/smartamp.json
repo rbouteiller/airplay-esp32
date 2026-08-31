@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (SmartAmp)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "airplay2-receiver-smartamp.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -4,7 +4,16 @@
 #include <stdint.h>
 
 /**
- * Start the AirPlay RTSP server on port 7000
+ * Port the RTSP server listens on, which the mDNS advertisement must match.
+ *
+ * 7000 is the AirPlay 2 port; classic RAOP lives on 5000, and a sender that
+ * sees 7000 in the SRV record may take the AirPlay 2 path regardless of the
+ * TXT record.
+ */
+uint16_t airplay_rtsp_port(void);
+
+/**
+ * Start the AirPlay RTSP server.
  * Handles initial connection requests from iOS devices
  */
 esp_err_t rtsp_server_start(void);

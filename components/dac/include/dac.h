@@ -18,7 +18,7 @@ typedef struct {
   esp_err_t (*deinit)(void);
   void (*set_volume)(float volume_db);
   void (*set_power_mode)(dac_power_mode_t mode);
-  void (*on_i2s_started)(void);
+  void (*on_i2s_started)(uint32_t sample_rate_hz);
   void (*enable_speaker)(bool enable);
   void (*enable_line_out)(bool enable);
 } dac_ops_t;
@@ -52,9 +52,10 @@ void dac_set_volume(float volume_db);
 void dac_set_power_mode(dac_power_mode_t mode);
 
 /**
- * Notify the DAC driver that the I2S master clock and bit clocks are active.
+ * Notify the DAC driver that the I2S master clock and bit clocks are active,
+ * and at what rate they are running.
  */
-void dac_on_i2s_started(void);
+void dac_on_i2s_started(uint32_t sample_rate_hz);
 
 /**
  * Enable or disable the speaker output

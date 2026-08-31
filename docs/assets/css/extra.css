@@ -1,0 +1,19 @@
+/* The theme sizes the header logo to 1.2rem, which together with its own
+   padding and margin exactly fills the 2.4rem header. Growing the logo alone
+   would overflow, so the surrounding spacing is tightened to make room. */
+.md-header__button.md-logo {
+  padding: 0.2rem;
+  margin: 0.1rem;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.7rem;
+  width: auto;
+}
+
+/* The mark is drawn in black ink, which vanishes against the dark header. This
+   variant has its lightness inverted (hues untouched, so the arcs stay blue). */
+[data-md-color-scheme="slate"] .md-header__button.md-logo img {
+  content: url("../logo_mark_dark.png");
+}

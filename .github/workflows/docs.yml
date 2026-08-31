@@ -1,0 +1,101 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  # Unfiltered, unlike push above, because docs-build is a required check and a
+  # required check whose workflow never triggers blocks the merge. It is a
+  # twenty-second build, and running it everywhere also catches a firmware
+  # change that invalidates a link in the docs.
+  pull_request:
+    branches: [main]
+  # Republish after a release so the browser installer picks up new binaries.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Not just "build": the CI workflow has a job by that name too, and two status
+  # checks sharing a context name are ambiguous to reference in a ruleset.
+  docs-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r docs/requirements.txt
+
+      # strict mode turns broken internal links into build failures.
+      - name: Build site
+        run: zensical build --strict --clean
+
+      # ESP Web Tools fetches firmware from JavaScript, and GitHub release
+      # assets send no Access-Control-Allow-Origin header. Serving the binaries
+      # from the docs site itself keeps them same-origin.
+      - name: Bundle firmware for the browser installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -z "$tag" ]; then
+            echo "::warning::No published release; the browser installer will be unavailable"
+            rm -f site/firmware/*.json
+            exit 0
+          fi
+          echo "Bundling firmware from release $tag"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.bin' --dir site/firmware
+
+          # Stamp the real version into each manifest so the installer can
+          # report it, and drop manifests whose binary is not in this release.
+          for manifest in site/firmware/*.json; do
+            bin="$(jq -r '.builds[0].parts[0].path' "$manifest")"
+            if [ ! -f "site/firmware/$bin" ]; then
+              echo "::warning::No $bin in release $tag, removing $(basename "$manifest")"
+              rm "$manifest"
+              continue
+            fi
+            jq --arg v "${tag#v}" '.version = $v' "$manifest" > "$manifest.tmp"
+            mv "$manifest.tmp" "$manifest"
+          done
+
+          ls -la site/firmware
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: docs-build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

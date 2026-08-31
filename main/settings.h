@@ -118,6 +118,34 @@ esp_err_t settings_set_device_name(const char *name);
 void settings_device_name_to_hostname(const char *name, char *out,
                                       size_t out_len);
 
+// ---- AirPlay protocol mode ----
+
+/**
+ * Whether the receiver presents itself as a classic AirPlay 1 (RAOP) device.
+ *
+ * This is the mode the running services were built around, fixed at
+ * settings_init(). The RTSP and mDNS paths must use it rather than the
+ * configured value, or a mid-session change would leave the TXT record and
+ * the listening port disagreeing. Defaults to AirPlay 2.
+ */
+bool settings_airplay_v1(void);
+
+/**
+ * The AirPlay mode held in storage, which takes effect on the next boot.
+ * Differs from settings_airplay_v1() only after a change that needs a restart.
+ */
+bool settings_airplay_v1_configured(void);
+
+/**
+ * Save the AirPlay protocol mode to persistent storage.
+ *
+ * Takes effect on restart: the advertised services and the RTSP port are both
+ * fixed while the receiver is running.
+ *
+ * @param v1 true for classic AirPlay 1 (RAOP), false for AirPlay 2
+ */
+esp_err_t settings_set_airplay_v1(bool v1);
+
 // ---- LED settings ----
 
 /**
@@ -129,34 +157,6 @@ esp_err_t settings_get_led_brightness(uint8_t *brightness);
  * Save LED brightness (0–255) to persistent storage.
  */
 esp_err_t settings_set_led_brightness(uint8_t brightness);
-
-// ---- EQ settings ----
-
-/** Number of EQ bands stored in NVS */
-#define SETTINGS_EQ_BANDS 15
-
-/**
- * Get saved EQ gains.
- * @param gains_db Output array of SETTINGS_EQ_BANDS floats
- * @return ESP_OK if found, ESP_ERR_NOT_FOUND if no saved EQ
- */
-esp_err_t settings_get_eq_gains(float gains_db[SETTINGS_EQ_BANDS]);
-
-/**
- * Save EQ gains to persistent storage.
- * @param gains_db Array of SETTINGS_EQ_BANDS floats (dB)
- */
-esp_err_t settings_set_eq_gains(const float gains_db[SETTINGS_EQ_BANDS]);
-
-/**
- * Clear saved EQ (revert to flat on next boot).
- */
-esp_err_t settings_clear_eq(void);
-
-/**
- * Check if EQ gains are saved.
- */
-bool settings_has_eq(void);
 
 // ---- Output channel mode ----
 
@@ -187,76 +187,71 @@ esp_err_t settings_get_sub_offset(float *offset_db);
  */
 esp_err_t settings_set_sub_offset(float offset_db);
 
+// ---- Per-output level and mute (dual-DAC boards) ----
+
+/** Amplifiers whose outputs can be levelled against each other. */
+#define SETTINGS_AMPS 2
+/** Outputs (A, B) per amplifier. */
+#define SETTINGS_AMP_CHANNELS 2
+/** Total addressable outputs, ordered amp-major: A0, B0, A1, B1. */
+#define SETTINGS_AMP_OUTPUTS (SETTINGS_AMPS * SETTINGS_AMP_CHANNELS)
+
 /**
- * Get the saved sub low-pass crossover frequency in Hz (0 = full range).
+ * Get the saved per-output levels in dB, relative to the master volume.
  */
-esp_err_t settings_get_sub_crossover(float *hz);
+esp_err_t settings_get_amp_gain(float gain_db[SETTINGS_AMP_OUTPUTS]);
 
 /**
- * Save the sub low-pass crossover frequency (Hz) to persistent storage.
+ * Save the per-output levels (dB) to persistent storage.
  */
-esp_err_t settings_set_sub_crossover(float hz);
-
-// ---- Dual DAC (second amplifier) role ----
+esp_err_t settings_set_amp_gain(const float gain_db[SETTINGS_AMP_OUTPUTS]);
 
 /**
- * Get the saved second-amplifier role (tas58xx_dual_mode_t value).
- * @param mode Output: 0 = PBTL mono sub, 1 = bi-amp left/right
+ * Get the saved per-output mute flags.
+ */
+esp_err_t settings_get_amp_mute(uint8_t mute[SETTINGS_AMP_OUTPUTS]);
+
+/**
+ * Save the per-output mute flags to persistent storage.
+ */
+esp_err_t settings_set_amp_mute(const uint8_t mute[SETTINGS_AMP_OUTPUTS]);
+
+/**
+ * Get the saved per-amplifier input routing (values of tas58xx_mix_t).
+ */
+esp_err_t settings_get_amp_mix(uint8_t mix[SETTINGS_AMPS]);
+
+/**
+ * Save the per-amplifier input routing to persistent storage.
+ */
+esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]);
+
+// ---- Per-channel level trim (TAS57xx) ----
+
+/** The two amplifier output channels, A and B. */
+#define SETTINGS_CHANNELS 2
+
+/**
+ * Get the saved per-channel level trims in dB (relative to master volume).
  * @return ESP_OK if found, error otherwise
  */
-esp_err_t settings_get_dual_mode(uint8_t *mode);
+esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]);
 
 /**
- * Save the second-amplifier role to persistent storage.
+ * Save the per-channel level trims (dB) to persistent storage.
  */
-esp_err_t settings_set_dual_mode(uint8_t mode);
+esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]);
 
-// ---- Crossover per-way EQ (2.1 and bi-amp) ----
-
-/** EQ bands per way on either side of a crossover. */
-#define SETTINGS_WAY_BANDS 12
+// ---- Dual DAC (second amplifier) wiring ----
 
 /**
- * Get the saved 2.1 per-way EQ gains, indexed [way][band] where way 0 is the
- * sub and way 1 the satellites.
+ * Get whether the second amplifier is bridged (PBTL) mono.
+ * @param pbtl Output: true = bridged mono, false = stereo pair
+ * @return ESP_OK if found, error otherwise
  */
-esp_err_t settings_get_sub_eq(float gains_db[2][SETTINGS_WAY_BANDS]);
+esp_err_t settings_get_second_pbtl(bool *pbtl);
 
 /**
- * Save the 2.1 per-way EQ gains.
+ * Save whether the second amplifier is bridged (PBTL) mono.
  */
-esp_err_t settings_set_sub_eq(const float gains_db[2][SETTINGS_WAY_BANDS]);
-
-// ---- Bi-amp (two-way active crossover) ----
-
-/**
- * Get the saved woofer/tweeter crossover frequency in Hz.
- */
-esp_err_t settings_get_biamp_crossover(float *hz);
-
-/**
- * Save the woofer/tweeter crossover frequency (Hz).
- */
-esp_err_t settings_set_biamp_crossover(float hz);
-
-/**
- * Get which amplifier output of each chip drives the woofer.
- * @param swap Output: false = first output, true = second
- */
-esp_err_t settings_get_biamp_swap(bool *swap);
-
-/**
- * Save which amplifier output of each chip drives the woofer.
- */
-esp_err_t settings_set_biamp_swap(bool swap);
-
-/**
- * Get the saved bi-amp EQ gains, indexed [speaker][way][band] where
- * speaker 0 = left, 1 = right and way 0 = woofer, 1 = tweeter.
- */
-esp_err_t settings_get_biamp_eq(float gains_db[2][2][SETTINGS_WAY_BANDS]);
-
-/**
- * Save the bi-amp EQ gains.
- */
-esp_err_t settings_set_biamp_eq(const float gains_db[2][2][SETTINGS_WAY_BANDS]);
+esp_err_t settings_set_second_pbtl(bool pbtl);

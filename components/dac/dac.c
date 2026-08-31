@@ -35,9 +35,9 @@ void dac_set_power_mode(dac_power_mode_t mode) {
   }
 }
 
-void dac_on_i2s_started(void) {
+void dac_on_i2s_started(uint32_t sample_rate_hz) {
   if (s_ops && s_ops->on_i2s_started) {
-    s_ops->on_i2s_started();
+    s_ops->on_i2s_started(sample_rate_hz);
   }
 }
 

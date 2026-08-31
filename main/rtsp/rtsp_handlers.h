@@ -13,21 +13,27 @@
  * Inspired by shairport-sync's method_handlers pattern
  */
 
-// Key bits:
-//   Bit 38: SupportsCoreUtilsPairingAndEncryption
-//   Bit 46: SupportsHKPairingAndAccessControl
-//   Bit 48: SupportsTransientPairing
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-// AirPlay v1: strip pairing/encryption bits so iOS uses classic RAOP
-#define AIRPLAY_FEATURES_HI 0x0
-#define AIRPLAY_FEATURES_LO 0x5C4A00
-#else
-#define AIRPLAY_FEATURES_HI 0x1C340
-#define AIRPLAY_FEATURES_LO 0x405C4A00
-#endif
+/**
+ * AirPlay feature bits, as (hi << 32) | lo.
+ *
+ * Key bits:
+ *   Bit 38: SupportsCoreUtilsPairingAndEncryption
+ *   Bit 46: SupportsHKPairingAndAccessControl
+ *   Bit 48: SupportsTransientPairing
+ * AirPlay 1 strips the pairing/encryption bits so iOS uses classic RAOP.
+ */
+uint64_t airplay_features(void);
 
-// Audio buffer size for buffered streams (type 103)
-#define AP2_AUDIO_BUFFER_SIZE (1 * 1024 * 1024)
+// Audio buffer size for buffered streams (type 103).  The sender queues this
+// much audio ahead, and on a seek/skip every queued byte is stale but still has
+// to cross the link before the new track arrives.  Under BT coexistence the
+// link only manages ~0.6 Mbit/s, so 1 MB (5.9 s) cost ~2 s of pure drain per
+// seek.  512 KB (~3 s) still exceeds the ring's observed steady-state fill.
+#define AP2_AUDIO_BUFFER_SIZE (512 * 1024)
+
+// Realtime (type 96) is paced over UDP and never queues ahead on the sender, so
+// none of the above applies to it.  Kept at the original advertisement.
+#define AP2_REALTIME_AUDIO_BUFFER_SIZE (1 * 1024 * 1024)
 
 // Include for audio_format_t
 #include "audio_receiver.h"

@@ -9,6 +9,12 @@ set( SRC_FILES
     "audio/audio_decoder.c"
     "audio/audio_buffer.c"
     "audio/audio_timing.c"
+    "audio/audio_epoch.c"
+    "audio/audio_clock_map.c"
+    "audio/audio_timeline.c"
+    "audio/audio_scheduler.c"
+    "audio/audio_engine_v2.c"
+    "audio/audio_decode_worker.c"
     "audio/audio_crypto.c"
     "audio/audio_resample.c"
     "rtsp/rtsp_server.c"
@@ -39,7 +45,6 @@ set( SRC_FILES
     "network/dns_server.c"
     "network/log_stream.c"
     "led.c"
-    "audio/eq_events.c"
     "buttons.c"
     "playback_control.c"
     "dacp_client.c"
@@ -65,6 +70,11 @@ if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND SRC_FILES "bt_coex.c")
 endif()
 
+# USB Audio Class sink (host -> I2S, chips with USB OTG only)
+if(CONFIG_USB_AUDIO_SINK)
+    list(APPEND SRC_FILES "audio/usb_audio_sink.c")
+endif()
+
 # W5500 SPI Ethernet
 if(CONFIG_ETH_W5500_ENABLED)
     list(APPEND SRC_FILES "network/ethernet.c")
@@ -77,6 +87,7 @@ set( INC_DIRS
     "plist" 
     "hap" 
     "network"
+    "usb"
 )
 
 set( DEPS
@@ -124,4 +135,27 @@ idf_component_register(
 # Enable function wrapping for abort() to intercept panics and mute GPIO
 if(CONFIG_BOARD_SQUEEZEAMP_COMMON)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=abort")
+endif()
+
+# Composite UAC + HID device. CONFIG_USB_DEVICE_UAC_AS_PART makes
+# usb_device_uac withhold its own descriptors, tusb_config.h and include paths
+# so we can add the HID interface; we have to supply all three instead.
+if(CONFIG_USB_AUDIO_SINK AND CONFIG_USB_DEVICE_UAC_AS_PART)
+    idf_build_get_property(build_components BUILD_COMPONENTS)
+    if(tinyusb IN_LIST build_components)
+        set(tinyusb_name tinyusb)
+    else()
+        set(tinyusb_name espressif__tinyusb)
+    endif()
+    idf_component_get_property(tusb_lib ${tinyusb_name} COMPONENT_LIB)
+    idf_component_get_property(uac_dir espressif__usb_device_uac COMPONENT_DIR)
+    target_include_directories(${tusb_lib} PUBLIC
+        "${COMPONENT_DIR}/usb" "${uac_dir}/tusb_uac")
+    # Compiled into TinyUSB rather than main: CFG_TUSB_MCU and the OS include
+    # path are set on that target only, and both files include tusb.h.
+    # PRIVATE, not PUBLIC: an INTERFACE copy propagates to every dependent and
+    # PlatformIO then compiles the sources twice.
+    target_sources(${tusb_lib} PRIVATE
+        "${COMPONENT_DIR}/usb/usb_descriptors.c"
+        "${COMPONENT_DIR}/usb/usb_hid_control.c")
 endif()

@@ -19,15 +19,16 @@
 #include "rtsp_crypto.h"
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
+#include "rtsp_rsa.h"
 
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 #include "rtsp_events.h"
+#include "settings.h"
 #include "dacp_client.h"
 
 static const char *TAG = "rtsp_server";
 
-#define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
 #define RTSP_BUFFER_LARGE   ((size_t)256 * 1024)
 
@@ -76,6 +77,10 @@ int32_t airplay_get_volume_q15(void) {
 
 void rtsp_server_request_resume(void) {
   s_resume_requested = true;
+}
+
+uint16_t airplay_rtsp_port(void) {
+  return settings_airplay_v1() ? 5000 : 7000;
 }
 
 // Helper to grow buffer
@@ -424,7 +429,7 @@ static void server_task(void *pvParameters) {
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  server_addr.sin_port = htons(RTSP_PORT);
+  server_addr.sin_port = htons(airplay_rtsp_port());
 
   if (bind(server_socket, (struct sockaddr *)&server_addr,
            sizeof(server_addr)) < 0) {
@@ -445,7 +450,7 @@ static void server_task(void *pvParameters) {
     return;
   }
 
-  ESP_LOGI(TAG, "RTSP server listening on port %d", RTSP_PORT);
+  ESP_LOGI(TAG, "RTSP server listening on port %d", airplay_rtsp_port());
   server_running = true;
 
   while (server_running) {
@@ -542,6 +547,11 @@ esp_err_t rtsp_server_start(void) {
       return ESP_ERR_INVALID_STATE;
     }
   }
+
+  // Parsing the key and deriving the first blinding pair costs the best part
+  // of a second; a sender waiting on its OPTIONS response gives up before
+  // that. Do it before the listener exists so it cannot land mid-request.
+  rsa_init();
 
   BaseType_t task_ret =
       xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,

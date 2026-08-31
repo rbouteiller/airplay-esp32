@@ -8,6 +8,7 @@
 
 #include "resampler.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <stdlib.h>
 
@@ -30,16 +31,26 @@ static float *float_out;
 static size_t float_in_cap; /* in samples (frames * channels) */
 static size_t float_out_cap;
 
+/* These are streamed twice per output block and are far larger than
+ * SPIRAM_MALLOC_ALWAYSINTERNAL, so a plain malloc puts them in PSRAM — where
+ * the 40 MHz access cost plus SPIRAM_CACHE_WORKAROUND's memw starves the
+ * playback core. Fall back to PSRAM rather than losing audio outright. */
+static float *alloc_float_buf(size_t samples) {
+  size_t bytes = samples * sizeof(float);
+  float *buf = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  return buf ? buf : malloc(bytes);
+}
+
 static void ensure_float_bufs(size_t in_samples, size_t out_samples) {
   if (in_samples > float_in_cap) {
     free(float_in);
     float_in_cap = in_samples;
-    float_in = malloc(float_in_cap * sizeof(float));
+    float_in = alloc_float_buf(float_in_cap);
   }
   if (out_samples > float_out_cap) {
     free(float_out);
     float_out_cap = out_samples;
-    float_out = malloc(float_out_cap * sizeof(float));
+    float_out = alloc_float_buf(float_out_cap);
   }
 }
 

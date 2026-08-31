@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (SqueezeAMP 4MB)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "airplay2-receiver-squeezeamp-4m.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

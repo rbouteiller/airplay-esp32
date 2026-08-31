@@ -13,28 +13,28 @@ jobs:
         include:
           - name: esp32s3
             target: esp32s3
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3"
           - name: waveshare-esp32s3
             target: esp32s3
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.waveshare-esp32s3"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.waveshare-esp32s3"
           - name: esp32s2
             target: esp32s2
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s2"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s2"
           - name: squeezeamp-bt
             target: esp32
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp;sdkconfig.defaults.bt"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt"
           - name: squeezeamp-4m
             target: esp32
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.squeezeamp-4m"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp-4m"
           - name: esparagus-audio-brick-bt
             target: esp32
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esparagus-audio-brick;sdkconfig.defaults.bt"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick;config/sdkconfig.defaults.bt"
           - name: smartamp
             target: esp32
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.bt;sdkconfig.defaults.smartamp"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp"
           - name: esparagus-louder-s3
             target: esp32s3
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esparagus-louder-s3"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder-s3"
     steps:
       - uses: actions/checkout@v6
         with:

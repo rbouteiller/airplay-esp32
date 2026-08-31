@@ -212,12 +212,10 @@ bool board_battery_read(int *percent, bool *charging) {
   return true;
 }
 
-#ifdef CONFIG_MUTE_GPIO
+// -1 disables the pin, and the runtime test that used to guard this came too
+// late: the shift below is a constant the compiler folds either way.
+#if defined(CONFIG_MUTE_GPIO) && CONFIG_MUTE_GPIO >= 0
 static esp_err_t init_mute_gpio(void) {
-  if (CONFIG_MUTE_GPIO < 0) {
-    return ESP_OK;
-  }
-
   gpio_config_t io_conf = {
       .pin_bit_mask = (1ULL << CONFIG_MUTE_GPIO),
       .mode = GPIO_MODE_OUTPUT,
@@ -446,7 +444,7 @@ esp_err_t iot_board_init(void) {
   board_battery_init();
 
   init_gpio7();
-#ifdef CONFIG_MUTE_GPIO
+#if defined(CONFIG_MUTE_GPIO) && CONFIG_MUTE_GPIO >= 0
   err = init_mute_gpio();
   if (err != ESP_OK) {
     return err;

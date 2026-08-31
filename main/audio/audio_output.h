@@ -116,6 +116,19 @@ uint32_t audio_output_get_hardware_latency_us(void);
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us);
 
 /**
+ * Local monotonic time (ns) at which the first sample of the NEXT backend
+ * write will be heard.
+ *
+ * Deliberately built on the stable modelled latency rather than the live
+ * cursor from audio_output_get_pipeline_us(): this is a *scheduling* input,
+ * consumed once per render to pick which RTP timestamp to emit next.  The
+ * live cursor steps at DMA descriptor boundaries, so feeding it in here would
+ * make the chosen timestamp jitter by a whole descriptor and repeatedly
+ * re-target the read cursor.  Error measurement still uses the live value.
+ */
+int64_t audio_output_get_next_playout_time_ns(int64_t now_us);
+
+/**
  * Number of output-underrun episodes since boot: the DMA clocked out
  * descriptors the playback task never filled, so that much output time was
  * emitted as silence and lost from the playout position.  Non-zero values

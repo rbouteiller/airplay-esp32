@@ -1,5 +1,0 @@
-# S/PDIF output (bit-banged through I2S) instead of a normal I2S DAC.
-# Layer on top of a board's defaults, e.g.
-#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.spdif" build
-
-CONFIG_AUDIO_OUTPUT_SPDIF=y

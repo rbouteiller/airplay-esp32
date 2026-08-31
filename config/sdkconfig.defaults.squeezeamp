@@ -1,0 +1,41 @@
+# SqueezeAMP defaults
+CONFIG_BOARD_SQUEEZEAMP=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_DAC_TAS57XX=y
+CONFIG_TAS57XX_MAX_VOLUME=-5
+CONFIG_TAS57XX_FAULT_MONITOR=y
+CONFIG_TAS57XX_FAULT_POLL_MS=500
+
+# GPIO defaults
+CONFIG_BAT_CHANNEL=7
+CONFIG_LED_STATUS_GPIO=12
+CONFIG_LED_ERROR_GPIO=13
+CONFIG_I2S_SCK_IO=-1
+CONFIG_I2S_BCK_IO=33
+CONFIG_I2S_WS_IO=25
+CONFIG_I2S_DO_IO=32
+CONFIG_DAC_I2C_SDA=27
+CONFIG_DAC_I2C_SCL=26
+# Jack detect (GPIO34) reaches the ESP32 only if the J8 option header is
+# fitted; otherwise the pin floats and toggles the speaker off mid-playback.
+# Set to 34 to re-enable.
+CONFIG_JACK_GPIO=-1
+CONFIG_SPKFAULT_GPIO=2
+CONFIG_MUTE_GPIO=14
+CONFIG_MUTE_GPIO_LEVEL=0
+CONFIG_SPDIF_DO_IO=15
+
+# Platform Configuration
+CONFIG_LED_STATUS_BRIGHTNESS=80
+CONFIG_LED_STATUS_PLAYING_STEADY=y
+CONFIG_LED_STATUS_PAUSED_BLINK_MEDIUM=y
+CONFIG_LED_STATUS_STANDBY_BLINK_SLOW=y
+
+# Receive path for the AirPlay 2 buffered stream.  Kept here rather than in
+# sdkconfig.defaults.bt so the BT and non-BT SqueezeAMP images differ only by
+# Bluetooth, which makes them directly comparable when measuring seek latency.
+# TCP_RECVMBOX_SIZE gates the window independently of TCP_WND: the default 6
+# entries cap outstanding data at ~6*MSS = 8640 B.
+CONFIG_LWIP_TCP_WND_DEFAULT=15840
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

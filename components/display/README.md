@@ -73,7 +73,7 @@ idf.py menuconfig
 # Select driver: ST7789 TFT (320×170 landscape)
 ```
 
-Or add to `sdkconfig.defaults.esp32s3`:
+Or add to `config/sdkconfig.defaults.esp32s3`:
 
 ```
 CONFIG_DISPLAY_ENABLED=y

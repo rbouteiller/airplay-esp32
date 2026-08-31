@@ -1,0 +1,6 @@
+# USB Audio Class (UAC) device output: the board appears as a USB audio
+# source to whatever host it is plugged into. Needs a chip with USB-OTG
+# (ESP32-S2/S3/P4). Layer on top of a board's defaults, e.g.
+#   idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb" build
+
+CONFIG_AUDIO_OUTPUT_USB=y

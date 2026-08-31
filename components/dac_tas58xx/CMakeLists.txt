@@ -1,5 +1,5 @@
 if(CONFIG_DAC_TAS58XX)
-    set(srcs "dac_tas58xx.c")
+    set(srcs "dac_tas58xx.c" "tas58xx_biquad.c")
 else()
     set(srcs "")
 endif()

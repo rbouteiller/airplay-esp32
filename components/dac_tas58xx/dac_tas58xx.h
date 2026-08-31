@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dac.h"
+#include "tas58xx_biquad.h"
 
 /**
  * TAS58xx (TAS5825M) DAC driver ops — register with dac_register() before
@@ -8,52 +9,29 @@
  */
 extern const dac_ops_t dac_tas58xx_ops;
 
-/** Sub level-trim limits (dB), relative to the master volume. */
-#define TAS58XX_SUB_OFFSET_MIN_DB (-15.0f)
-#define TAS58XX_SUB_OFFSET_MAX_DB (15.0f)
+/**
+ * Per-output level trim limits (dB). Applied in the DSP input mixer, ahead of
+ * the biquads, so it only ever attenuates and cannot cost EQ headroom.
+ */
+#define TAS58XX_GAIN_MIN_DB (-40.0f)
+#define TAS58XX_GAIN_MAX_DB (0.0f)
 
 /**
- * Set the sub (PBTL mono) volume offset in dB, relative to the master volume.
- * Positive raises the bass level, negative lowers it. Clamped to
- * [TAS58XX_SUB_OFFSET_MIN_DB, TAS58XX_SUB_OFFSET_MAX_DB]. Safe to call before
- * dac_init(); the value is applied on the next volume update.
+ * Set the level of one output (0 = A, 1 = B) of one amplifier, relative to the
+ * master volume, so drivers of differing sensitivity can be matched — a
+ * bridged sub against the satellites, say. Clamped to
+ * [TAS58XX_GAIN_MIN_DB, TAS58XX_GAIN_MAX_DB]. Safe to call before dac_init().
  */
-void dac_tas58xx_set_sub_offset_db(float offset_db);
+esp_err_t dac_tas58xx_set_gain_db(int dev, int ch, float gain_db);
 
-/** Get the current sub volume offset in dB. */
-float dac_tas58xx_get_sub_offset_db(void);
+/** Get one output's level in dB. Returns 0 for an unknown index. */
+float dac_tas58xx_get_gain_db(int dev, int ch);
 
-/** Crossover frequency limits for the PBTL sub low-pass (Hz). */
-#define TAS58XX_XOVER_MIN_HZ 40.0f
-#define TAS58XX_XOVER_MAX_HZ 400.0f
+/** Silence one output without disturbing its level setting. */
+esp_err_t dac_tas58xx_set_ch_mute(int dev, int ch, bool mute);
 
-/**
- * Set the low-pass crossover frequency applied to the PBTL mono sub, so it
- * only reproduces bass rather than the full-range feed. Anything below
- * TAS58XX_XOVER_MIN_HZ disables the filter; higher values are clamped to
- * TAS58XX_XOVER_MAX_HZ. Moving the corner relayouts the per-way EQ bands, so
- * any stored gains are reset to flat.
- */
-void dac_tas58xx_set_sub_crossover_hz(float hz);
-
-/** Get the sub crossover frequency in Hz (0 when full range). */
-float dac_tas58xx_get_sub_crossover_hz(void);
-
-/** Role of the second amplifier on dual-DAC boards. */
-typedef enum {
-  /** Secondary drives a bridged (PBTL) mono subwoofer; primary stays stereo. */
-  TAS58XX_DUAL_SUB = 0,
-  /** Primary carries the left channel, secondary the right — one speaker
-   *  per amplifier, both of its outputs driven from the same channel. */
-  TAS58XX_DUAL_BIAMP = 1,
-} tas58xx_dual_mode_t;
-
-/**
- * Bi-amp is implemented but has not been validated on hardware, and selecting
- * it with PBTL sub wiring still attached shorts the two outputs together. Set
- * to 1 to expose it in the web UI and accept it over the API.
- */
-#define TAS58XX_BIAMP_SUPPORTED 0
+/** Whether one output is muted. */
+bool dac_tas58xx_get_ch_mute(int dev, int ch);
 
 /**
  * Number of TAS58xx chips found on the I2C bus. Returns 0 before dac_init();
@@ -61,73 +39,98 @@ typedef enum {
  */
 int dac_tas58xx_get_device_count(void);
 
-/** Get the configured second-amplifier role, including a pending change. */
-tas58xx_dual_mode_t dac_tas58xx_get_dual_mode(void);
+/**
+ * Whether the second amplifier on a dual-DAC board is bridged (PBTL) mono
+ * rather than a stereo pair. This describes how the board is wired and
+ * nothing more: it selects the bridged output stage and sums L+R into that
+ * chip. Any crossover between the two amplifiers is expressed as ordinary
+ * biquad sections, not as a mode.
+ */
+bool dac_tas58xx_get_second_pbtl(void);
 
-/** Get the role the chips were actually brought up in. */
-tas58xx_dual_mode_t dac_tas58xx_get_active_dual_mode(void);
+/** The wiring the chips were actually brought up in. */
+bool dac_tas58xx_get_active_second_pbtl(void);
 
 /**
- * Set the second-amplifier role. PBTL is a control-port setting that can only
- * be changed while the output stage is idle, so the new role is stored and
- * applied by the next dac_init() — the caller must restart the device.
+ * Set whether the second amplifier is bridged. PBTL is a control-port setting
+ * that can only be changed while the output stage is idle, so the new value is
+ * stored and applied by the next dac_init() — the caller must restart.
  */
-void dac_tas58xx_set_dual_mode(tas58xx_dual_mode_t mode);
+void dac_tas58xx_set_second_pbtl(bool pbtl);
 
-/* ---------- Per-way EQ (2.1 and bi-amp) ----------
- *
- * Whenever a crossover splits the signal, each side gets its own 12-band
- * EQ whose centre frequencies are spread across that side's passband and
- * therefore move with the crossover frequency.
+/** Whether an amplifier is driving a bridged (PBTL) mono output right now. */
+bool dac_tas58xx_is_pbtl(int dev);
+
+/**
+ * Which of the incoming stereo channels an amplifier plays. A bridged (PBTL)
+ * amplifier drives one output from one channel of the pair, so it has to be
+ * fed a summed or single-channel routing rather than TAS58XX_MIX_STEREO.
  */
-
-/** Bands in each per-way EQ curve. */
-#define TAS58XX_WAY_BANDS 12
-
-/** The two sides of a crossover. */
 typedef enum {
-  TAS58XX_WAY_LOW = 0,  /**< sub / woofer — low-passed at the crossover */
-  TAS58XX_WAY_HIGH = 1, /**< satellites / tweeter — high-passed */
-} tas58xx_way_t;
-
-/** True when a 2.1 sub crossover is engaged, so the per-way EQ is in use. */
-bool dac_tas58xx_sub_eq_active(void);
-
-/** Centre frequencies of a 2.1 way's EQ bands at the current crossover. */
-void dac_tas58xx_sub_band_freqs(tas58xx_way_t way,
-                                float out[TAS58XX_WAY_BANDS]);
-
-/** 2.1 per-way EQ. Way LOW is the sub, way HIGH the satellites. */
-esp_err_t dac_tas58xx_sub_eq_set_gains(tas58xx_way_t way,
-                                       const float gains_db[TAS58XX_WAY_BANDS]);
-void dac_tas58xx_sub_eq_get_gains(tas58xx_way_t way,
-                                  float gains_db[TAS58XX_WAY_BANDS]);
-
-/* ---------- Bi-amp (two-way active crossover per speaker) ---------- */
-
-#define TAS58XX_BIAMP_XOVER_MIN_HZ 1500.0f
-#define TAS58XX_BIAMP_XOVER_MAX_HZ 4000.0f
-
-/** True when two chips are present and configured as bi-amped speakers. */
-bool dac_tas58xx_biamp_active(void);
+  TAS58XX_MIX_STEREO = 0, /* L -> output A, R -> output B */
+  TAS58XX_MIX_MONO,       /* (L+R)/2 -> both outputs */
+  TAS58XX_MIX_LEFT,       /* L -> both outputs */
+  TAS58XX_MIX_RIGHT,      /* R -> both outputs */
+  TAS58XX_MIX_COUNT,
+} tas58xx_mix_t;
 
 /**
- * Set the woofer/tweeter crossover, clamped to the bi-amp range. Moving it
- * relayouts the per-way EQ bands, so any stored gains are reset to flat.
+ * Set one amplifier's input routing. Applied immediately if the chip is
+ * playing, and re-applied on the next PLAY transition either way. Safe to
+ * call before dac_init(), which is how a stored setting is restored.
  */
-void dac_tas58xx_set_biamp_crossover_hz(float hz);
-float dac_tas58xx_get_biamp_crossover_hz(void);
+esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix);
 
-/** Select which amplifier output of each chip drives the woofer. */
-void dac_tas58xx_set_biamp_swap(bool low_on_second_output);
-bool dac_tas58xx_get_biamp_swap(void);
+/** Get one amplifier's input routing. */
+tas58xx_mix_t dac_tas58xx_get_mix(int dev);
 
-/** Centre frequencies of a bi-amp way's EQ bands at the current crossover. */
-void dac_tas58xx_biamp_band_freqs(tas58xx_way_t way,
-                                  float out[TAS58XX_WAY_BANDS]);
+/* ---------- Fault reporting ---------- */
 
-/** Per-speaker, per-way EQ. @p dev 0 = left speaker, 1 = right. */
-esp_err_t dac_tas58xx_biamp_set_gains(int dev, tas58xx_way_t way,
-                                      const float gains_db[TAS58XX_WAY_BANDS]);
-void dac_tas58xx_biamp_get_gains(int dev, tas58xx_way_t way,
-                                 float gains_db[TAS58XX_WAY_BANDS]);
+/**
+ * Name every latched fault across all amplifiers into buf, which is left
+ * empty when nothing is latched.
+ *
+ * Returns true only for a fault worth muting for. A clock fault on its own is
+ * not one: it says the I2S clocks stopped, which is what happens at the end of
+ * every track, and the FAULTZ line cannot tell the two apart on its own.
+ */
+bool dac_tas58xx_fault_report(char *buf, size_t len);
+
+/** Drop the latched faults so FAULTZ releases. */
+void dac_tas58xx_fault_clear(void);
+
+/* ---------- Fully parametric biquad chain ----------
+ *
+ * Each amplifier runs a 15-section biquad chain per channel, and this chain is
+ * the only writer of the chip's coefficient RAM. Crossovers, shelves and room
+ * correction are all just sections in it.
+ */
+
+/** Channels per amplifier: 0 = left/CH1, 1 = right/CH2. */
+#define TAS58XX_BQ_CHANNELS 2
+
+/** Read one channel's chain. Returns false for an out-of-range index. */
+bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]);
+
+/** Replace one channel's chain and push it to the hardware. */
+esp_err_t dac_tas58xx_bq_set(int dev, int ch,
+                             const tas58xx_bq_t in[TAS58XX_BQ_SLOTS]);
+
+/**
+ * Gang the two channels of an amplifier: the left chain drives both, and the
+ * right chain is left untouched so un-ganging restores it.
+ */
+void dac_tas58xx_bq_set_ganged(int dev, bool ganged);
+bool dac_tas58xx_bq_get_ganged(int dev);
+
+/** Sample rate the chain is currently designed against. */
+uint32_t dac_tas58xx_bq_sample_rate(void);
+
+/** Write the current chains to SPIFFS so they survive a reboot. */
+esp_err_t dac_tas58xx_bq_commit(void);
+
+/** Reload the chains from SPIFFS, discarding uncommitted edits. */
+esp_err_t dac_tas58xx_bq_revert(void);
+
+/** Reset every chain to bypass, in memory and on the hardware. */
+esp_err_t dac_tas58xx_bq_reset(void);

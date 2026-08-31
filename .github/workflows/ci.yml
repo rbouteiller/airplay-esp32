@@ -5,14 +5,49 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
+  # Deliberately unfiltered, unlike push above. ci-gate is a required check, and
+  # a required check whose workflow never triggers sits "Expected" forever and
+  # blocks the merge. The workflow therefore always starts on a pull request and
+  # decides for itself whether there is any firmware work to do.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
   workflow_dispatch:
 
 jobs:
+  # Mirrors the paths-ignore above: a pull request touching only Markdown needs
+  # no ESP-IDF toolchain, which would otherwise cost several minutes per docs
+  # typo now that the documentation site lives in this repo.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files="$(gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
+              --jq '.[].filename')"
+          fi
+          # Anything we cannot enumerate (push, manual run) counts as code, so
+          # the default on an unknown event is to run everything.
+          if [ -z "$files" ] || printf '%s\n' "$files" | grep -qv '\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Markdown-only change, skipping the firmware jobs."
+          fi
+
   format-check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -28,6 +63,8 @@ jobs:
         run: scripts/format.sh --check
 
   lint-check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,7 +76,7 @@ jobs:
         with:
           esp_idf_version: v5.5
           target: esp32s3
-          command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3" build
+          command: idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3" build
 
       - name: Install clang-tidy
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
@@ -76,10 +113,10 @@ jobs:
         include:
           - name: spdif
             target: esp32s3
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.spdif"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.spdif"
           - name: usb
             target: esp32s3
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.usb"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -95,3 +132,29 @@ jobs:
   build:
     needs: [format-check, lint-check]
     uses: ./.github/workflows/build.yml
+
+  # The one required status check for this workflow. Branch protection cannot
+  # depend on the jobs above directly: they are skipped on a docs-only pull
+  # request, and the individual job names would also have to be re-listed in the
+  # ruleset every time the matrix changes. This runs unconditionally and turns
+  # the whole workflow into a single pass/fail, treating skipped as fine.
+  ci-gate:
+    if: always()
+    needs: [changes, format-check, lint-check, output-backends, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream results
+        run: |
+          set -euo pipefail
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "Upstream results: $results"
+          for result in $results; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "::error::A job this gate depends on reported '$result'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All good."

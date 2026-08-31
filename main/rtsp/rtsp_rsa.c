@@ -3,6 +3,9 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/pk.h"
@@ -47,10 +50,30 @@ static mbedtls_entropy_context s_entropy;
 static mbedtls_ctr_drbg_context s_ctr_drbg;
 static bool s_pk_initialized = false;
 
-static int ensure_pk_initialized(void) {
+// MBEDTLS_THREADING_C is off, and a private-key op mutates the shared context:
+// the padding mode, and the blinding pair inside mbedtls_rsa_private. Client
+// tasks overlap during a handover, so every use of s_pk_ctx is serialised.
+static SemaphoreHandle_t s_rsa_lock;
+static StaticSemaphore_t s_rsa_lock_storage;
+static portMUX_TYPE s_rsa_lock_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Creating the lock has to be race-free too: a client task can reach a
+// private-key op without rsa_init() having run first.
+static SemaphoreHandle_t rsa_lock(void) {
+  portENTER_CRITICAL(&s_rsa_lock_mux);
+  if (s_rsa_lock == NULL) {
+    s_rsa_lock = xSemaphoreCreateMutexStatic(&s_rsa_lock_storage);
+  }
+  portEXIT_CRITICAL(&s_rsa_lock_mux);
+  return s_rsa_lock;
+}
+
+static int ensure_pk_initialized_locked(void) {
   if (s_pk_initialized) {
     return 0;
   }
+
+  int64_t start_us = esp_timer_get_time();
 
   // Initialize RNG (required by mbedtls 3.x for key parsing and RSA ops)
   mbedtls_entropy_init(&s_entropy);
@@ -77,8 +100,32 @@ static int ensure_pk_initialized(void) {
     return -1;
   }
 
+  // The first private-key op also derives the blinding pair, which costs an
+  // inv_mod and an exp_mod that later calls avoid by squaring the cached one.
+  // Throw one signature away here so a sender never waits for it.
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(s_pk_ctx);
+  mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE);
+  uint8_t *warm = malloc(mbedtls_rsa_get_len(rsa));
+  if (warm) {
+    uint8_t scratch[32] = {0};
+    mbedtls_rsa_pkcs1_sign(rsa, mbedtls_ctr_drbg_random, &s_ctr_drbg,
+                           MBEDTLS_MD_NONE, sizeof(scratch), scratch, warm);
+    free(warm);
+  }
+
   s_pk_initialized = true;
+
+  ESP_LOGI(TAG, "RSA key ready in %lld ms",
+           (esp_timer_get_time() - start_us) / 1000);
   return 0;
+}
+
+int rsa_init(void) {
+  SemaphoreHandle_t lock = rsa_lock();
+  xSemaphoreTake(lock, portMAX_DELAY);
+  int ret = ensure_pk_initialized_locked();
+  xSemaphoreGive(lock);
+  return ret;
 }
 
 // Simple base64 decode using libsodium
@@ -107,10 +154,6 @@ static int b64_encode(const uint8_t *data, size_t data_len, char *out,
 int rsa_apple_challenge_response(const char *challenge_b64, uint32_t ip_addr,
                                  const uint8_t mac[6], char *out_b64,
                                  size_t out_b64_size) {
-  if (ensure_pk_initialized() != 0) {
-    return -1;
-  }
-
   // Decode challenge
   uint8_t challenge[32];
   size_t challenge_len = 0;
@@ -141,17 +184,28 @@ int rsa_apple_challenge_response(const char *challenge_b64, uint32_t ip_addr,
   // RSA_private_encrypt(..., RSA_PKCS1_PADDING).
   // mbedtls_rsa_pkcs1_sign with MBEDTLS_MD_NONE applies type-1 padding
   // (0x00 0x01 0xFF..0xFF 0x00 <data>) then the private key operation.
+  SemaphoreHandle_t lock = rsa_lock();
+  xSemaphoreTake(lock, portMAX_DELAY);
+
+  if (ensure_pk_initialized_locked() != 0) {
+    xSemaphoreGive(lock);
+    return -1;
+  }
+
   mbedtls_rsa_context *rsa = mbedtls_pk_rsa(s_pk_ctx);
   mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE);
 
   size_t rsa_len = mbedtls_rsa_get_len(rsa);
   uint8_t *rsa_out = malloc(rsa_len);
   if (!rsa_out) {
+    xSemaphoreGive(lock);
     return -1;
   }
 
   int ret = mbedtls_rsa_pkcs1_sign(rsa, mbedtls_ctr_drbg_random, &s_ctr_drbg,
                                    MBEDTLS_MD_NONE, 32, data, rsa_out);
+  xSemaphoreGive(lock);
+
   if (ret != 0) {
     ESP_LOGE(TAG, "RSA sign failed: -0x%04x", -ret);
     free(rsa_out);
@@ -172,10 +226,6 @@ int rsa_apple_challenge_response(const char *challenge_b64, uint32_t ip_addr,
 
 int rsa_decrypt_aes_key(const char *encrypted_b64, uint8_t *out_key,
                         size_t out_key_size, size_t *out_key_len) {
-  if (ensure_pk_initialized() != 0) {
-    return -1;
-  }
-
   // Decode the base64 RSA-encrypted key
   uint8_t encrypted[512];
   size_t encrypted_len = 0;
@@ -189,12 +239,22 @@ int rsa_decrypt_aes_key(const char *encrypted_b64, uint8_t *out_key,
            encrypted_len);
 
   // RSA OAEP-SHA1 decrypt (RAOP uses OAEP padding for the AES key)
+  SemaphoreHandle_t lock = rsa_lock();
+  xSemaphoreTake(lock, portMAX_DELAY);
+
+  if (ensure_pk_initialized_locked() != 0) {
+    xSemaphoreGive(lock);
+    return -1;
+  }
+
   mbedtls_rsa_context *rsa = mbedtls_pk_rsa(s_pk_ctx);
   mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA1);
 
   size_t olen = 0;
   int ret = mbedtls_rsa_pkcs1_decrypt(rsa, mbedtls_ctr_drbg_random, &s_ctr_drbg,
                                       &olen, encrypted, out_key, out_key_size);
+  xSemaphoreGive(lock);
+
   if (ret != 0) {
     ESP_LOGE(TAG, "RSA AES key decrypt failed: -0x%04x", -ret);
     return -1;

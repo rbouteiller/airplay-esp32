@@ -29,6 +29,7 @@
 #include "esp_bt_device.h"
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -796,16 +797,11 @@ static void bt_stack_evt_handler(uint16_t event, void *param) {
 /* Public API                                                                 */
 /* ========================================================================== */
 
-esp_err_t bt_a2dp_sink_init(const char *device_name,
-                            bt_a2dp_state_cb_t state_cb) {
-  s_state_cb = state_cb;
-
-  ESP_LOGI(TAG, "Initializing Bluetooth A2DP Sink: %s", device_name);
-
-  // Release BLE memory — we only need Classic BT
-  ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
-
-  // Initialize BT controller
+// Controller + Bluedroid bring-up.  Shared by first init and by resume, which
+// has to rebuild both because suspend deinitialises them to hand their task
+// stacks back to the internal-DRAM heap.  Unwinds itself on failure so the
+// caller never has to reason about a half-built stack.
+static esp_err_t bt_stack_up(void) {
   esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
   esp_err_t err = esp_bt_controller_init(&bt_cfg);
   if (err != ESP_OK) {
@@ -816,10 +812,10 @@ esp_err_t bt_a2dp_sink_init(const char *device_name,
   err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "BT controller enable failed: %s", esp_err_to_name(err));
+    esp_bt_controller_deinit();
     return err;
   }
 
-  // Initialize Bluedroid
   esp_bluedroid_config_t bluedroid_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
 #ifndef CONFIG_BT_SSP_ENABLED
   bluedroid_cfg.ssp_en = false; // Disable SSP to force legacy PIN pairing
@@ -827,12 +823,34 @@ esp_err_t bt_a2dp_sink_init(const char *device_name,
   err = esp_bluedroid_init_with_cfg(&bluedroid_cfg);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Bluedroid init failed: %s", esp_err_to_name(err));
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
     return err;
   }
 
   err = esp_bluedroid_enable();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Bluedroid enable failed: %s", esp_err_to_name(err));
+    esp_bluedroid_deinit();
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    return err;
+  }
+  return ESP_OK;
+}
+
+esp_err_t bt_a2dp_sink_init(const char *device_name,
+                            bt_a2dp_state_cb_t state_cb) {
+  s_state_cb = state_cb;
+
+  ESP_LOGI(TAG, "Initializing Bluetooth A2DP Sink: %s", device_name);
+
+  // Release BLE memory — we only need Classic BT.  Irreversible, so it stays
+  // out of bt_stack_up() and is never repeated on resume.
+  ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
+
+  esp_err_t err = bt_stack_up();
+  if (err != ESP_OK) {
     return err;
   }
 
@@ -884,6 +902,33 @@ void bt_a2dp_sink_set_discoverable(bool discoverable) {
 
 bool bt_a2dp_sink_is_suspended(void) {
   return s_bt_suspended;
+}
+
+// Longest we will wait for the stack teardown to be reflected in the heap, and
+// how often we re-check.  Two consecutive identical readings end the wait.
+#define BT_REAP_TIMEOUT_MS 500
+#define BT_REAP_POLL_MS    10
+
+/* The deinit calls return before the memory is actually usable again: a task
+ * that deletes itself, or one pinned to the other core, has its stack and TCB
+ * freed by that core's idle task, and those blocks are what turn ~40 KB of
+ * free DRAM into an 11 KB largest block.  Callers suspend precisely to get a
+ * contiguous stack out of it, so wait for the reap to settle instead of
+ * handing back a heap that is still coming apart. */
+static void bt_wait_for_heap_reclaim(void) {
+  const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  size_t previous = 0;
+  for (int waited = 0; waited < BT_REAP_TIMEOUT_MS; waited += BT_REAP_POLL_MS) {
+    vTaskDelay(pdMS_TO_TICKS(BT_REAP_POLL_MS));
+    size_t largest = heap_caps_get_largest_free_block(caps);
+    if (largest == previous) {
+      break;
+    }
+    previous = largest;
+  }
+  ESP_LOGI(TAG, "BT released: %u DRAM free, %u largest",
+           (unsigned)heap_caps_get_free_size(caps),
+           (unsigned)heap_caps_get_largest_free_block(caps));
 }
 
 static esp_err_t bt_suspend_locked(void) {
@@ -943,7 +988,15 @@ static esp_err_t bt_suspend_locked(void) {
     return err;
   }
 
+  // Disabling only parks the radio.  The Bluedroid BTU/BTC and controller task
+  // stacks are internal DRAM and are returned only by deinit — which is the
+  // whole point of suspending, since AirPlay's receive and decode tasks need
+  // that DRAM and cannot allocate it from SPIRAM.
+  esp_bluedroid_deinit();
+  esp_bt_controller_deinit();
+
   s_bt_suspended = true;
+  bt_wait_for_heap_reclaim();
   return ESP_OK;
 }
 
@@ -953,15 +1006,8 @@ static esp_err_t bt_resume_locked(void) {
   }
 
   ESP_LOGI(TAG, "Resuming Bluetooth radio");
-  esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+  esp_err_t err = bt_stack_up();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "controller enable failed: %s", esp_err_to_name(err));
-    return err;
-  }
-  err = esp_bluedroid_enable();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "bluedroid enable failed: %s", esp_err_to_name(err));
-    esp_bt_controller_disable(); // roll back to a consistent suspended state
     return err;
   }
 

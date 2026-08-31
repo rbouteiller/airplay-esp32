@@ -13,6 +13,17 @@
  */
 
 /**
+ * Seed the RNG and parse the private key.
+ *
+ * Optional: every entry point does this lazily. Call it up front to keep the
+ * cost off the RTSP task, where it lands in the middle of the OPTIONS response
+ * a sender is waiting on.
+ *
+ * @return 0 on success, -1 on failure
+ */
+int rsa_init(void);
+
+/**
  * Build the Apple-Challenge response.
  *
  * Decodes the base64 challenge, appends our IP + MAC, pads to 32 bytes,

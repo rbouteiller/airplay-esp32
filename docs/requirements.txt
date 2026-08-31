@@ -1,0 +1,8 @@
+# Documentation site dependencies.
+# Install with: python3 -m pip install -r docs/requirements.txt
+# Preview with: zensical serve
+#
+# Zensical is the successor to Material for MkDocs by the same team. It reads
+# mkdocs.yml natively, so reverting means installing mkdocs + mkdocs-material
+# again with no config changes.
+zensical>=0.0.57,<0.1

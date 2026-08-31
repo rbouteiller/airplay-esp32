@@ -16,12 +16,10 @@ static const char TAG[] = "Waveshare-ESP32P4-DEV-KIT";
 
 static bool s_board_initialized = false;
 
-#ifdef CONFIG_MUTE_GPIO
+// -1 disables the pin, and the runtime test that used to guard this came too
+// late: the shift below is a constant the compiler folds either way.
+#if defined(CONFIG_MUTE_GPIO) && CONFIG_MUTE_GPIO >= 0
 static esp_err_t init_mute_gpio(void) {
-  if (CONFIG_MUTE_GPIO < 0) {
-    return ESP_OK;
-  }
-
   gpio_config_t io_conf = {
       .pin_bit_mask = (1ULL << CONFIG_MUTE_GPIO),
       .mode = GPIO_MODE_OUTPUT,
@@ -61,7 +59,7 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
-#ifdef CONFIG_MUTE_GPIO
+#if defined(CONFIG_MUTE_GPIO) && CONFIG_MUTE_GPIO >= 0
   init_mute_gpio();
 #endif
 

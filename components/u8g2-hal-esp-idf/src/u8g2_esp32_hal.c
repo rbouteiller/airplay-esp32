@@ -25,6 +25,8 @@ static size_t i2c_buf_idx;                  // Current index in I2C buffer.
 static spi_host_device_t s_spi_host = SPI2_HOST;
 static bool s_spi_bus_external = false;
 
+static volatile uint32_t s_i2c_errors;
+
 #undef ESP_ERROR_CHECK
 #define ESP_ERROR_CHECK(x)                                  \
   do {                                                      \
@@ -55,6 +57,10 @@ void u8g2_esp32_hal_set_i2c_bus(i2c_master_bus_handle_t bus) {
 void u8g2_esp32_hal_set_spi_host(spi_host_device_t host) {
   s_spi_host = host;
   s_spi_bus_external = true;
+}
+
+uint32_t u8g2_esp32_i2c_error_count(void) {
+  return s_i2c_errors;
 }
 
 /*
@@ -208,6 +214,7 @@ uint8_t u8g2_esp32_i2c_byte_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int,
     esp_err_t rc =
         i2c_master_transmit(dev_i2c, i2c_buffer, i2c_buf_idx, I2C_TIMEOUT_MS);
     if (rc != ESP_OK) {
+      s_i2c_errors++;
       ESP_LOGW(TAG, "I2C transmit failed: %s — resetting bus",
                esp_err_to_name(rc));
       i2c_master_bus_reset(bus_i2c);

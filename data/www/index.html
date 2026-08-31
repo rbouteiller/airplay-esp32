@@ -62,6 +62,13 @@ input:focus{outline:none;border-color:#e94560}
 <div class='form-group'><label>AirPlay Device Name</label><input type='text' id='dev-name' placeholder='My Speaker'></div>
 <button class='btn btn-primary' onclick='saveName()'>Save Name</button>
 <div id='name-msg'></div>
+<div class='form-group' style='margin-top:18px'><label for='airplay-mode'>AirPlay Mode</label>
+<select id='airplay-mode' onchange='saveAirplayMode()'>
+<option value='0'>Multi-room (v2)</option>
+<option value='1'>Legacy (v1)</option>
+</select></div>
+<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Some software only works with AirPlay v1.<br>Apple devices still work in that mode, but without v2 features, such as multi-speaker sync.<br>Volume / track seek hardware buttons require version 1.</div>
+<div id='airplay-msg'></div>
 <div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
 <div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>
 <span id='led-pct'>50%</span></div></div>
@@ -77,14 +84,16 @@ input:focus{outline:none;border-color:#e94560}
 </select></div>
 <div id='chan-msg'></div></div>
 <div id='dual-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='dual-mode'>DAC Configuration</label>
+<div class='form-group'><label for='dual-mode'>Second Amplifier</label>
 <select id='dual-mode' onchange='saveDual()'>
-<option value='0'>2.1 (Satellites / Sub)</option>
-<option value='1'>Bi-Amp</option>
+<option value='1'>Bridged mono (PBTL)</option>
+<option value='0'>Stereo (BTL)</option>
 </select></div>
 <div id='dual-msg'></div></div>
 <div id='eq-link' style='display:none;margin-top:18px'>
-<a href='/eq' class='btn btn-secondary'>EQ Settings</a></div>
+<a href='/bq' class='btn btn-secondary'>Biquad EQ</a></div>
+<div id='hf1-link' style='display:none;margin-top:18px'>
+<a href='/hf' class='btn btn-secondary'>HybridFlow Tuning</a></div>
 </div>
 <div class='card'><h2>Firmware Update</h2>
 <div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
@@ -152,12 +161,13 @@ async function loadChannel(){
   applyChanLabels();
   applyAmpLayout();}
 var dualDevices=1;
-var dualMode=0;
+var dualPbtl=true;
 var dualLoaded=false;
+var airplayV1=false;
 var chanLocked=false;
 var chanDsp=false;
-/* A bi-amp flow crosses the two outputs over into one speaker, so the choice
-   is which input channel to feed it — there is no stereo to pass through. */
+/* When the DSP crosses the two outputs over into one speaker there is no
+   stereo to pass through, so the choice is which input channel to feed it. */
 function applyChanLabels(){
   document.getElementById('chan-label').textContent=
     chanDsp?'Input Channel':'Output Channel';
@@ -166,8 +176,8 @@ function applyChanLabels(){
   o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
 }
 var DUAL_WARN={
-  0:'Switch to 2.1 (Satellites / Sub)?\n\nThe second amplifier is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single subwoofer.\n\nRewire before restarting.',
-  1:'Switch to Bi-Amp?\n\nBoth amplifiers run as stereo BTL, with OUT_A driving the woofer and OUT_B the tweeter of one speaker.\n\nIf OUT_A and OUT_B are still bridged for a PBTL subwoofer you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nRewire before restarting.',
+  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
 };
 /* With two amps the DAC configuration already fixes the routing, so per-output
    channel selection has no meaning. */
@@ -186,26 +196,36 @@ async function saveChannel(){
   catch(e){msg('chan-msg','Error','err');console.error('saveChannel failed',e);}}
 async function loadDual(){
   try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
-    if(d.success&&d.devices>1){dualDevices=d.devices;dualMode=d.mode;
-      var sel=document.getElementById('dual-mode');
-      sel.value=String(d.mode);
-      if(!d.biamp){
-        sel.querySelector('option[value="1"]').disabled=true;
-        sel.querySelector('option[value="1"]').textContent='Bi-Amp (unavailable)';
-      }
+    if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
+      document.getElementById('dual-mode').value=d.pbtl?'1':'0';
       document.getElementById('dual-group').style.display='';
       if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
-  catch(e){console.warn('Could not load dual DAC mode',e);}
+  catch(e){console.warn('Could not load second amplifier wiring',e);}
   applyAmpLayout();}
 async function saveDual(){
   var sel=document.getElementById('dual-mode');
   var v=Number.parseInt(sel.value,10);
-  if(v!==dualMode&&!confirm(DUAL_WARN[v])){sel.value=String(dualMode);return;}
-  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:v})});
+  var pbtl=v===1;
+  if(pbtl!==dualPbtl&&!confirm(DUAL_WARN[v])){sel.value=dualPbtl?'1':'0';return;}
+  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
     var d=await r.json();
-    if(d.success){dualMode=v;msg('dual-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
-    else{sel.value=String(dualMode);msg('dual-msg',d.error,'err');}}
-  catch(e){sel.value=String(dualMode);msg('dual-msg','Error','err');console.error('saveDual failed',e);}}
+    if(d.success){dualPbtl=pbtl;msg('dual-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
+    else{sel.value=dualPbtl?'1':'0';msg('dual-msg',d.error,'err');}}
+  catch(e){sel.value=dualPbtl?'1':'0';msg('dual-msg','Error','err');console.error('saveDual failed',e);}}
+async function loadAirplayMode(){
+  try{var r=await fetch('/api/airplay/mode');if(!r.ok)return;var d=await r.json();
+    if(d.success){airplayV1=!!d.v1;
+      document.getElementById('airplay-mode').value=d.v1?'1':'0';
+      if(d.restart_required){msg('airplay-msg','Restart to apply the new mode.','err');}}}
+  catch(e){console.warn('Could not load AirPlay mode',e);}}
+async function saveAirplayMode(){
+  var sel=document.getElementById('airplay-mode');
+  var v1=sel.value==='1';
+  try{var r=await fetch('/api/airplay/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v1:v1})});
+    var d=await r.json();
+    if(d.success){airplayV1=v1;msg('airplay-msg',d.restart_required?'Saved! Restart to apply.':'Saved!','ok');}
+    else{sel.value=airplayV1?'1':'0';msg('airplay-msg',d.error,'err');}}
+  catch(e){sel.value=airplayV1?'1':'0';msg('airplay-msg','Error','err');console.error('saveAirplayMode failed',e);}}
 async function saveName(){
   var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
   try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
@@ -241,6 +261,7 @@ async function loadInfo(){
       document.getElementById('info-phy').textContent=i.wifi_phy||'-';
       document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
+      if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
       /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
          warning on the device for every page load. */
       if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
@@ -249,5 +270,5 @@ window.onload=function(){
   document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
     document.getElementById('fw-name').textContent=f?f.name:'No file selected';
     document.getElementById('ota-btn').disabled=!f;};
-  loadInfo();loadBrightness();loadChannel();setInterval(loadInfo,30000);};
+  loadInfo();loadBrightness();loadChannel();loadAirplayMode();setInterval(loadInfo,30000);};
 </script></body></html>

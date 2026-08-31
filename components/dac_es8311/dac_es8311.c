@@ -385,7 +385,8 @@ static void es8311_set_volume(float volume_airplay_db) {
   xSemaphoreGive(s_dac_mutex);
 }
 
-static void es8311_on_i2s_started(void) {
+static void es8311_on_i2s_started(uint32_t sample_rate_hz) {
+  (void)sample_rate_hz;
   es8311_set_power_mode(DAC_POWER_ON);
 }
 

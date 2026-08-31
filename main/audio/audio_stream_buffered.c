@@ -17,6 +17,11 @@
 
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
 #define AUDIO_BUFFERED_STACK_SIZE  4096
+// Bounded hand-off to the decode worker.  Long enough to ride out a decode
+// hiccup, short enough that a wedged decoder cannot block stream teardown.
+#define BUFFERED_ENQUEUE_TIMEOUT_MS 200U
+// The lwIP core; core 1 is reserved for decode and I2S playback.
+#define AUDIO_BUFFERED_TASK_CORE 0
 
 static const char *TAG = "audio_buf";
 
@@ -102,10 +107,12 @@ static void buffered_audio_task(void *pvParameters) {
     }
 
     while (stream->running) {
-      // Back-pressure: if buffer is nearly full, pause reading to let TCP
-      // flow control slow down the sender. This prevents buffer overflow
-      // and keeps frames in order.
-      while (audio_buffer_is_nearly_full(&state->buffer) && stream->running) {
+      // Back-pressure: if the pipeline is nearly full, pause reading to let
+      // TCP flow control slow down the sender. This prevents overflow and
+      // keeps frames in order.
+      while (stream->running &&
+             (audio_decode_worker_is_nearly_full(state->decode_worker) ||
+              audio_engine_v2_is_nearly_full(&state->engine_v2))) {
         vTaskDelay(pdMS_TO_TICKS(10));
       }
 
@@ -132,11 +139,20 @@ static void buffered_audio_task(void *pvParameters) {
       uint32_t timestamp =
           (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
 
+      // Snapshot the epoch before the gate so a seek that lands between the
+      // gate and the decode invalidates this packet rather than letting it
+      // reach the timeline of the new segment.
+      const uint32_t epoch = audio_epoch_get(&state->engine_v2.epoch);
+      (void)__atomic_add_fetch(&state->engine_v2.diag_rx_packets, 1U,
+                               __ATOMIC_RELAXED);
+
       // Drop stale pre-seek/old-track packets before AES and AAC work.  The
       // bytes still have to be drained from TCP (done above), but they no
       // longer consume decoder time or enter the PCM ring buffer.
       if (!audio_stream_accept_timestamp(state, timestamp)) {
         state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(&state->engine_v2.diag_gate_drops, 1U,
+                                 __ATOMIC_RELAXED);
         continue;
       }
 
@@ -161,9 +177,29 @@ static void buffered_audio_task(void *pvParameters) {
       state->blocks_read++;
       state->blocks_read_in_sequence++;
 
-      if (!audio_stream_process_accepted_frame(state, timestamp, decrypted,
-                                               (size_t)decrypted_len)) {
+      // Hand the access unit to the decode worker.  Decoding on this task
+      // would stall the TCP reader for the duration of every AAC frame, which
+      // is what previously turned a transient decode hiccup into dropped
+      // packets and a visible gap.
+      const audio_encoded_packet_t encoded = {
+          .epoch = epoch,
+          .rtp_timestamp = timestamp,
+          .payload = decrypted,
+          .payload_len = (size_t)decrypted_len,
+          .prime_mute = audio_stream_aac_prime_mute_wanted(state),
+      };
+
+      const audio_decode_enqueue_result_t enq = audio_decode_worker_enqueue(
+          state->decode_worker, &encoded, BUFFERED_ENQUEUE_TIMEOUT_MS);
+      if (enq == AUDIO_DECODE_ENQUEUE_OK) {
+        (void)__atomic_add_fetch(&state->engine_v2.diag_enqueue_ok, 1U,
+                                 __ATOMIC_RELAXED);
+      } else {
         state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(enq == AUDIO_DECODE_ENQUEUE_RETRY
+                                     ? &state->engine_v2.diag_enqueue_retries
+                                     : &state->engine_v2.diag_queue_drops,
+                                 1U, __ATOMIC_RELAXED);
       }
     }
 
@@ -208,9 +244,11 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   stream->running = true;
 
   state->buffered_task_handle = NULL;
-  BaseType_t task_ret =
-      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
-                  stream, 5, &state->buffered_task_handle);
+  // Kept on the lwIP core so it does not migrate onto core 1 and compete with
+  // the decoder and the I2S playback task.
+  BaseType_t task_ret = xTaskCreatePinnedToCore(
+      buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE, stream, 5,
+      &state->buffered_task_handle, AUDIO_BUFFERED_TASK_CORE);
   if (task_ret != pdPASS || !state->buffered_task_handle) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
@@ -223,10 +261,10 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   // load (WiFi + lwip + decoder + PCM ring, plus BT controller resident on
   // squeezeamp-bt).  Use this to size WiFi/TCP buffers without risking OOM.
   ESP_LOGI(TAG,
-           "Buffered start: free heap %lu internal (largest block %lu), "
+           "Buffered start: free heap %lu DRAM (largest block %lu), "
            "%lu SPIRAM",
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+           (unsigned long)heap_caps_get_free_size(AUDIO_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(AUDIO_DRAM_CAPS),
            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
   return ESP_OK;

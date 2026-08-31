@@ -8,8 +8,19 @@
 
 #include "esp_log.h"
 #include "rtsp_crypto.h"
+#include "settings.h"
 
 static const char *TAG = "rtsp_message";
+
+// A classic sender reads the source version here too, not just in the mDNS TXT
+// record, and rejects an AirPlay 2 one. Answer per-connection: a v2 receiver
+// still has to speak 105.1 to a classic sender that found it anyway.
+static const char *rtsp_server_header(const rtsp_conn_t *conn) {
+  const bool classic =
+      (conn && conn->protocol_version == 1) || settings_airplay_v1();
+  return classic ? "Server: AirTunes/105.1\r\n"
+                 : "Server: AirTunes/377.40.00\r\n";
+}
 
 const uint8_t *rtsp_find_header_end(const uint8_t *data, size_t len) {
   for (size_t i = 0; i + 3 < len; i++) {
@@ -161,40 +172,35 @@ int rtsp_send_response(int socket, rtsp_conn_t *conn, int status_code,
                        size_t body_len) {
   char header[1024];
   int header_len;
+  const char *server_hdr = rtsp_server_header(conn);
 
   if (extra_headers && body && body_len > 0) {
+    header_len = snprintf(header, sizeof(header),
+                          "RTSP/1.0 %d %s\r\n"
+                          "CSeq: %d\r\n%s%s"
+                          "Content-Length: %zu\r\n"
+                          "\r\n",
+                          status_code, status_text, cseq, server_hdr,
+                          extra_headers, body_len);
+  } else if (extra_headers) {
     header_len =
         snprintf(header, sizeof(header),
                  "RTSP/1.0 %d %s\r\n"
-                 "CSeq: %d\r\n"
-                 "Server: AirTunes/377.40.00\r\n"
-                 "%s"
-                 "Content-Length: %zu\r\n"
+                 "CSeq: %d\r\n%s%s"
                  "\r\n",
-                 status_code, status_text, cseq, extra_headers, body_len);
-  } else if (extra_headers) {
-    header_len = snprintf(header, sizeof(header),
-                          "RTSP/1.0 %d %s\r\n"
-                          "CSeq: %d\r\n"
-                          "Server: AirTunes/377.40.00\r\n"
-                          "%s"
-                          "\r\n",
-                          status_code, status_text, cseq, extra_headers);
+                 status_code, status_text, cseq, server_hdr, extra_headers);
   } else if (body && body_len > 0) {
     header_len = snprintf(header, sizeof(header),
                           "RTSP/1.0 %d %s\r\n"
-                          "CSeq: %d\r\n"
-                          "Server: AirTunes/377.40.00\r\n"
+                          "CSeq: %d\r\n%s"
                           "Content-Length: %zu\r\n"
                           "\r\n",
-                          status_code, status_text, cseq, body_len);
+                          status_code, status_text, cseq, server_hdr, body_len);
   } else {
     header_len = snprintf(header, sizeof(header),
                           "RTSP/1.0 %d %s\r\n"
-                          "CSeq: %d\r\n"
-                          "Server: AirTunes/377.40.00\r\n"
-                          "\r\n",
-                          status_code, status_text, cseq);
+                          "CSeq: %d\r\n%s\r\n",
+                          status_code, status_text, cseq, server_hdr);
   }
 
   // Build complete response
@@ -236,11 +242,11 @@ int rtsp_send_http_response(int socket, rtsp_conn_t *conn, int status_code,
   int header_len = snprintf(header, sizeof(header),
                             "HTTP/1.1 %d %s\r\n"
                             "Content-Type: %s\r\n"
-                            "Content-Length: %zu\r\n"
-                            "Server: AirTunes/377.40.00\r\n"
+                            "Content-Length: %zu\r\n%s"
                             "CSeq: 1\r\n"
                             "\r\n",
-                            status_code, status_text, content_type, body_len);
+                            status_code, status_text, content_type, body_len,
+                            rtsp_server_header(conn));
 
   // Build complete response
   size_t total_len = (size_t)header_len + body_len;
