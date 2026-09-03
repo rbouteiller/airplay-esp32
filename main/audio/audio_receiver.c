@@ -27,6 +27,39 @@ static const char *TAG = "audio_recv";
 
 static audio_receiver_state_t receiver = {0};
 
+// Set when an AirPlay session holds the audio path. Reported on the edges only:
+// SETUP can restate the format mid-session, and the arbitration downstream ends
+// a Sendspin stream, which is not something to repeat per track.
+static audio_receiver_activity_cb_t s_activity_cb = NULL;
+static bool s_session_active = false;
+// The claim and the release arrive from different RTSP tasks -- a TEARDOWN on
+// one connection races the SETUP that replaced it -- so the edge test has to be
+// atomic even though the flag is a bool.
+static portMUX_TYPE s_activity_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void audio_receiver_set_activity_callback(audio_receiver_activity_cb_t cb) {
+  s_activity_cb = cb;
+}
+
+static void set_session_active(bool active) {
+  bool changed = false;
+  taskENTER_CRITICAL(&s_activity_mux);
+  if (s_session_active != active) {
+    s_session_active = active;
+    changed = true;
+  }
+  taskEXIT_CRITICAL(&s_activity_mux);
+  // Outside the critical section: the listener hands the output over, which
+  // joins a task and talks to the amplifier over I2C.
+  if (changed && s_activity_cb) {
+    s_activity_cb(active);
+  }
+}
+
+void audio_receiver_end_session(void) {
+  set_session_active(false);
+}
+
 static void audio_receiver_reset_stats(void) {
   memset(&receiver.stats, 0, sizeof(receiver.stats));
 }
@@ -298,6 +331,7 @@ void audio_receiver_set_format(const audio_format_t *format) {
     audio_engine_v2_set_format(&receiver.engine_v2, format);
   }
   audio_output_set_source_rate(format->sample_rate);
+  set_session_active(true);
 }
 
 void audio_receiver_set_encryption(const audio_encrypt_t *encrypt) {
@@ -682,6 +716,10 @@ void audio_receiver_set_client_control(uint32_t client_ip,
            client_control_port);
 }
 
+// Stopping the receiver does not give up the claim on the output: a
+// stream-level TEARDOWN is a pause, and handing the speaker to Sendspin there
+// would have Music Assistant playing out loud the moment the phone pauses.
+// Only audio_receiver_end_session() releases it.
 void audio_receiver_stop(void) {
   if (receiver.realtime_stream && receiver.realtime_stream->ops &&
       receiver.realtime_stream->ops->stop) {

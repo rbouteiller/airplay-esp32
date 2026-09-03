@@ -17,7 +17,7 @@
 
 #include "ethernet.h"
 #include "playback_control.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "sendspin_cpace.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
@@ -119,6 +119,8 @@ static QueueHandle_t s_cmd_queue = NULL;
  * output, and whether the clock estimate is good enough to place audio. The
  * protocol only has one flag, so it is the AND of the two. */
 static bool s_output_available = true;
+/* Set when the takeover paused the server, so the release can undo it. */
+static bool s_resume_on_release = false;
 static bool s_reported_available = false;
 static bool s_state_dirty = false;
 
@@ -630,10 +632,10 @@ static void sendspin_send_time_request(void) {
  * into a powered-down amplifier. */
 
 typedef struct {
-  rtsp_metadata_t meta; /* position_secs is filled in at emit time */
-  int64_t timestamp_us; /* server clock the progress was measured at */
-  int64_t progress_ms;  /* track position at timestamp_us */
-  int32_t speed;        /* playback_speed; 1000 is normal, 0 is paused */
+  playback_metadata_t meta; /* position_secs is filled in at emit time */
+  int64_t timestamp_us;     /* server clock the progress was measured at */
+  int64_t progress_ms;      /* track position at timestamp_us */
+  int32_t speed;            /* playback_speed; 1000 is normal, 0 is paused */
   bool has_progress;
 } sendspin_meta_t;
 
@@ -651,7 +653,9 @@ static void sendspin_events_playing(bool playing) {
   if (!playing) {
     settings_persist_volume();
   }
-  rtsp_events_emit(playing ? RTSP_EVENT_PLAYING : RTSP_EVENT_PAUSED, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN,
+                       playing ? PLAYBACK_EVENT_PLAYING : PLAYBACK_EVENT_PAUSED,
+                       NULL);
 }
 
 static void sendspin_events_connected(bool connected) {
@@ -662,14 +666,16 @@ static void sendspin_events_connected(bool connected) {
   if (connected) {
     /* Listeners read this as "a new source has the output": the display drops
      * whatever it was showing and the amplifier comes up into standby. */
-    rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_CONNECTED,
+                         NULL);
     return;
   }
   s_events_playing = false;
   memset(&s_meta, 0, sizeof(s_meta));
   s_meta_pending_valid = false;
   settings_persist_volume();
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_DISCONNECTED,
+                       NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -695,6 +701,7 @@ static void sendspin_session_close(const char *reason) {
   s_role_metadata = false;
   s_role_controller = false;
   s_ctrl_commands = 0;
+  s_resume_on_release = false;
   s_psk_kind = SENDSPIN_PSK_SENTINEL;
   s_pair_pending = false;
   s_server_id[0] = '\0';
@@ -784,20 +791,23 @@ static void sendspin_meta_apply(const sendspin_meta_t *next) {
   /* A server with an idle queue activates the role and immediately sends an
    * empty state. Taking that as a source would wake the amplifier and light
    * the display for as long as the server stayed connected, which for Music
-   * Assistant is for ever. */
+   * Assistant is for ever. The same goes for metadata that keeps arriving
+   * after something else took the output: the owner gets the display. */
   const bool has_content = next->meta.title[0] != '\0' ||
                            next->meta.artist[0] != '\0' ||
                            next->meta.album[0] != '\0' || next->has_progress;
-  if (!has_content && !sendspin_player_is_streaming()) {
+  if (!s_output_available ||
+      (!has_content && !sendspin_player_is_streaming())) {
     sendspin_events_connected(false);
     return;
   }
 
   sendspin_events_connected(true);
 
-  rtsp_event_data_t data = {.metadata = s_meta.meta};
+  playback_event_data_t data = {.metadata = s_meta.meta};
   data.metadata.position_secs = sendspin_meta_position_secs();
-  rtsp_events_emit(RTSP_EVENT_METADATA, &data);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_METADATA,
+                       &data);
 
   if (next->has_progress) {
     sendspin_events_playing(next->speed != 0);
@@ -1753,10 +1763,16 @@ static void sendspin_handle_message(const char *json, size_t len,
       sendspin_player_stream_clear();
     }
   } else if (strcmp(type, "stream/end") == 0) {
-    if (sendspin_role_selected(payload) && sendspin_player_is_streaming()) {
-      sendspin_player_stream_end();
+    if (sendspin_role_selected(payload)) {
+      /* The stream may already be stopped -- something else took the output
+       * and ended it -- but the event state still has to be cleared, and only
+       * a stream we were actually rendering hands the output back. */
+      const bool was_streaming = sendspin_player_is_streaming();
+      if (was_streaming) {
+        sendspin_player_stream_end();
+      }
       sendspin_events_connected(false);
-      if (s_activity_cb) {
+      if (was_streaming && s_activity_cb) {
         s_activity_cb(false);
       }
     }
@@ -2238,14 +2254,37 @@ void sendspin_set_output_available(bool available) {
   s_output_available = available;
   ESP_LOGI(TAG, "output %s", available ? "released to Sendspin" : "taken over");
 
+  bool end_stream = false;
   if (!available && sendspin_player_is_streaming()) {
-    /* Stop before reporting: the server tears the stream down on
-     * available:false anyway, and leaving the renderer attached would race
-     * whoever is taking the output. */
-    sendspin_player_stream_end();
+    /* A player that simply reports available:false leaves the server's queue
+     * stopped, and a stopped queue does not restart itself when the player
+     * comes back. Pausing it first leaves something to resume. */
+    if (s_role_controller && (s_ctrl_commands & (1U << SENDSPIN_CMD_PAUSE))) {
+      sendspin_send_controller_command(SENDSPIN_CMD_PAUSE);
+      s_resume_on_release = true;
+    }
+    /* Sendspin no longer holds the output, so it no longer holds the display
+     * or the amplifier either. Without this the source stays PLAYING for ever
+     * -- the server's own stream/end is gated on the player still running --
+     * and the aggregate never reaches DISCONNECTED again. */
+    sendspin_events_connected(false);
+    end_stream = true;
+  } else if (available && s_resume_on_release) {
+    s_resume_on_release = false;
+    /* Queued rather than sent here: the tick drains commands after the state
+     * report, so the server sees the player available again before the play. */
+    (void)sendspin_send_command(SENDSPIN_CMD_PLAY);
   }
   s_state_dirty = true;
   sendspin_unlock();
+
+  /* Outside the lock: the stream end joins the playback task, which can take
+   * longer than SENDSPIN_LOCK_WAIT_MS, and a caller that timed out on the lock
+   * tears the session down. The renderer is still detached before this returns,
+   * which is what whoever is taking the output is waiting for. */
+  if (end_stream) {
+    sendspin_player_stream_end();
+  }
 }
 
 bool sendspin_send_command(sendspin_command_t cmd) {

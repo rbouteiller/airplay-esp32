@@ -65,6 +65,20 @@ typedef struct {
 esp_err_t audio_receiver_init(void);
 
 /**
+ * Called when an AirPlay session takes the audio path and again when it lets
+ * go, so the arbitration in main.c can stand the other inputs down.
+ */
+typedef void (*audio_receiver_activity_cb_t)(bool active);
+void audio_receiver_set_activity_callback(audio_receiver_activity_cb_t cb);
+
+/**
+ * Give up the claim on the audio path. Called on a full TEARDOWN and when the
+ * RTSP connection goes away -- not on audio_receiver_stop(), which also runs
+ * for a stream-level teardown, and that is a pause.
+ */
+void audio_receiver_end_session(void);
+
+/**
  * Set audio format from ANNOUNCE SDP
  */
 void audio_receiver_set_format(const audio_format_t *format);

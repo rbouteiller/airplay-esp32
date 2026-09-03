@@ -19,7 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 
 #if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
@@ -44,8 +44,9 @@ static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
 static bool s_spi_bus_initialized = false;
 #endif
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data);
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data);
 static esp_err_t init_spkfault_gpio(void);
 static esp_err_t init_dac_pdn_gpios(void);
 
@@ -193,7 +194,7 @@ esp_err_t iot_board_init(void) {
   }
 
   // Register for RTSP events to control DAC power
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Configure speaker fault detection
   err = init_spkfault_gpio();
@@ -227,7 +228,7 @@ esp_err_t iot_board_deinit(void) {
     vTaskDelete(gpio_task_handle);
     gpio_task_handle = NULL;
   }
-  rtsp_events_unregister(on_rtsp_event);
+  playback_events_unregister(on_playback_event);
 
   dac_enable_speaker(false);
   dac_set_power_mode(DAC_POWER_OFF);
@@ -249,23 +250,25 @@ esp_err_t iot_board_deinit(void) {
   return ESP_OK;
 }
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
 
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_CONNECTED:
+  case PLAYBACK_EVENT_PAUSED:
     dac_set_power_mode(DAC_POWER_STANDBY);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     dac_set_power_mode(DAC_POWER_ON);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     dac_set_power_mode(DAC_POWER_OFF);
     break;
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     break;
   }
 }

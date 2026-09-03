@@ -24,7 +24,6 @@ set( SRC_FILES
     "rtsp/rtsp_fairplay.c"
     "rtsp/rtsp_crypto.c"
     "rtsp/rtsp_rsa.c"
-    "rtsp/rtsp_events.c"
     "plist/plist_xml.c"
     "plist/bplist_parser.c"
     "plist/bplist_builder.c"
@@ -47,6 +46,7 @@ set( SRC_FILES
     "led.c"
     "buttons.c"
     "playback_control.c"
+    "playback_events.c"
     "dacp_client.c"
 )
 

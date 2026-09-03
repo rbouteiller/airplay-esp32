@@ -47,7 +47,7 @@
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "led.h"
 #include "soc/uart_pins.h"
 #include "soc/gpio_struct.h"
@@ -77,8 +77,9 @@ static esp_err_t init_spkfault_gpio(void);
 static esp_err_t init_jack_gpio(void);
 #endif
 static esp_err_t init_gpio_isr_task(void);
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data);
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data);
 
 // Speaker fault ISR - just notifies the task, no I2C calls
 static void IRAM_ATTR spkfault_isr_handler(void *arg) {
@@ -172,22 +173,24 @@ static void spkfault_task(void *arg) {
   }
 }
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_CONNECTED:
+  case PLAYBACK_EVENT_PAUSED:
     dac_set_power_mode(DAC_POWER_STANDBY);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     dac_set_power_mode(DAC_POWER_ON);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     dac_set_power_mode(DAC_POWER_OFF);
     break;
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     break;
   }
 }
@@ -350,7 +353,7 @@ esp_err_t iot_board_init(void) {
 #endif
 
   // Register for RTSP events to control DAC power
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Start in standby
   dac_set_power_mode(DAC_POWER_OFF);
@@ -373,7 +376,7 @@ esp_err_t iot_board_deinit(void) {
     vTaskDelete(gpio_task_handle);
     gpio_task_handle = NULL;
   }
-  rtsp_events_unregister(on_rtsp_event);
+  playback_events_unregister(on_playback_event);
 
   // Ensure mute GPIO is active (muted) during shutdown for safety
   gpio_set_level(BOARD_MUTE_GPIO, BOARD_MUTE_GPIO_LEVEL);

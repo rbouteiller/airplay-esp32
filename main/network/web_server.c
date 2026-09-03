@@ -21,7 +21,7 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "rtsp_server.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -389,7 +389,7 @@ static esp_err_t metadata_post_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  rtsp_event_data_t data = {0};
+  playback_event_data_t data = {0};
   metadata_copy_field(json, "title", data.metadata.title);
   metadata_copy_field(json, "artist", data.metadata.artist);
   metadata_copy_field(json, "album", data.metadata.album);
@@ -398,7 +398,12 @@ static esp_err_t metadata_post_handler(httpd_req_t *req) {
   data.metadata.position_secs = metadata_uint_field(json, "position");
   cJSON_Delete(json);
 
-  rtsp_events_emit(RTSP_EVENT_METADATA, &data);
+  // Debug/manual injection: attribute it to whichever input owns the display
+  // so it is not filtered out, or to AirPlay when the device is idle.
+  const playback_source_t active = playback_events_active_source();
+  playback_events_emit(active == PLAYBACK_SOURCE_NONE ? PLAYBACK_SOURCE_AIRPLAY
+                                                      : active,
+                       PLAYBACK_EVENT_METADATA, &data);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);

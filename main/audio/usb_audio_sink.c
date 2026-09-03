@@ -20,7 +20,7 @@
 #include "audio_output.h"
 #include "dac.h"
 #include "led.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 
 #include "esp_log.h"
@@ -226,12 +226,12 @@ static void usb_sink_task(void *arg) {
       // The board keeps the amplifier in DAC_POWER_OFF until it sees these,
       // so without them the USB stream is written to a sleeping DAC.
       // CLIENT_CONNECTED also clears whatever the display was last showing.
-      rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
-      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_CONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_PLAYING, NULL);
       // UAC carries no track info, so label the source instead.
-      rtsp_event_data_t meta = {0};
+      playback_event_data_t meta = {0};
       snprintf(meta.metadata.title, METADATA_STRING_MAX, "USB Audio");
-      rtsp_events_emit(RTSP_EVENT_METADATA, &meta);
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_METADATA, &meta);
       s_dropped = 0;
       s_underruns = 0;
       atomic_store(&s_rx_bytes, 0);
@@ -257,7 +257,8 @@ static void usb_sink_task(void *arg) {
       s_streaming = false;
       ringbuf_drain();
       audio_output_flush();
-      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_DISCONNECTED,
+                           NULL);
       if (s_state_cb != NULL) {
         s_state_cb(false);
       }

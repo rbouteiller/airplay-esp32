@@ -1,5 +1,5 @@
 #include "display.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
@@ -186,8 +186,8 @@ static uint32_t estimated_position_locked(void) {
 
 static void draw_progress(u8g2_t *u8g2, int y, uint32_t pos, uint32_t dur) {
   char pos_str[8], dur_str[8];
-  rtsp_format_time_mmss(pos, pos_str, sizeof(pos_str));
-  rtsp_format_time_mmss(dur, dur_str, sizeof(dur_str));
+  playback_format_time_mmss(pos, pos_str, sizeof(pos_str));
+  playback_format_time_mmss(dur, dur_str, sizeof(dur_str));
 
   // Measure time string widths
   int pos_w = u8g2_GetUTF8Width(u8g2, pos_str);
@@ -368,17 +368,19 @@ static void display_render(void) {
 }
 
 // ============================================================================
-// RTSP event callback
+// Playback event callback
 // ============================================================================
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)user_data;
 
   taskENTER_CRITICAL(&s_display_mux);
 
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     s_display.state = DISPLAY_STATE_CONNECTED;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -390,13 +392,13 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     scroll_reset();
     break;
 
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     s_display.state = DISPLAY_STATE_PLAYING;
     s_display.sync_time_us = esp_timer_get_time();
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     // Freeze position at current estimate before pausing
     s_display.position_secs = estimated_position_locked();
     s_display.sync_time_us = 0;
@@ -404,7 +406,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     s_display.state = DISPLAY_STATE_STANDBY;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -416,7 +418,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     scroll_reset();
     break;
 
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     if (data) {
       // Detect a real track change so we know when position=0 is legitimate
       // (start of a new track) vs. a spurious mid-song reset from AirPlay.
@@ -651,7 +653,7 @@ void display_init(void *bus) {
   s_display.dirty = true;
 
   // Register for RTSP events
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Start display refresh task. Left unpinned: SendBuffer blocks eight times a
   // frame, and the audio core wakes every 5.8 ms, so affinity there is costly.

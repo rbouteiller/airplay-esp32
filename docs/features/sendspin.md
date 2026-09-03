@@ -255,20 +255,27 @@ pairing records are dropped with the old identity, since nothing can reach them 
 
 ## Coexistence
 
-Sendspin, AirPlay and [Bluetooth](bluetooth.md) are **mutually exclusive at runtime**, the
-same arrangement Bluetooth and [USB audio](usb-audio.md) already have:
+Sendspin, AirPlay and [Bluetooth](bluetooth.md) are **mutually exclusive at runtime** —
+one DMA ring, and the two protocols run off different clocks — but they are not equal.
+**AirPlay outranks Sendspin**, so a phone can always take the speaker back:
 
-- A Sendspin stream suspends the AirPlay services; they come back when it ends
+- Starting an AirPlay session takes the output away from a Sendspin stream. The board tells
+  the server it is **unavailable** and pauses the server's queue, so it stops sending rather
+  than being left to work it out from a stalled player
+- When the AirPlay session ends, the board reports itself available again and resumes what
+  the server was playing. **Pausing** does not release it — the session is still yours until
+  you disconnect or the phone goes away
+- The AirPlay services stay running throughout. Only the playback task changes hands, so the
+  speaker keeps answering to AirPlay even while Sendspin is streaming
 - While Bluetooth or the USB host is streaming, the board reports itself **unavailable** to
   the Sendspin server, so it is skipped rather than dropped mid-song
 
-!!! warning "Music Assistant keeps the output"
+!!! note "Why the queue is paused rather than just dropped"
 
-    "When it ends" means a `stream/end` message or a closed WebSocket, and there is no idle
-    timeout behind them — a server that stops sending audio without saying so still owns
-    the output. Music Assistant is one of those: it holds its connection open indefinitely,
-    so once it has played to the board, AirPlay and Bluetooth stay suspended. Remove the
-    player in Music Assistant, or restart the board, to get them back.
+    A player that only reports `available: false` leaves the server's queue *stopped*, and a
+    stopped queue does not restart itself when the player comes back. Music Assistant will
+    sit idle indefinitely. Pausing it through the `controller@v1` role leaves something to
+    resume, which is what the board sends when it hands the output back.
 
 ## Turning it on
 

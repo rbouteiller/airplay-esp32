@@ -76,7 +76,7 @@ input:focus{outline:none;border-color:#e94560}
 <option value='1'>Enabled</option>
 </select></div>
 <div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Experimental. Lets a SendSpin server such as Music Assistant play to this device.<br>Takes effect after a restart.<br><span id='sendspin-pin'></span></div>
-<div style='font-size:12px;line-height:1.45;margin-bottom:6px;padding:8px 10px;border-radius:6px;background:rgba(92,26,26,0.5);border-left:3px solid #e94560'><strong>Known issue:</strong> a SendSpin stream takes the audio output away from AirPlay and Bluetooth, and only gives it back when the server ends the stream or closes its connection. Music Assistant does neither, so it keeps this device to itself once it has played to it. Remove the player in Music Assistant, or restart this device, to get AirPlay and Bluetooth back.</div>
+<div style='font-size:12px;line-height:1.45;margin-bottom:6px;opacity:0.7'>AirPlay and Bluetooth take priority: starting a session there pauses the SendSpin server's queue and takes the output, and ending it hands the output back and resumes.</div>
 <div id='sendspin-msg'></div></div>
 <div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
 <div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>

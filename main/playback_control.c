@@ -19,7 +19,7 @@
 
 #include "dac.h"
 #include "dacp_client.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "rtsp_server.h"
 #include "settings.h"
 
@@ -287,7 +287,7 @@ void playback_control_set_muted(bool muted) {
     (void)settings_get_volume(&s_pre_mute_db);
     dac_set_volume(VOLUME_MIN_DB);
     s_muted = true;
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+    playback_events_emit(s_source, PLAYBACK_EVENT_PAUSED, NULL);
     ESP_LOGI(TAG, "Muted locally (was %.1f dB)", s_pre_mute_db);
   } else {
     s_muted = false;
@@ -295,7 +295,7 @@ void playback_control_set_muted(bool muted) {
     // change and skip the DAC. Drive it directly to leave the mute floor.
     settings_set_volume(s_pre_mute_db);
     dac_set_volume(s_pre_mute_db);
-    rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+    playback_events_emit(s_source, PLAYBACK_EVENT_PLAYING, NULL);
     ESP_LOGI(TAG, "Unmuted locally (%.1f dB)", s_pre_mute_db);
   }
 }

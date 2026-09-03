@@ -10,8 +10,8 @@
  * Integration with AirPlay:
  *   - On BT connect:    notify main → stop AirPlay services
  *   - On BT disconnect: notify main → restart AirPlay services
- *   - LED/display updates via rtsp_events (reuses the same event types)
- *   - AVRCP metadata → RTSP_EVENT_METADATA for display
+ *   - LED/display updates via playback_events (reuses the same event types)
+ *   - AVRCP metadata → PLAYBACK_EVENT_METADATA for display
  */
 
 #include "a2dp_sink.h"
@@ -20,7 +20,7 @@
 #include "audio_output.h"
 #include "dac.h"
 #include "led.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 
 #include "esp_a2dp_api.h"
@@ -315,7 +315,8 @@ static void bt_a2dp_evt_handler(uint16_t event, void *param) {
       i2s_task_start();
 
       // LED/display: show connected state
-      rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_CONNECTED,
+                           NULL);
 
       // Don't accept more connections while connected
       esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
@@ -332,7 +333,8 @@ static void bt_a2dp_evt_handler(uint16_t event, void *param) {
       i2s_task_stop();
 
       // LED/display: show disconnected state
-      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH,
+                           PLAYBACK_EVENT_DISCONNECTED, NULL);
 
       // Notify main app to re-enable AirPlay (restarts playback + RTSP)
       if (s_state_cb) {
@@ -352,11 +354,13 @@ static void bt_a2dp_evt_handler(uint16_t event, void *param) {
     if (state == ESP_A2D_AUDIO_STATE_STARTED) {
       ESP_LOGI(TAG, "Audio stream started");
       s_audio_started = true;
-      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PLAYING,
+                           NULL);
     } else {
       ESP_LOGI(TAG, "Audio stream stopped/suspended");
       s_audio_started = false;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PAUSED,
+                           NULL);
     }
     break;
   }
@@ -405,7 +409,7 @@ static void bt_a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
 
 static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
   esp_avrc_ct_cb_param_t *rc = (esp_avrc_ct_cb_param_t *)param;
-  static rtsp_event_data_t meta_data;
+  static playback_event_data_t meta_data;
 
   switch (event) {
   case ESP_AVRC_CT_CONNECTION_STATE_EVT:
@@ -473,7 +477,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
       ESP_LOGI(TAG, "Metadata attr %d: %s", attr_id, dst);
 
       // Emit metadata event after each attribute update
-      rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_METADATA,
+                           &meta_data);
     }
     free(text);
     break;
@@ -495,16 +500,19 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
     if (position_ms != 0xFFFFFFFF) {
       meta_data.metadata.position_secs = position_ms / 1000;
     }
-    rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
+    playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_METADATA,
+                         &meta_data);
 
     // Emit play state from AVRCP (faster than A2D audio state)
     if (status == ESP_AVRC_PLAYBACK_PLAYING) {
       s_avrc_playing = true;
-      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PLAYING,
+                           NULL);
     } else if (status == ESP_AVRC_PLAYBACK_PAUSED ||
                status == ESP_AVRC_PLAYBACK_STOPPED) {
       s_avrc_playing = false;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PAUSED,
+                           NULL);
     }
     break;
   }
@@ -532,11 +540,13 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
 
       if (status == ESP_AVRC_PLAYBACK_PLAYING) {
         s_avrc_playing = true;
-        rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+        playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PLAYING,
+                             NULL);
       } else if (status == ESP_AVRC_PLAYBACK_PAUSED ||
                  status == ESP_AVRC_PLAYBACK_STOPPED) {
         s_avrc_playing = false;
-        rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+        playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_PAUSED,
+                             NULL);
       }
       // Re-register
       esp_avrc_ct_send_register_notification_cmd(
@@ -547,7 +557,8 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
 
       if (pos_ms != 0xFFFFFFFF) {
         meta_data.metadata.position_secs = pos_ms / 1000;
-        rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
+        playback_events_emit(PLAYBACK_SOURCE_BLUETOOTH, PLAYBACK_EVENT_METADATA,
+                             &meta_data);
       }
       // Re-register
       esp_avrc_ct_send_register_notification_cmd(

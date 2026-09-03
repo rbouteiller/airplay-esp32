@@ -73,6 +73,9 @@ static int16_t *s_fill = NULL;
 static uint32_t s_fill_frames = 0;
 static uint32_t s_block_rtp = 0;
 static uint32_t s_next_rtp = 0;
+/* Board time the last chunk was ingested, to tell a server that skipped from
+ * one that was never given the chance to send. */
+static int64_t s_last_ingest_us = 0;
 
 static uint64_t s_chunks_received = 0;
 static uint64_t s_chunks_dropped = 0;
@@ -177,6 +180,7 @@ static void sendspin_player_reset_alignment(void) {
   s_fill_frames = 0;
   s_block_rtp = 0;
   s_next_rtp = 0;
+  s_last_ingest_us = 0;
 }
 
 static const char *sendspin_player_codec_name(sendspin_codec_t codec) {
@@ -420,6 +424,20 @@ static bool sendspin_player_flush_block(void) {
   return ok;
 }
 
+/* Resume writing at a new RTP position after a hole. Blocks are only
+ * addressable on a multiple of frame_samples from the timeline's base, so
+ * the leading part-block is zero-filled rather than the position rounded. */
+static void sendspin_player_skip_to(uint32_t rtp) {
+  (void)sendspin_player_flush_block();
+  const uint32_t phase = rtp % SENDSPIN_FRAME_SAMPLES;
+  s_block_rtp = rtp - phase;
+  s_fill_frames = phase;
+  if (phase > 0) {
+    memset(s_fill, 0, (size_t)phase * 2U * sizeof(int16_t));
+  }
+  s_next_rtp = rtp;
+}
+
 /* Decode one chunk into s_pcm. Returns the number of PCM bytes produced and
  * reports the decoded layout, which STREAMINFO may put at a wider bit depth
  * than stream/start advertised. */
@@ -502,6 +520,11 @@ static void sendspin_player_ingest(int64_t timestamp_us, const uint8_t *pcm,
     return;
   }
 
+  const int64_t now_us = esp_timer_get_time();
+  const int32_t since_ms =
+      s_last_ingest_us ? (int32_t)((now_us - s_last_ingest_us) / 1000) : 0;
+  s_last_ingest_us = now_us;
+
   if (!s_anchor_valid) {
     s_anchor_server_us = timestamp_us;
     s_anchor_rtp = 0;
@@ -525,11 +548,23 @@ static void sendspin_player_ingest(int64_t timestamp_us, const uint8_t *pcm,
     const int32_t gap = (int32_t)((uint32_t)chunk_rtp64 - s_next_rtp);
 
     /* Continuous audio lands within a sample of the running position; the
-     * mismatch is only the microsecond quantisation of the timestamp. A real
-     * discontinuity means the server jumped, and the clock map has to be
-     * re-anchored because RTP is no longer a continuous function of it. */
-    if (gap > s_gap_tolerance || gap < -s_gap_tolerance) {
-      ESP_LOGI(TAG, "discontinuity of %" PRId32 " samples — re-anchoring", gap);
+     * mismatch is only the microsecond quantisation of the timestamp. */
+    if (gap > s_gap_tolerance) {
+      /* Audio that never arrived. The anchor still maps server time onto RTP,
+       * so the chunk belongs where its own timestamp puts it and the timeline
+       * conceals the hole; re-anchoring would restart the epoch and mute the
+       * DAC, which is far more audible than the hole itself. Anything too far
+       * ahead for the timeline is refused block by block until the play
+       * cursor reaches it, which needs no special case here. */
+      ESP_LOGI(TAG,
+               "hole of %" PRId32 " samples (%" PRId32
+               " ms of that had no chunk at all)",
+               gap, since_ms);
+      sendspin_player_skip_to((uint32_t)chunk_rtp64);
+    } else if (gap < -s_gap_tolerance) {
+      /* The server moved its own playhead back, so RTP is no longer a
+       * continuous function of server time and the map has to be rebuilt. */
+      ESP_LOGI(TAG, "server rewound %" PRId32 " samples — re-anchoring", -gap);
       sendspin_player_reset_alignment();
       s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
       audio_engine_v2_wait_for_anchor(&s_engine, esp_timer_get_time());

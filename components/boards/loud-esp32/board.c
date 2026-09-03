@@ -7,7 +7,7 @@
  * None of these amps have I2C control — each is a plain I2S input with a
  * single active-high enable/unmute pin (SD_MODE on the MAX98357A, UNMUTE
  * on the TPA3110/TPA3128). This registers a minimal DAC driver whose only
- * job is toggling that one pin from RTSP playback events (mirroring how
+ * job is toggling that one pin from playback events (mirroring how
  * Esparagus Audio Brick drives TAS58xx power modes over I2C), plus the
  * same shared-SPI-bus bring-up as the other Ethernet+display boards in
  * this family.
@@ -19,7 +19,7 @@
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 
 #ifdef CONFIG_ETH_W5500_ENABLED
 #include "driver/spi_master.h"
@@ -33,8 +33,9 @@ static bool s_board_initialized = false;
 static bool s_spi_bus_initialized = false;
 #endif
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data);
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data);
 
 static esp_err_t max98357_init(void *i2c_bus) {
   (void)i2c_bus;
@@ -128,7 +129,7 @@ esp_err_t iot_board_init(void) {
     return dac_err;
   }
 
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   s_board_initialized = true;
   ESP_LOGI(TAG, "Loud-ESP32 initialized");
@@ -140,7 +141,7 @@ esp_err_t iot_board_deinit(void) {
     return ESP_OK;
   }
 
-  rtsp_events_unregister(on_rtsp_event);
+  playback_events_unregister(on_playback_event);
   dac_set_power_mode(DAC_POWER_OFF);
 
 #ifdef CONFIG_ETH_W5500_ENABLED
@@ -154,23 +155,25 @@ esp_err_t iot_board_deinit(void) {
   return ESP_OK;
 }
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
 
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_CONNECTED:
+  case PLAYBACK_EVENT_PAUSED:
     dac_set_power_mode(DAC_POWER_STANDBY);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     dac_set_power_mode(DAC_POWER_ON);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     dac_set_power_mode(DAC_POWER_OFF);
     break;
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     break;
   }
 }

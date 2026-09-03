@@ -4,7 +4,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 
 #if CONFIG_LED_STATUS_GPIO >= 0 || CONFIG_LED_ERROR_GPIO >= 0
@@ -374,7 +374,7 @@ static void rgb_led_set_mode(led_mode_t mode) {
     rgb_led_clear();
     break;
   case LED_STEADY: {
-    // Color depends on current state - handled by on_rtsp_event
+    // Color depends on current state - handled by on_playback_event
     break;
   }
   case LED_VU:
@@ -518,23 +518,25 @@ static void apply_state(led_state_t state) {
   render_state(state);
 }
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
-  ESP_LOGD(TAG, "RTSP event: %d", event);
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
+  ESP_LOGD(TAG, "Playback event: %d", event);
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     apply_state(STATE_PAUSED);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     apply_state(STATE_PLAYING);
     break;
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     apply_state(STATE_PAUSED);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     apply_state(STATE_STANDBY);
     break;
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     break;
   }
 }
@@ -621,7 +623,7 @@ void led_init(void) {
   error_led_init();
   rgb_led_init();
 
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Start in standby
   ESP_LOGI(TAG, "Starting in STANDBY state");

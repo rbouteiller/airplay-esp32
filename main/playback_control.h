@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "playback_events.h"
 #include <stdbool.h>
 
 /**
@@ -15,14 +16,6 @@
  * For Bluetooth: sends AVRCP passthrough commands to the source device,
  * which controls playback and sends volume back via absolute volume.
  */
-
-typedef enum {
-  PLAYBACK_SOURCE_NONE,
-  PLAYBACK_SOURCE_AIRPLAY,
-  PLAYBACK_SOURCE_BLUETOOTH,
-  PLAYBACK_SOURCE_USB,
-  PLAYBACK_SOURCE_SENDSPIN,
-} playback_source_t;
 
 /**
  * Initialize playback control module.
