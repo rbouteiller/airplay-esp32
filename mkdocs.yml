@@ -111,6 +111,10 @@ nav:
       - SqueezeAMP: boards/squeezeamp.md
       - Esparagus Audio Brick: boards/esparagus-audio-brick.md
       - Esparagus Audio Brick Dual: boards/esparagus-audio-brick-dual-dac.md
+      - HiFi-ESP32: boards/hifi-esp32.md
+      - Loud-ESP32 and Esparagus Echo: boards/loud-esp32.md
+      - Amped-ESP32: boards/amped-esp32.md
+      - Louder-ESP32: boards/louder-esp32.md
       - Seeed XIAO ESP32-C5: boards/xiao-esp32c5.md
       - Custom board: boards/custom.md
   - Features:

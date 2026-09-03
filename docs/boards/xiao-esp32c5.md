@@ -26,7 +26,7 @@ There is no prebuilt binary for this board — build it yourself.
 === "PlatformIO"
 
     The official `platformio/espressif32` platform does **not** support the ESP32-C5, so
-    the `esp32c5-xiao` environment uses the community
+    every environment uses the community
     [pioarduino](https://github.com/pioarduino/platform-espressif32) platform, pinned in
     `platformio.ini`. It bundles ESP-IDF 5.5.5 and PlatformIO downloads it automatically
     on the first build — no extra setup needed.

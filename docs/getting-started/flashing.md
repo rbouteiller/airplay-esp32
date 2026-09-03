@@ -213,6 +213,254 @@ Ethernet. Bluetooth A2DP only exists on the original ESP32.
 
 </div>
 
+### HiFi boards
+
+[HiFi-ESP32 and HiFi-Esparagus](../boards/hifi-esp32.md) carry a **PCM5100** line-level
+DAC and no amplifier — they feed an amp or active speakers. The `-ESP32` boards have
+W5500 Ethernet and an OLED; the Esparagus ones do not.
+
+<div class="grid cards" markdown>
+
+-   __HiFi-ESP32__
+
+    ESP32 + PCM5100, Ethernet and OLED. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/hifi-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/hifi-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __HiFi-Esparagus__
+
+    ESP32 + PCM5100, WiFi only. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/hifi-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/hifi-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __HiFi-ESP32-S3__
+
+    ESP32-S3 + PCM5100, Ethernet and OLED.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/hifi-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/hifi-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __HiFi-Esparagus-S3__
+
+    ESP32-S3 + PCM5100, WiFi only.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/hifi-esparagus-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/hifi-esparagus-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+</div>
+
+### Loud and Echo boards
+
+[Loud-ESP32, Loud-Esparagus and Esparagus Echo](../boards/loud-esp32.md) drive
+**MAX98357A** amplifiers directly — connect speakers to the board.
+
+<div class="grid cards" markdown>
+
+-   __Loud-ESP32__
+
+    ESP32 + MAX98357A, Ethernet and OLED. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/loud-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/loud-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Loud-Esparagus__
+
+    ESP32 + dual MAX98357A, WiFi only. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/loud-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/loud-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Loud-ESP32-S3__
+
+    ESP32-S3 + dual MAX98357A, Ethernet and OLED.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/loud-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/loud-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Echo__
+
+    ESP32-S3 + dual MAX98357A, Ethernet, no display.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-echo.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-echo.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+</div>
+
+### Amped boards
+
+[Amped-ESP32 and Amped-Esparagus](../boards/amped-esp32.md) put a **PCM5100** DAC in front
+of a **TPA3110/TPA3128** amplifier. Connect speakers to the board.
+
+<div class="grid cards" markdown>
+
+-   __Amped-ESP32__
+
+    ESP32 + PCM5100 + TPA31xx, Ethernet and OLED. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/amped-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/amped-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Amped-Esparagus__
+
+    ESP32 rev M, Ethernet and a rotary encoder. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/amped-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/amped-esparagus-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Amped-ESP32-S3__
+
+    ESP32-S3 + PCM5100 + TPA31xx, Ethernet and OLED.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/amped-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/amped-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+</div>
+
+### Louder boards
+
+[Louder-ESP32](../boards/louder-esp32.md) carries a **TAS58xx** DAC and amplifier. The
+**Plus** boards have a TAS5825M, the plain ones a TAS5805M — pick the card that matches
+the board, the pinouts differ.
+
+<div class="grid cards" markdown>
+
+-   __Louder-ESP32__
+
+    ESP32 + TAS5805M, Ethernet and OLED. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/louder-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/louder-esp32-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Louder-ESP32-Plus__
+
+    ESP32 + TAS5825M, Ethernet and OLED. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/louder-esp32-plus-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/louder-esp32-plus-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Louder-ESP32-S3__
+
+    ESP32-S3 + TAS5805M, Ethernet and OLED.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/louder-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/louder-esp32-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Louder-ESP32-S3-Plus__
+
+    ESP32-S3 + TAS5825M, Ethernet and OLED.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/louder-esp32-s3-plus.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/louder-esp32-s3-plus.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+</div>
+
 Once the install finishes, unplug and re-plug the board. It boots into setup mode — carry
 on to [First boot](first-boot.md).
 

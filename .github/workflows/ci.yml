@@ -129,9 +129,14 @@ jobs:
           target: ${{ matrix.target }}
           command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build
 
+  # A pull request builds the "core" subset of the target list: enough to cover
+  # every board support directory and every chip, without a job per board
+  # variant. A push to main builds the full release matrix.
   build:
     needs: [format-check, lint-check]
     uses: ./.github/workflows/build.yml
+    with:
+      scope: ${{ github.event_name == 'pull_request' && 'core' || 'release' }}
 
   # The one required status check for this workflow. Branch protection cannot
   # depend on the jobs above directly: they are skipped on a docs-only pull

@@ -35,7 +35,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default, 16MB flash |
 | `esp32s3-uac` | Same, as a USB speaker | Extends esp32s3 + `defaults.uac` |
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
-| `esp32c5-xiao` | Seeed XIAO ESP32-C5 | Needs the pioarduino platform fork; the ESP-IDF native flow works too |
+| `esp32c5-xiao` | Seeed XIAO ESP32-C5 | The ESP-IDF native flow works too |
 | `esp32wrover-dev` | Freenove ESP32-WROVER devkit | 4MB, Bluetooth |
 | `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 16MB |
 | `squeezeamp` | ESP32 + TAS5756 DAC/amp | 8MB flash |
@@ -195,7 +195,7 @@ components/
 
 ## Code Quality
 
-**Requirements**: ESP-IDF >= 5.5.5. Sendspin needs `ws_post_handshake_cb`, which only landed in v5.5.5 — on an older 5.5.x the build dies in `sendspin_register()` unless `CONFIG_SENDSPIN_ENABLE=n`. The CI workflows pin the same version.
+**Requirements**: ESP-IDF >= 5.5.5. Sendspin needs `ws_post_handshake_cb`, which only landed in v5.5.5 — on an older 5.5.x the build dies in `sendspin_register()` unless `CONFIG_SENDSPIN_ENABLE=n`. The CI workflows pin the same version. **PlatformIO gets 5.5.5 from the pioarduino platform pinned in `[env]`**, not from `platformio/espressif32`, which is stuck on 5.5.3 — and pinning only `framework-espidf` is not enough, because 5.5.5's `tool_version_check.cmake` rejects every toolchain but `esp-14.2.0_20260121`. The platform has to move as a unit.
 
 **Formatting**: LLVM-style, 2-space indent, 80-char column limit. See `.clang-format`.
 
@@ -205,9 +205,9 @@ components/
 
 **CI** (`.github/workflows/`), five workflows:
 - `ci.yml` — on push to `main`, and on every PR to `main` or `staging`. A `changes` job skips the firmware jobs for a Markdown-only PR; `format-check` (clang-format), `lint-check` (clang-tidy against an esp32s3 build), `output-backends` (links the spdif and usb backends, which the release matrix never covers) and `build` follow. **`ci-gate` is the one required check** — it runs unconditionally and treats skipped as fine, so branch protection does not have to list every matrix job.
-- `build.yml` — reusable, and the single source of truth for the release matrix: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, and the esparagus targets that ship (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3). Uploads a merged `airplay2-receiver-<name>.bin` per target. **An ESP32 board's published binary is always the Bluetooth one** — the non-BT esparagus envs still exist, they just are not released. Every target here needs a matching `docs/firmware/<name>.json`.
+- `build.yml` — reusable, and the entry point for the release matrix. The matrix itself is `.github/workflows/targets.json`, because a matrix has to be JSON before `fromJSON` can filter it. Every entry there gets a published `airplay2-receiver-<name>.bin` and needs a matching `docs/firmware/<name>.json`. Entries flagged `"core": true` are the subset a **pull request** builds — one per chip and per `components/boards/` directory; a push to `main`, a push to `staging` and a tag build the lot. `fail-fast: false`, so a broken board no longer cancels the rest. Targets: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, the esparagus ones (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3, echo) and the Sonocotta dock boards (hifi-, loud-, amped-, louder- variants). **An ESP32 board's published binary is always the Bluetooth one** — the non-BT envs still exist, they just are not released.
 - `release.yml` — on a `v*` tag. Refuses to release unless the tag matches `version.txt` and points at a commit on `main`, then publishes the merged binaries.
-- `beta.yml` — on push to `staging`. Same matrix, published to a rolling `beta` pre-release that is deleted and recreated each time so the tag follows the staging tip. Fails if `version.txt` on staging is not strictly greater than the latest release, so **bump `version.txt` on staging right after a release**.
+- `beta.yml` — on push to `staging`. Same matrix, published to a rolling `beta` pre-release that is deleted and recreated each time so the tag follows the staging tip. Because the matrix does not fail fast, `publish` runs on `always()` and ships whatever built, warning about each missing target; it only errors when nothing built at all. Fails if `version.txt` on staging is not strictly greater than the latest release, so **bump `version.txt` on staging right after a release**.
 - `docs.yml` — `zensical build --strict --clean`, bundles the latest release binaries into `site/firmware/` and the beta ones into `site/firmware/beta/` for the browser installer, and deploys to Pages. **`docs-build` is a required check**, so its `pull_request` trigger is deliberately unfiltered.
 
 A release created with `GITHUB_TOKEN` does not fire the `release` event, so `release.yml` and `beta.yml` both `gh workflow run docs.yml` explicitly. `workflow_dispatch` is one of only two events that escape the recursion guard.
@@ -244,4 +244,5 @@ VS Code's built-in Markdown preview does not understand `!!!` admonitions or `==
 2. A `[env:<board>]` in `platformio.ini`, layering that file after `config/sdkconfig.defaults`.
 3. A board directory under `components/boards/` if it needs its own init.
 4. A page under `docs/boards/` **and** an entry in `nav:`.
-5. For a board that should ship prebuilt firmware: a matrix entry in `.github/workflows/build.yml` **and** a matching `docs/firmware/<name>.json` ESP Web Tools manifest, whose `parts[0].path` must equal `airplay2-receiver-<name>.bin`. The docs workflow drops any manifest whose binary is missing from the release.
+5. For a board that should ship prebuilt firmware: an entry in `.github/workflows/targets.json` **and** a matching `docs/firmware/<name>.json` ESP Web Tools manifest, whose `parts[0].path` must equal `airplay2-receiver-<name>.bin`. Set `"core": true` only if the board brings new board-support code or a new chip — that flag is what a pull request builds. The docs workflow drops any manifest whose binary is missing from the release.
+6. An install card (stable + beta buttons) in `docs/getting-started/flashing.md`.

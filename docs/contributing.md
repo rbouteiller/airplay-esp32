@@ -2,9 +2,11 @@
 
 ## Requirements
 
-ESP-IDF **v5.5.5 or newer**. Sendspin, which is built into every image by default,
+ESP-IDF **v5.5.5 or newer**. Sendspin, which is built into almost every image by default,
 needs the WebSocket post-handshake callback that landed in v5.5.5; on an older 5.5.x
-release build with `CONFIG_SENDSPIN_ENABLE=n`. Clone with submodules:
+release build with `CONFIG_SENDSPIN_ENABLE=n`. PlatformIO gets a matching toolchain from
+the pioarduino platform pinned in `platformio.ini`, so no manual ESP-IDF install is needed
+for that route. Clone with submodules:
 
 ```bash
 git clone --recursive https://github.com/rbouteiller/airplay-esp32
@@ -73,10 +75,22 @@ On every pull request to `main` or `staging`, and on every push to `main`:
 | `format-check` | `clang-format` dry run over all C/H files, excluding `components/u8g2` |
 | `lint-check` | `clang-tidy` against the build output |
 | `output-backends` | Builds the S/PDIF and USB output backends so every backend keeps linking |
-| `build` | Builds the full target matrix |
+| `build` | Builds the target matrix |
 
 A pull request that touches only Markdown skips the firmware jobs, so a docs typo does not
 cost an ESP-IDF toolchain build.
+
+The target list lives in `.github/workflows/targets.json`. A pull request builds only the
+entries flagged `"core": true` — enough to cover every chip and every board support
+directory — while a push to `main` and a push to `staging` build all of them. The matrix
+does not fail fast, and the beta job publishes whatever succeeded, so one board failing to
+compile does not withhold every other board's build.
+
+Adding a target means an entry in `targets.json` **and** a matching
+`docs/firmware/<name>.json` manifest whose `parts[0].path` is
+`airplay2-receiver-<name>.bin`. The docs workflow silently drops a manifest whose binary is
+missing from the release, so a target added here shows up in the browser installer only
+once a release actually carries it.
 
 Tagging `vMAJOR.MINOR.PATCH` triggers a release, which validates the tag against
 `version.txt` and publishes merged firmware binaries.

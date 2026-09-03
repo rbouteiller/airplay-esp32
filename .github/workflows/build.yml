@@ -1,52 +1,63 @@
 name: Build
 
-# Reusable firmware build. Single source of truth for the target matrix,
-# called by both ci.yml (pull requests / main) and release.yml (tags).
+# Reusable firmware build, called by ci.yml (pull requests / main), release.yml
+# (tags) and beta.yml (staging).
+#
+# The target list itself lives in targets.json next to this file, because a
+# matrix has to be JSON before fromJSON() can filter it. That file is the single
+# source of truth: every entry in it gets a published binary, and every entry
+# needs a matching docs/firmware/<name>.json manifest or the browser installer
+# has nothing to point at.
+#
+# Entries flagged "core": true also build on a pull request. The rest build only
+# on staging and on a release tag, which stops the per-PR check growing a job
+# for every board variant while still publishing all of them.
 on:
   workflow_call:
+    inputs:
+      scope:
+        description: >
+          "release" builds every target in targets.json. "core" builds only the
+          entries flagged core, which between them cover each board support
+          directory and each chip at least once.
+        type: string
+        default: release
+        required: false
 
 jobs:
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.select.outputs.include }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/workflows/targets.json
+          sparse-checkout-cone-mode: false
+
+      - name: Select the ${{ inputs.scope }} target list
+        id: select
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.scope }}" = "core" ]; then
+            filter='[.[] | select(.core)]'
+          else
+            filter='.'
+          fi
+          include="$(jq -c "$filter" .github/workflows/targets.json)"
+          echo "$include" | jq -r '.[].name' | sed 's/^/building /'
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: targets
     runs-on: ubuntu-latest
     strategy:
+      # One board failing to build must not cancel the others. Without this a
+      # single broken target takes the whole staging matrix down with it and no
+      # beta gets published for any board.
+      fail-fast: false
       matrix:
-        include:
-          - name: esp32s3
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3"
-          - name: waveshare-esp32s3
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.waveshare-esp32s3"
-          - name: esp32s2
-            target: esp32s2
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s2"
-          - name: squeezeamp-bt
-            target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt"
-          - name: squeezeamp-4m
-            target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp-4m"
-          - name: esparagus-audio-brick-bt
-            target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick;config/sdkconfig.defaults.bt"
-          - name: esparagus-audio-brick-s3
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3"
-          - name: esparagus-audio-brick-dual-dac
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac"
-          - name: esparagus-audio-brick-dual-uac
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac;config/sdkconfig.defaults.uac"
-          - name: esparagus-louder-bt
-            target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder;config/sdkconfig.defaults.bt"
-          - name: esparagus-louder-s3
-            target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder-s3"
-          - name: smartamp
-            target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp"
+        include: ${{ fromJSON(needs.targets.outputs.include) }}
     steps:
       - uses: actions/checkout@v6
         with:

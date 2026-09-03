@@ -24,6 +24,11 @@ jobs:
 
   publish:
     needs: build
+    # build.yml does not fail fast, so a broken board leaves the rest of the
+    # matrix green. Publish whatever did build rather than withholding every
+    # beta because one target is out of action; the red build job still marks
+    # the run as failed.
+    if: always() && needs.build.result != 'cancelled' && needs.build.result != 'skipped'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -40,6 +45,22 @@ jobs:
           path: beta-artifacts
           pattern: firmware-*
           merge-multiple: true
+
+      - name: Report targets that did not build
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r name; do
+            if [ ! -f "beta-artifacts/airplay2-receiver-$name.bin" ]; then
+              echo "::warning::$name did not build, no beta binary published for it"
+              missing=$((missing + 1))
+            fi
+          done < <(jq -r '.[].name' .github/workflows/targets.json)
+          if [ ! -d beta-artifacts ] || [ -z "$(ls -A beta-artifacts 2>/dev/null)" ]; then
+            echo "::error::No target built, nothing to publish"
+            exit 1
+          fi
+          echo "$missing target(s) missing from this beta."
 
       - name: Publish the rolling beta pre-release
         env:

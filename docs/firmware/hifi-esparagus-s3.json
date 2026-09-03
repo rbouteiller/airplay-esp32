@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (HiFi-Esparagus-S3)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "airplay2-receiver-hifi-esparagus-s3.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

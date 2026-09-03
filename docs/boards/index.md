@@ -14,8 +14,8 @@ flowchart TD
     AMP{"Want a built-in<br/>amplifier?"}
 
     S3["ESP32-S3 + PCM5102A<br/><small>cheapest, about $10</small>"]
-    AMPBOARD["Esparagus Audio Brick<br/>or SqueezeAMP<br/><small>speakers connect directly</small>"]
-    ESP32["ESP32 + PCM5102A<br/><small>use your own amp</small>"]
+    AMPBOARD["Esparagus Audio Brick, SqueezeAMP,<br/>Louder / Loud / Amped<br/><small>speakers connect directly</small>"]
+    ESP32["ESP32 + PCM5102A<br/>or HiFi-ESP32<br/><small>use your own amp</small>"]
 
     BT -->|no| S3
     BT -->|yes| AMP
@@ -36,7 +36,16 @@ original ESP32.
 | [SqueezeAMP](squeezeamp.md) | ESP32 | TAS5756 | yes | — | yes |
 | [Esparagus Audio Brick](esparagus-audio-brick.md) | ESP32 / S3 | TAS58xx | ESP32 only | yes | yes |
 | [Esparagus Audio Brick Dual](esparagus-audio-brick-dual-dac.md) | ESP32-S3 | 2× TAS58xx | — | yes | yes |
-| [Esparagus Louder](esparagus-audio-brick.md#esparagus-louder) | ESP32 / S3 | TAS58xx | ESP32 only | — | yes |
+| [Esparagus Louder](esparagus-audio-brick.md#esparagus-louder) | ESP32 / S3 | TAS58xx | ESP32 only | yes | yes |
+| [HiFi-ESP32](hifi-esp32.md) | ESP32 / S3 | PCM5100, line level | ESP32 only | yes | yes |
+| [HiFi-Esparagus](hifi-esp32.md) | ESP32 / S3 | PCM5100, line level | ESP32 only | — | yes |
+| [Loud-ESP32](loud-esp32.md) | ESP32 / S3 | MAX98357A | ESP32 only | yes | yes |
+| [Loud-Esparagus](loud-esp32.md) | ESP32 | 2× MAX98357A | yes | — | yes |
+| [Esparagus Echo](loud-esp32.md) | ESP32-S3 | 2× MAX98357A | — | yes | yes |
+| [Amped-ESP32](amped-esp32.md) | ESP32 / S3 | PCM5100 + TPA31xx | ESP32 only | yes | yes |
+| [Amped-Esparagus](amped-esp32.md) | ESP32 | PCM5100 + TPA31xx | yes | yes | yes |
+| [Louder-ESP32](louder-esp32.md) | ESP32 / S3 | TAS5805M | ESP32 only | yes | yes |
+| [Louder-ESP32-Plus](louder-esp32.md) | ESP32 / S3 | TAS5825M | ESP32 only | yes | yes |
 | [Seeed XIAO ESP32-C5](xiao-esp32c5.md) | ESP32-C5 | External I2S | — | — | — |
 | [Custom board](custom.md) | any | any | — | — | — |
 

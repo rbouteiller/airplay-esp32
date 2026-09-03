@@ -10,6 +10,3 @@ CONFIG_I2S_BCK_IO=14
 CONFIG_I2S_WS_IO=15
 CONFIG_I2S_DO_IO=16
 CONFIG_LED_RGB_GPIO=9
-
-# Temporarily disable Sendspin because of build errors
-CONFIG_SENDSPIN_ENABLE=n

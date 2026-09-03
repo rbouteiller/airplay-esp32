@@ -38,6 +38,40 @@ with two amplifiers: stereo at I2C address 0x4C and a second at 0x4D, wired eith
 bridged (PBTL) mono output or as a second stereo pair. `-dual-uac` adds USB audio to the
 same board.
 
+## Sonocotta audio dock boards
+
+The [HiFi](../boards/hifi-esp32.md), [Loud](../boards/loud-esp32.md),
+[Amped](../boards/amped-esp32.md) and [Louder](../boards/louder-esp32.md) families all
+come in an `-esp32` form with an Ethernet jack and an OLED header, and an `-esparagus`
+form without either. Bluetooth Classic exists only on the original ESP32, so no S3
+environment has a `-bt` variant.
+
+| Environment | Chip | DAC / amp | Flash | Bluetooth |
+| --- | --- | --- | --- | :-: |
+| `hifi-esp32` | ESP32 | PCM5100 | 8 MB | — |
+| `hifi-esp32-bt` | ESP32 | PCM5100 | 8 MB | yes |
+| `hifi-esparagus` | ESP32 | PCM5100 | 8 MB | — |
+| `hifi-esparagus-bt` | ESP32 | PCM5100 | 8 MB | yes |
+| `hifi-esp32-s3` | ESP32-S3 | PCM5100 | 8 MB | — |
+| `hifi-esparagus-s3` | ESP32-S3 | PCM5100 | 8 MB | — |
+| `loud-esp32` | ESP32 | MAX98357A | 8 MB | — |
+| `loud-esp32-bt` | ESP32 | MAX98357A | 8 MB | yes |
+| `loud-esparagus` | ESP32 | 2× MAX98357A | 8 MB | — |
+| `loud-esparagus-bt` | ESP32 | 2× MAX98357A | 8 MB | yes |
+| `loud-esp32-s3` | ESP32-S3 | 2× MAX98357A | 8 MB | — |
+| `esparagus-echo` | ESP32-S3 | 2× MAX98357A | 8 MB | — |
+| `amped-esp32` | ESP32 | PCM5100 + TPA31xx | 8 MB | — |
+| `amped-esp32-bt` | ESP32 | PCM5100 + TPA31xx | 8 MB | yes |
+| `amped-esparagus` | ESP32 | PCM5100 + TPA31xx | 8 MB | — |
+| `amped-esparagus-bt` | ESP32 | PCM5100 + TPA31xx | 8 MB | yes |
+| `amped-esp32-s3` | ESP32-S3 | PCM5100 + TPA31xx | 8 MB | — |
+| `louder-esp32` | ESP32 | TAS5805M | 8 MB | — |
+| `louder-esp32-bt` | ESP32 | TAS5805M | 8 MB | yes |
+| `louder-esp32-plus` | ESP32 | TAS5825M | 8 MB | — |
+| `louder-esp32-plus-bt` | ESP32 | TAS5825M | 8 MB | yes |
+| `louder-esp32-s3` | ESP32-S3 | TAS5805M | 8 MB | — |
+| `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | 8 MB | — |
+
 ## Targets without a PlatformIO environment
 
 These have sdkconfig defaults and are built through ESP-IDF directly.
@@ -54,20 +88,31 @@ idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults
 
 ## Which builds get a prebuilt binary
 
-CI builds a subset of environments on every push and attaches them to each release. These
-are the ones available in the [browser installer](../getting-started/flashing.md):
+CI builds a subset of environments and attaches them to each release. These are the ones
+available in the [browser installer](../getting-started/flashing.md):
 
 `esp32s3`, `waveshare-esp32s3`, `esp32s2`, `squeezeamp-bt`, `squeezeamp-4m`, `smartamp`,
 `esparagus-audio-brick-bt`, `esparagus-audio-brick-s3`, `esparagus-audio-brick-dual-dac`,
-`esparagus-audio-brick-dual-uac`, `esparagus-louder-bt`, `esparagus-louder-s3`.
+`esparagus-audio-brick-dual-uac`, `esparagus-louder-bt`, `esparagus-louder-s3`,
+`esparagus-echo`, `hifi-esp32-bt`, `hifi-esparagus-bt`, `hifi-esp32-s3`,
+`hifi-esparagus-s3`, `loud-esp32-bt`, `loud-esparagus-bt`, `loud-esp32-s3`,
+`amped-esp32-bt`, `amped-esparagus-bt`, `amped-esp32-s3`, `louder-esp32-bt`,
+`louder-esp32-plus-bt`, `louder-esp32-s3`, `louder-esp32-s3-plus`.
+
+The list lives in `.github/workflows/targets.json`, and each entry needs a matching
+`docs/firmware/<name>.json` manifest for the installer to offer it.
 
 Everything else you build yourself. On an ESP32 board that can do Bluetooth the published
-binary always includes it, so there is no prebuilt `squeezeamp`, `esparagus-audio-brick` or
-`esparagus-louder` — build one of those yourself if you want the RAM and flash back.
+binary always includes it, so there is no prebuilt `squeezeamp`, `esparagus-audio-brick`,
+`esparagus-louder`, `hifi-esp32`, `loud-esp32`, `amped-esp32` or `louder-esp32` — build
+one of those yourself if you want the RAM and flash back.
 
-The same matrix also runs on every push to `staging` and publishes a rolling
+The same list runs on every push to `staging` and publishes a rolling
 [beta](../getting-started/flashing.md#beta-builds) pre-release, so each of these boards
-has an untested build of the current development tip available too.
+has an untested build of the current development tip available too. A pull request builds
+only the entries flagged `"core": true`, which cover every chip and every board support
+directory without a job per variant, and the matrix does not fail fast, so one board
+failing to compile no longer stops the others being published.
 
 ## How sdkconfig layering works
 

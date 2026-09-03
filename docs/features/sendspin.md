@@ -300,10 +300,10 @@ pairing PIN and token are only meaningful once it is active.
 ## Building
 
 Nothing has to be built to try Sendspin — every shipping image carries it except
-`smartamp`, and `esp32wrover-dev` alongside it. Both pair Bluetooth with a 1.92 MB app
-slot and have only 4–5 % of it free before Sendspin is added, which is too little to
-absorb any later growth. It also needs **PSRAM**, so it is absent from a board configured
-without any.
+`smartamp` and `esp32wrover-dev`, which are excluded on flash grounds: both pair Bluetooth
+with a 1.92 MB app slot and have only 4–5 % of it free before Sendspin is added, which is
+too little to absorb any later growth. It also needs **PSRAM**, so it is absent from a
+board configured without any.
 
 | Option | Default | Purpose |
 | --- | --- | --- |

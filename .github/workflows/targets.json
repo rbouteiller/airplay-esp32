@@ -1,0 +1,164 @@
+[
+  {
+    "name": "esp32s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3",
+    "core": true
+  },
+  {
+    "name": "waveshare-esp32s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.waveshare-esp32s3",
+    "core": true
+  },
+  {
+    "name": "esp32s2",
+    "target": "esp32s2",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s2",
+    "core": true
+  },
+  {
+    "name": "squeezeamp-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt",
+    "core": true
+  },
+  {
+    "name": "squeezeamp-4m",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp-4m",
+    "core": true
+  },
+  {
+    "name": "smartamp",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp",
+    "core": true
+  },
+  {
+    "name": "esparagus-audio-brick-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick;config/sdkconfig.defaults.bt",
+    "core": true
+  },
+  {
+    "name": "esparagus-audio-brick-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3",
+    "core": false
+  },
+  {
+    "name": "esparagus-audio-brick-dual-dac",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac",
+    "core": false
+  },
+  {
+    "name": "esparagus-audio-brick-dual-uac",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac;config/sdkconfig.defaults.uac",
+    "core": true
+  },
+  {
+    "name": "esparagus-louder-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "esparagus-louder-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder-s3",
+    "core": false
+  },
+  {
+    "name": "esparagus-echo",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-echo",
+    "core": false
+  },
+  {
+    "name": "hifi-esp32-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32;config/sdkconfig.defaults.bt",
+    "core": true
+  },
+  {
+    "name": "hifi-esparagus-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "hifi-esp32-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-s3",
+    "core": true
+  },
+  {
+    "name": "hifi-esparagus-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus-s3",
+    "core": false
+  },
+  {
+    "name": "loud-esp32-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32;config/sdkconfig.defaults.bt",
+    "core": true
+  },
+  {
+    "name": "loud-esparagus-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esparagus;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "loud-esp32-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32-s3",
+    "core": true
+  },
+  {
+    "name": "amped-esp32-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "amped-esparagus-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esparagus;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "amped-esp32-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-s3",
+    "core": false
+  },
+  {
+    "name": "louder-esp32-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "louder-esp32-plus-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-plus;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "louder-esp32-s3",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3",
+    "core": false
+  },
+  {
+    "name": "louder-esp32-s3-plus",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-plus",
+    "core": false
+  }
+]

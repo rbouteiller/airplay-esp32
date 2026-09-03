@@ -1,0 +1,16 @@
+{
+  "name": "ESP32 AirPlay 2 Receiver (Louder-ESP32-S3-Plus)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "airplay2-receiver-louder-esp32-s3-plus.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

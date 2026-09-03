@@ -176,7 +176,8 @@ Clone with `--recursive` to avoid this in the first place.
 
 **Wrong ESP-IDF version.** The project requires **v5.5.5 or newer**. Sendspin needs the
 WebSocket post-handshake callback added in that release; an older 5.5.x builds only with
-`CONFIG_SENDSPIN_ENABLE=n`.
+`CONFIG_SENDSPIN_ENABLE=n`. PlatformIO gets 5.5.5 from the pioarduino platform pinned in
+`platformio.ini`; the official `platformio/espressif32` platform is still on 5.5.3.
 
 ### Changes to sdkconfig defaults have no effect
 
@@ -190,9 +191,9 @@ pio run -e <env> -t build
 
 ### PlatformIO cannot find a platform for my chip
 
-The official `platformio/espressif32` platform does not support the ESP32-C5. The
-`esp32c5-xiao` environment pins the community pioarduino platform instead — see
-[Seeed XIAO ESP32-C5](boards/xiao-esp32c5.md).
+The official `platformio/espressif32` platform does not support the ESP32-C5, and is stuck
+on ESP-IDF 5.5.3. `platformio.ini` pins the community pioarduino platform for every
+environment instead — see [Seeed XIAO ESP32-C5](boards/xiao-esp32c5.md).
 
 ## Still stuck?
 

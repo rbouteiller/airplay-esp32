@@ -10,7 +10,3 @@ CONFIG_I2S_WS_IO=25
 CONFIG_I2S_DO_IO=22
 CONFIG_DAC_ENABLE_GPIO=13
 CONFIG_LED_RGB_GPIO=33
-
-# Temporarily disable Sendspin because of build errors
-CONFIG_SENDSPIN_ENABLE=n
-
