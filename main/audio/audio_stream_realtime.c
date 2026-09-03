@@ -26,7 +26,15 @@
 #define RESEND_ERROR_BACKOFF_US  300000 // Backoff after sendto failure
 #define MAX_RESEND_GAP           RESEND_WINDOW_BITS
 
-#if CONFIG_FREERTOS_UNICORE
+#if CONFIG_FREERTOS_UNICORE || CONFIG_AUDIO_OUTPUT_USB_HOST
+/* USB-host builds: the playback task (44.1->48 resampler + iso-OUT pacing)
+ * runs at high priority on core 1 and costs ~50% of it for a 48 kHz sink.
+ * Co-residing there, this receive task's burst-drain latency grows enough
+ * to overflow the lwIP UDP mailbox — measured 25-40% RTP arrival loss on
+ * 48 kHz devices (realtime/UDP mode unusable), zero loss at 44.1 kHz.
+ * Pinned to core 0 the loss goes to zero: WiFi/lwIP there are bursty
+ * peers, not a continuous high-priority preemptor. Non-USB builds keep
+ * the upstream layout. */
 #define AUDIO_TASK_CORE 0
 #else
 #define AUDIO_TASK_CORE 1

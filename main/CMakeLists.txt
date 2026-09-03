@@ -58,6 +58,8 @@ if(CONFIG_AUDIO_OUTPUT_SPDIF)
     list(APPEND SRC_FILES "audio/audio_output_spdif.c")
 elseif(CONFIG_AUDIO_OUTPUT_USB)
     list(APPEND SRC_FILES "audio/audio_output_usb.c")
+elseif(CONFIG_AUDIO_OUTPUT_USB_HOST)
+    list(APPEND SRC_FILES "audio/audio_output_usb_host.c")
 else()
     list(APPEND SRC_FILES "audio/audio_output.c")
 endif()
@@ -122,6 +124,7 @@ set( DEPS
     audio-resampler
     esp_eth
     spiffs_storage
+    usb
 )
 
 # Bluetooth component only needed when A2DP is enabled
