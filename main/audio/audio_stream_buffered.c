@@ -17,6 +17,9 @@
 
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
 #define AUDIO_BUFFERED_STACK_SIZE  4096
+// Bounded hand-off to the decode worker.  Long enough to ride out a decode
+// hiccup, short enough that a wedged decoder cannot block stream teardown.
+#define BUFFERED_ENQUEUE_TIMEOUT_MS 200U
 
 static const char *TAG = "audio_buf";
 
@@ -102,10 +105,12 @@ static void buffered_audio_task(void *pvParameters) {
     }
 
     while (stream->running) {
-      // Back-pressure: if buffer is nearly full, pause reading to let TCP
-      // flow control slow down the sender. This prevents buffer overflow
-      // and keeps frames in order.
-      while (audio_buffer_is_nearly_full(&state->buffer) && stream->running) {
+      // Back-pressure: if the pipeline is nearly full, pause reading to let
+      // TCP flow control slow down the sender. This prevents overflow and
+      // keeps frames in order.
+      while (stream->running &&
+             (audio_decode_worker_is_nearly_full(state->decode_worker) ||
+              audio_engine_v2_is_nearly_full(&state->engine_v2))) {
         vTaskDelay(pdMS_TO_TICKS(10));
       }
 
@@ -132,11 +137,20 @@ static void buffered_audio_task(void *pvParameters) {
       uint32_t timestamp =
           (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
 
+      // Snapshot the epoch before the gate so a seek that lands between the
+      // gate and the decode invalidates this packet rather than letting it
+      // reach the timeline of the new segment.
+      const uint32_t epoch = audio_epoch_get(&state->engine_v2.epoch);
+      (void)__atomic_add_fetch(&state->engine_v2.diag_rx_packets, 1U,
+                               __ATOMIC_RELAXED);
+
       // Drop stale pre-seek/old-track packets before AES and AAC work.  The
       // bytes still have to be drained from TCP (done above), but they no
       // longer consume decoder time or enter the PCM ring buffer.
       if (!audio_stream_accept_timestamp(state, timestamp)) {
         state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(&state->engine_v2.diag_gate_drops, 1U,
+                                 __ATOMIC_RELAXED);
         continue;
       }
 
@@ -161,9 +175,29 @@ static void buffered_audio_task(void *pvParameters) {
       state->blocks_read++;
       state->blocks_read_in_sequence++;
 
-      if (!audio_stream_process_accepted_frame(state, timestamp, decrypted,
-                                               (size_t)decrypted_len)) {
+      // Hand the access unit to the decode worker.  Decoding on this task
+      // would stall the TCP reader for the duration of every AAC frame, which
+      // is what previously turned a transient decode hiccup into dropped
+      // packets and a visible gap.
+      const audio_encoded_packet_t encoded = {
+          .epoch = epoch,
+          .rtp_timestamp = timestamp,
+          .payload = decrypted,
+          .payload_len = (size_t)decrypted_len,
+          .prime_mute = audio_stream_aac_prime_mute_wanted(state),
+      };
+
+      const audio_decode_enqueue_result_t enq = audio_decode_worker_enqueue(
+          state->decode_worker, &encoded, BUFFERED_ENQUEUE_TIMEOUT_MS);
+      if (enq == AUDIO_DECODE_ENQUEUE_OK) {
+        (void)__atomic_add_fetch(&state->engine_v2.diag_enqueue_ok, 1U,
+                                 __ATOMIC_RELAXED);
+      } else {
         state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(enq == AUDIO_DECODE_ENQUEUE_RETRY
+                                     ? &state->engine_v2.diag_enqueue_retries
+                                     : &state->engine_v2.diag_queue_drops,
+                                 1U, __ATOMIC_RELAXED);
       }
     }
 

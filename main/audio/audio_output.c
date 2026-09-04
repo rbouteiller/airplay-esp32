@@ -77,6 +77,10 @@ static uint64_t output_submitted_frames;
 static uint64_t output_sent_frames;
 static uint64_t output_lost_frames;
 static uint32_t output_underruns;
+/* esp_timer reading taken when output_sent_frames last advanced, so the depth
+ * can be interpolated between interrupts instead of stepping a descriptor at a
+ * time.  Zero means no completion has been seen yet. */
+static int64_t output_sent_us;
 
 static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
                                            i2s_event_data_t *event,
@@ -87,6 +91,7 @@ static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
     __atomic_add_fetch(&output_sent_frames,
                        (uint64_t)(event->size / (2U * sizeof(int16_t))),
                        __ATOMIC_RELAXED);
+    __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
   }
   return false;
 }
@@ -95,6 +100,7 @@ static void output_cursor_reset(void) {
   __atomic_store_n(&output_submitted_frames, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&output_sent_frames, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&output_lost_frames, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&output_sent_us, 0, __ATOMIC_RELAXED);
 }
 
 /* Frames queued in the DMA ring ahead of the next write.  Called from the
@@ -435,14 +441,33 @@ uint32_t audio_output_get_hardware_latency_us(void) {
 }
 
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
-  // Sample the queue depth first, then the clock: any DMA completion that
-  // lands between the two makes the reported depth slightly stale in the
-  // conservative direction (we believe the pipeline is fuller, i.e. that the
-  // next sample plays later, than it really is).  The error is bounded by
-  // one descriptor period and is absorbed by the position servo.
+  // Sample the queue depth first, then the completion timestamp: any DMA
+  // completion that lands between the two pairs a stale (deeper) depth with a
+  // fresh timestamp, so the interpolation below subtracts nothing and the
+  // result errs in the conservative direction (we believe the pipeline is
+  // fuller, i.e. that the next sample plays later, than it really is).
   uint32_t queued = output_queued_frames();
+  const int64_t sent_us = __atomic_load_n(&output_sent_us, __ATOMIC_RELAXED);
+  const int64_t sampled_us = esp_timer_get_time();
+
+  // The completion ISR only fires once per descriptor, so a raw depth steps in
+  // I2S_DMA_FRAME_NUM jumps -- 5.8 ms at 44.1 kHz, which swamps a servo trying
+  // to hold sub-millisecond alignment.  The DAC drains at a fixed rate between
+  // interrupts, so charge off the elapsed time since the last completion.  The
+  // clamp covers a late ISR: past one descriptor the next completion is
+  // already due and extrapolating further would invent drain that may not have
+  // happened.
+  if (sent_us > 0 && sampled_us > sent_us) {
+    uint64_t drained =
+        ((uint64_t)(sampled_us - sent_us) * OUTPUT_RATE) / 1000000ULL;
+    if (drained > I2S_DMA_FRAME_NUM) {
+      drained = I2S_DMA_FRAME_NUM;
+    }
+    queued = drained < queued ? queued - (uint32_t)drained : 0U;
+  }
+
   if (now_us) {
-    *now_us = esp_timer_get_time();
+    *now_us = sampled_us;
   }
   if (pipeline_us) {
     *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / OUTPUT_RATE);

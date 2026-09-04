@@ -7,17 +7,21 @@
 #include "lwip/sockets.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "audio_buffer.h"
+#include "audio_decode_worker.h"
 #include "audio_decoder.h"
+#include "audio_engine_v2.h"
+#include "audio_packet.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
 
-typedef struct {
+typedef struct audio_receiver_state {
   audio_stream_t *stream;
   audio_stream_t *realtime_stream;
   audio_stream_t *buffered_stream;
@@ -25,6 +29,38 @@ typedef struct {
   audio_decoder_t *decoder;
   audio_buffer_t buffer;
   audio_timing_t timing;
+
+  // AirPlay 2 buffered path only.  Realtime (AirPlay 1) keeps using
+  // buffer + timing above; the two are mutually exclusive at runtime.
+  //
+  // The engine owns ~790 KB of PSRAM, so it is created lazily on the first
+  // buffered SETUP and then kept: tearing it down would race the playback
+  // task that calls audio_engine_v2_render() on every I2S refill, and a
+  // device that only ever serves AirPlay 1 never pays for it.
+  audio_engine_v2_t engine_v2;
+  bool engine_v2_ready;
+  audio_decode_worker_t *decode_worker;
+  // Serialises the stateful AAC decoder between the decode worker task and
+  // audio_receiver_set_format()/stop(), which destroy and recreate it.
+  SemaphoreHandle_t decoder_mutex;
+
+  // AAC RTP continuity diagnostic for the buffered path: consecutive frames
+  // must advance by exactly AUDIO_TIMELINE_FRAME_SAMPLES.
+  uint32_t aac_diag_epoch;
+  uint32_t aac_diag_last_rtp;
+  bool aac_diag_rtp_valid;
+
+  // Last SETRATEANCHORTIME, kept in the sender's PTP domain so it can be
+  // re-armed once the PTP clock locks.  An anchor that arrives while the
+  // offset is still 0 maps to a wrapped RTP position and must not be used.
+  bool engine_v2_anchor_pending;
+  // Which clock the anchor above is expressed in, taken from the timeline ID
+  // the sender supplied.  PTP and NTP are unrelated absolute timelines, so
+  // reading the offset from the other one puts the anchor decades away.
+  bool engine_v2_anchor_uses_ptp;
+  uint32_t engine_v2_anchor_rtp;
+  uint64_t engine_v2_anchor_network_ns;
+  int64_t engine_v2_playout_offset_ns;
 
   audio_stats_t stats;
 
@@ -107,6 +143,16 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
                                          uint32_t timestamp,
                                          const uint8_t *audio_data,
                                          size_t audio_len);
+
+// True when the next decoded AAC frame is a post-seek/resume priming frame and
+// must be silenced.  Read where the block counters are advanced, because the
+// buffered path advances them on the TCP reader and decodes elsewhere.
+bool audio_stream_aac_prime_mute_wanted(const audio_receiver_state_t *state);
+
+// Buffered path: decode one encoded access unit and publish the PCM into the
+// engine timeline.  Runs on the decode worker task.
+bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
+                                        const audio_encoded_packet_t *packet);
 
 // Convenience entry point for realtime paths: gate, then decode and queue.
 bool audio_stream_process_frame(audio_receiver_state_t *state,

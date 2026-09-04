@@ -31,3 +31,11 @@ CONFIG_LED_STATUS_BRIGHTNESS=80
 CONFIG_LED_STATUS_PLAYING_STEADY=y
 CONFIG_LED_STATUS_PAUSED_BLINK_MEDIUM=y
 CONFIG_LED_STATUS_STANDBY_BLINK_SLOW=y
+
+# Receive path for the AirPlay 2 buffered stream.  Kept here rather than in
+# sdkconfig.defaults.bt so the BT and non-BT SqueezeAMP images differ only by
+# Bluetooth, which makes them directly comparable when measuring seek latency.
+# TCP_RECVMBOX_SIZE gates the window independently of TCP_WND: the default 6
+# entries cap outstanding data at ~6*MSS = 8640 B.
+CONFIG_LWIP_TCP_WND_DEFAULT=15840
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

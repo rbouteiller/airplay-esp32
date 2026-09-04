@@ -1323,7 +1323,9 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     uint8_t plist_body[256];
     size_t plist_len = bplist_build_stream_setup(
         plist_body, sizeof(plist_body), stream_type, response_data_port,
-        conn->control_port, AP2_AUDIO_BUFFER_SIZE);
+        conn->control_port,
+        stream_type == 103 ? AP2_AUDIO_BUFFER_SIZE
+                           : AP2_REALTIME_AUDIO_BUFFER_SIZE);
     if (plist_len == 0) {
       audio_receiver_stop();
       rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
@@ -1747,7 +1749,7 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   // If flushFromSeq is present → deferred flush: keep playing existing buffered
   //   content until flushUntilTS is reached, then discard and start fresh.
   //   The phone simultaneously starts streaming the new track, which fills the
-  //   buffer beyond flushUntilTS; audio_timing_read detects the boundary and
+  //   buffer beyond flushUntilTS; the decode task detects the boundary and
   //   triggers the bulk-flush at the right moment.
   bool has_deferred = false;
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {

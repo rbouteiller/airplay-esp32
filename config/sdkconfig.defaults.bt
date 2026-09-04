@@ -65,6 +65,10 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 # ~55 KB free), not the largest-free-block.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 CONFIG_LWIP_TCP_WND_DEFAULT=15840
+# The netconn receive mailbox gates the window just as hard as TCP_WND itself:
+# at the default 6 entries only ~6*MSS = 8640 B can be outstanding, so the
+# window above was never reachable.  ESP-IDF recommends TCP_WND/MSS + 2 = 13.
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
 
 # Reduce IRAM usage: WiFi ISR optimisations moved to flash (saves ~12 KB)
 CONFIG_ESP_WIFI_IRAM_OPT=n
