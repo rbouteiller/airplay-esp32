@@ -1,0 +1,14 @@
+if DAC_ES8388
+
+    config ES8388_MAX_VOLUME
+        int "Maximum DAC volume (dB)"
+        range -96 0
+        default -20
+        help
+            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
+            The ES8388 master DAC volume register range is 0 dB to -96 dB.
+            A value of -20 means AirPlay full volume maps to -20 dB on the DAC
+            (this board also has an external amp stage after the codec, so
+            0 dB here would usually be uncomfortably loud).
+
+endif # DAC_ES8388

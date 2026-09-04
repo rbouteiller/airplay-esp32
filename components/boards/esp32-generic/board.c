@@ -12,9 +12,52 @@
 #include "esp_check.h"
 #include "esp_log.h"
 
+#ifdef CONFIG_DAC_ES8388
+#include "dac.h"
+#include "dac_es8388.h"
+#include "driver/i2c_master.h"
+#include "settings.h"
+#endif
+
 static const char TAG[] = "ESP32-Generic";
 
 static bool s_board_initialized = false;
+
+#ifdef CONFIG_DAC_ES8388
+static i2c_master_bus_handle_t s_i2c_dac_bus_handle = NULL;
+
+static esp_err_t init_es8388(void) {
+  if (CONFIG_DAC_I2C_SDA < 0 || CONFIG_DAC_I2C_SCL < 0) {
+    ESP_LOGW(TAG, "DAC_ES8388 enabled but DAC_I2C_SDA/SCL not set — skipping");
+    return ESP_OK;
+  }
+
+  i2c_master_bus_config_t i2c_cfg = {
+      .i2c_port = 0,
+      .sda_io_num = CONFIG_DAC_I2C_SDA,
+      .scl_io_num = CONFIG_DAC_I2C_SCL,
+      .clk_source = I2C_CLK_SRC_DEFAULT,
+      .glitch_ignore_cnt = 7,
+      .flags.enable_internal_pullup = true,
+  };
+  esp_err_t err = i2c_new_master_bus(&i2c_cfg, &s_i2c_dac_bus_handle);
+  ESP_RETURN_ON_ERROR(err, TAG, "Failed to initialize DAC I2C bus");
+  ESP_LOGI(TAG, "DAC I2C bus initialized: sda=%d, scl=%d", CONFIG_DAC_I2C_SDA,
+           CONFIG_DAC_I2C_SCL);
+
+  dac_register(&dac_es8388_ops);
+  err = dac_init(s_i2c_dac_bus_handle);
+  ESP_RETURN_ON_ERROR(err, TAG, "Failed to initialize ES8388 DAC");
+
+  // Restore saved volume — the codec boots at 0dB until programmed.
+  float vol_db;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    dac_set_volume(vol_db);
+  }
+
+  return ESP_OK;
+}
+#endif
 
 // -1 disables the pin, and the runtime test that used to guard this came too
 // late: the shift below is a constant the compiler folds either way.
@@ -63,6 +106,13 @@ esp_err_t iot_board_init(void) {
   esp_err_t err = init_mute_gpio();
   if (err != ESP_OK) {
     return err;
+  }
+#endif
+
+#ifdef CONFIG_DAC_ES8388
+  esp_err_t es8388_err = init_es8388();
+  if (es8388_err != ESP_OK) {
+    return es8388_err;
   }
 #endif
 

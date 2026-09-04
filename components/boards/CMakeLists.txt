@@ -1,6 +1,6 @@
 # During component requirements scanning, CONFIG_ vars are not yet available.
 # We must declare all possible dependencies upfront.
-set(PRIV_REQUIRES driver nvs_flash esp_driver_i2c esp_driver_spi esp_adc dac dac_tas57xx dac_tas58xx dac_es8311 esp_eth bt main board_utils)
+set(PRIV_REQUIRES driver nvs_flash esp_driver_i2c esp_driver_spi esp_adc dac dac_tas57xx dac_tas58xx dac_es8311 dac_es8388 esp_eth bt main board_utils)
 
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND PRIV_REQUIRES espressif__esp_lvgl_port)

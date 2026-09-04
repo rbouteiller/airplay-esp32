@@ -21,9 +21,17 @@ menu "DAC Configuration"
             Build the ES8311 stereo audio codec driver.
             The board must register it at runtime via dac_register().
 
+    config DAC_ES8388
+        bool "ESS ES8388 (stereo audio codec)"
+        default n
+        help
+            Build the ES8388 stereo audio codec driver (e.g. AI-Thinker
+            ESP32-A1S Audio Kit). The board must register it at runtime via
+            dac_register().
+
     config DAC_CONTROLS_VOLUME
         bool
-        default y if DAC_TAS57XX || DAC_TAS58XX || DAC_ES8311
+        default y if DAC_TAS57XX || DAC_TAS58XX || DAC_ES8311 || DAC_ES8388
         help
             Hidden option. Set automatically when a hardware DAC driver is enabled.
             When true, the DAC handles volume control and software attenuation
