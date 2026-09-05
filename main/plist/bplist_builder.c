@@ -48,6 +48,86 @@ static bool bplist_write_ascii_string(uint8_t *out, size_t capacity,
   return true;
 }
 
+// Decode one UTF-8 sequence. Invalid bytes decode to U+FFFD and advance by 1.
+static uint32_t bplist_utf8_decode(const uint8_t **cursor) {
+  const uint8_t *p = *cursor;
+  uint32_t cp;
+  size_t extra;
+  if (p[0] < 0x80) {
+    cp = p[0];
+    extra = 0;
+  } else if ((p[0] & 0xE0) == 0xC0) {
+    cp = p[0] & 0x1F;
+    extra = 1;
+  } else if ((p[0] & 0xF0) == 0xE0) {
+    cp = p[0] & 0x0F;
+    extra = 2;
+  } else if ((p[0] & 0xF8) == 0xF0) {
+    cp = p[0] & 0x07;
+    extra = 3;
+  } else {
+    *cursor = p + 1;
+    return 0xFFFD;
+  }
+  for (size_t i = 1; i <= extra; i++) {
+    if ((p[i] & 0xC0) != 0x80) {
+      *cursor = p + 1;
+      return 0xFFFD;
+    }
+    cp = (cp << 6) | (p[i] & 0x3F);
+  }
+  *cursor = p + extra + 1;
+  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+    return 0xFFFD;
+  }
+  return cp;
+}
+
+// Unicode string object (marker 0x6X): UTF-16BE, length in code units.
+static bool bplist_write_unicode_string(uint8_t *out, size_t capacity,
+                                        size_t *pos, const char *value) {
+  const uint8_t *p = (const uint8_t *)value;
+  size_t units = 0;
+  while (*p) {
+    units += (bplist_utf8_decode(&p) >= 0x10000) ? 2 : 1;
+  }
+  if (!bplist_write_length(out, capacity, pos, 0x60, units) ||
+      !bplist_has_room(*pos, units * 2, capacity)) {
+    return false;
+  }
+  p = (const uint8_t *)value;
+  while (*p) {
+    uint32_t cp = bplist_utf8_decode(&p);
+    uint16_t u[2];
+    size_t n = 1;
+    if (cp >= 0x10000) {
+      cp -= 0x10000;
+      u[0] = (uint16_t)(0xD800 | (cp >> 10));
+      u[1] = (uint16_t)(0xDC00 | (cp & 0x3FF));
+      n = 2;
+    } else {
+      u[0] = (uint16_t)cp;
+    }
+    for (size_t i = 0; i < n; i++) {
+      out[(*pos)++] = (uint8_t)(u[i] >> 8);
+      out[(*pos)++] = (uint8_t)u[i];
+    }
+  }
+  return true;
+}
+
+// User-supplied UTF-8 string: ASCII object when possible, else UTF-16BE.
+// Writing non-ASCII bytes as an ASCII object makes iOS show mojibake.
+static bool bplist_write_string(uint8_t *out, size_t capacity, size_t *pos,
+                                const char *value) {
+  for (const uint8_t *p = (const uint8_t *)value; *p; p++) {
+    if (*p >= 0x80) {
+      return bplist_write_unicode_string(out, capacity, pos, value);
+    }
+  }
+  return bplist_write_ascii_string(out, capacity, pos, value);
+}
+
 static bool bplist_write_data(uint8_t *out, size_t capacity, size_t *pos,
                               const uint8_t *data, size_t len) {
   if (!bplist_write_length(out, capacity, pos, 0x40, len) ||
@@ -549,7 +629,7 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
     return 0;
   }
   ADD_OFFSET(); // 19: device name
-  if (!bplist_write_ascii_string(out, capacity, &pos, device_name)) {
+  if (!bplist_write_string(out, capacity, &pos, device_name)) {
     return 0;
   }
   ADD_OFFSET(); // 20: "audioFormats"

@@ -289,7 +289,8 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
  * @param out Output buffer
  * @param capacity Buffer capacity
  * @param device_id Device MAC string
- * @param device_name User-visible AirPlay device name
+ * @param device_name User-visible AirPlay device name (UTF-8; non-ASCII
+ *                    is emitted as a UTF-16BE unicode string object)
  * @param public_key HAP Ed25519 public key
  * @param public_key_len Public key length
  * @param features AirPlay feature bitmask
