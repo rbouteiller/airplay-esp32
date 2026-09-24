@@ -81,6 +81,21 @@ menu "Board Configuration"
         bool
         default y if BOARD_SQUEEZEAMP || BOARD_SQUEEZEAMP_4M
 
+    config I2S_OUTPUT_ROLE_SLAVE
+        bool "External device supplies I2S BCLK/LRCLK"
+        default n
+        help
+            Configure the ESP32 I2S TX channel as a clock slave. The external
+            device must continuously supply BCLK and LRCLK.
+
+    config I2S_OUTPUT_32BIT_SLOTS
+        bool "Transmit 16-bit PCM in 32-bit I2S slots"
+        default n
+        help
+            Use 32-bit DMA words and I2S slots, with each 16-bit PCM sample
+            aligned to the most significant bits. Enable this only when the
+            external I2S device requires 64 BCLK periods per stereo frame.
+
     menu "Pin Configuration"
         menu "LED GPIOs"
             config LED_STATUS_GPIO

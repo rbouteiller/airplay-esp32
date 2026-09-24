@@ -42,8 +42,27 @@
 //   I2S_DMA_DESC_NUM × I2S_DMA_FRAME_NUM
 // which at OUTPUT_RATE gives the hardware pipeline delay in µs.
 // Keep these in sync with the i2s_chan_config_t initialisation below.
-#define I2S_DMA_DESC_NUM  8
+#define I2S_DMA_DESC_NUM 8
+
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+// Match one DMA descriptor to one decoded AirPlay frame. Splitting a
+// 352-frame write across descriptors makes an externally clocked writer wait
+// for multiple descriptor recycle events.
+#define I2S_DMA_FRAME_NUM FRAME_SAMPLES
+#define I2S_DMA_RING_US \
+  (((uint64_t)I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM * 1000000ULL) / OUTPUT_RATE)
+#define I2S_WRITE_WARNING_US (I2S_DMA_RING_US + 20000ULL)
+#else
 #define I2S_DMA_FRAME_NUM 256
+#endif
+
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+#define I2S_OUTPUT_DATA_WIDTH  I2S_DATA_BIT_WIDTH_32BIT
+#define I2S_OUTPUT_FRAME_BYTES (2U * sizeof(int32_t))
+#else
+#define I2S_OUTPUT_DATA_WIDTH  I2S_DATA_BIT_WIDTH_16BIT
+#define I2S_OUTPUT_FRAME_BYTES (2U * sizeof(int16_t))
+#endif
 
 /* Max output frames after resampling one input frame */
 #define MAX_RESAMPLE_FRAMES \
@@ -85,7 +104,7 @@ static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
   (void)user_ctx;
   if (event && event->size > 0) {
     __atomic_add_fetch(&output_sent_frames,
-                       (uint64_t)(event->size / (2U * sizeof(int16_t))),
+                       (uint64_t)(event->size / I2S_OUTPUT_FRAME_BYTES),
                        __ATOMIC_RELAXED);
   }
   return false;
@@ -139,6 +158,55 @@ static void push_channel_mode_to_dsp(audio_channel_mode_t mode) {
 #else
   (void)mode;
 #endif
+}
+
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+// A slave writer may wait for a full DMA-ring recycle while the external
+// master keeps consuming descriptors. Rate-limit warnings for waits that
+// exceed that interval so diagnostics cannot worsen a timing problem.
+static void diagnose_i2s_write(esp_err_t err, size_t written, size_t bytes,
+                               size_t frames, int64_t elapsed_us) {
+  static int64_t last_warning_us;
+  static uint32_t slow_writes;
+
+  if ((uint64_t)elapsed_us > I2S_WRITE_WARNING_US || err != ESP_OK ||
+      written != bytes) {
+    slow_writes++;
+    int64_t now_us = esp_timer_get_time();
+    if (err != ESP_OK || written != bytes ||
+        now_us - last_warning_us >= 1000000) {
+      ESP_LOGW(TAG,
+               "I2S write delayed: %lld us, frames=%u, bytes=%u/%u, "
+               "err=%s, count=%" PRIu32,
+               (long long)elapsed_us, (unsigned int)frames,
+               (unsigned int)written, (unsigned int)bytes, esp_err_to_name(err),
+               slow_writes);
+      last_warning_us = now_us;
+    }
+  }
+}
+#endif
+
+static esp_err_t write_playback_i2s(const void *data, size_t bytes,
+                                    size_t frames) {
+  size_t written = 0;
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+  int64_t started_us = esp_timer_get_time();
+#endif
+  esp_err_t err =
+      i2s_channel_write(tx_handle, data, bytes, &written, portMAX_DELAY);
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+  diagnose_i2s_write(err, written, bytes, frames,
+                     esp_timer_get_time() - started_us);
+#else
+  (void)frames;
+#endif
+  if (err == ESP_OK) {
+    __atomic_add_fetch(&output_submitted_frames,
+                       (uint64_t)(written / I2S_OUTPUT_FRAME_BYTES),
+                       __ATOMIC_RELAXED);
+  }
+  return err;
 }
 
 static void apply_volume(int16_t *buf, size_t n) {
@@ -198,21 +266,41 @@ static void apply_channel_mode(int16_t *buf, size_t frames) {
   }
 }
 
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+// Build the wire format explicitly: one signed 32-bit DMA word per slot, with
+// the decoded 16-bit PCM aligned to the most significant bits for Philips I2S.
+static void pack_i2s_32bit_slots(const int16_t *src, int32_t *dst,
+                                 size_t frames) {
+  for (size_t i = 0; i < frames * 2; i++) {
+    dst[i] = (int32_t)src[i] * 65536;
+  }
+}
+#endif
+
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
   int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
   int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
-  if (!pcm || !silence || !resample_buf) {
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+  int32_t *i2s_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int32_t));
+#endif
+  if (!pcm || !silence || !resample_buf
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+      || !i2s_buf
+#endif
+  ) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
     free(silence);
     playback_task_handle = NULL;
     free(resample_buf);
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+    free(i2s_buf);
+#endif
     vTaskDelete(NULL);
     return;
   }
 
-  size_t written;
   while (playback_running) {
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
@@ -237,31 +325,41 @@ static void playback_task(void *arg) {
       apply_volume(play_buf, play_samples * 2);
       apply_channel_mode(play_buf, play_samples);
       led_audio_feed(play_buf, play_samples);
-      if (i2s_channel_write(tx_handle, play_buf,
-                            play_samples * 2 * sizeof(int16_t), &written,
-                            portMAX_DELAY) == ESP_OK) {
-        __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / (2U * sizeof(int16_t))),
-                           __ATOMIC_RELAXED);
-      }
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+      pack_i2s_32bit_slots(play_buf, i2s_buf, play_samples);
+      const void *i2s_data = i2s_buf;
+      size_t i2s_bytes = play_samples * 2 * sizeof(int32_t);
+#else
+      const void *i2s_data = play_buf;
+      size_t i2s_bytes = play_samples * 2 * sizeof(int16_t);
+#endif
+      write_playback_i2s(i2s_data, i2s_bytes, play_samples);
+#ifndef CONFIG_I2S_OUTPUT_ROLE_SLAVE
       taskYIELD();
+#endif
     } else {
       // Receiver underflow — output a frame of silence.  Block on the DMA
       // write (portMAX_DELAY) so the write itself paces the loop, instead of a
       // short timeout plus vTaskDelay(1) which produced jittery silence.
       led_audio_feed(silence, FRAME_SAMPLES);
-      if (i2s_channel_write(tx_handle, silence,
-                            (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t),
-                            &written, portMAX_DELAY) == ESP_OK) {
-        __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / (2U * sizeof(int16_t))),
-                           __ATOMIC_RELAXED);
-      }
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+      pack_i2s_32bit_slots(silence, i2s_buf, FRAME_SAMPLES);
+      const void *i2s_data = i2s_buf;
+      size_t i2s_bytes = (size_t)FRAME_SAMPLES * 2 * sizeof(int32_t);
+#else
+      const void *i2s_data = silence;
+      size_t i2s_bytes = (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t);
+#endif
+      write_playback_i2s(i2s_data, i2s_bytes, FRAME_SAMPLES);
     }
   }
 
   free(pcm);
   free(silence);
+  free(resample_buf);
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+  free(i2s_buf);
+#endif
   playback_task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -283,12 +381,17 @@ esp_err_t audio_output_init(void) {
   }
   push_channel_mode_to_dsp(channel_mode);
 
-  i2s_chan_config_t chan_cfg =
-      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+                                                          I2S_ROLE_SLAVE
+#else
+                                                          I2S_ROLE_MASTER
+#endif
+  );
   chan_cfg.dma_desc_num = I2S_DMA_DESC_NUM;
   chan_cfg.dma_frame_num = I2S_DMA_FRAME_NUM;
   // Zero each DMA descriptor after it is sent.  Without this, a writer
-  // stall longer than the DMA ring (~46 ms — e.g. an NVS/flash write
+  // stall longer than the DMA ring (e.g. an NVS/flash write
   // disabling the cache, or a CPU burst from the web server) makes the
   // hardware REPLAY the stale ring contents in a loop: a loud stutter, then
   // a second discontinuity on recovery.  With auto_clear an underrun
@@ -300,7 +403,7 @@ esp_err_t audio_output_init(void) {
 
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(OUTPUT_RATE),
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_OUTPUT_DATA_WIDTH,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
@@ -311,6 +414,12 @@ esp_err_t audio_output_init(void) {
               .din = I2S_GPIO_UNUSED,
           },
   };
+#ifdef CONFIG_I2S_OUTPUT_32BIT_SLOTS
+  // Use native 32-bit DMA words and wire slots. playback_task aligns each
+  // decoded 16-bit sample to the most significant bits expected by I2S.
+  std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+  std_cfg.slot_cfg.ws_width = 32;
+#endif
 #ifdef I2S_GND_PIN
   gpio_reset_pin(I2S_GND_PIN);
   gpio_set_direction(I2S_GND_PIN, GPIO_MODE_OUTPUT);
@@ -340,8 +449,19 @@ esp_err_t audio_output_init(void) {
 
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
-  ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d",
-           (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
+  ESP_LOGI(TAG,
+           "I2S initialized: Role=%s, Rate=%u, Data=%u-bit, Slot=%u-bit, "
+           "WS=%u-bit, DMA_Desc=%d, DMA_Frame=%d, TaskPrio=%d",
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+           "slave",
+#else
+           "master",
+#endif
+           (unsigned int)OUTPUT_RATE,
+           (unsigned int)std_cfg.slot_cfg.data_bit_width,
+           (unsigned int)std_cfg.slot_cfg.slot_bit_width,
+           (unsigned int)std_cfg.slot_cfg.ws_width, I2S_DMA_DESC_NUM,
+           I2S_DMA_FRAME_NUM, AUDIO_PLAYBACK_TASK_PRIORITY);
 
   // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
   // clock setup; amplifiers that manage power from board RTSP events can ignore
@@ -390,6 +510,17 @@ esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
 }
 
 void audio_output_set_sample_rate(uint32_t rate) {
+#ifdef CONFIG_I2S_OUTPUT_ROLE_SLAVE
+  // BCLK and LRCLK are supplied externally, so the ESP32 cannot change their
+  // rate. The board profile fixes the audio pipeline to match those clocks.
+  if (rate != OUTPUT_RATE) {
+    ESP_LOGW(TAG,
+             "Ignoring sample-rate change to %" PRIu32
+             " Hz in I2S slave mode (fixed at %u Hz)",
+             rate, (unsigned int)OUTPUT_RATE);
+  }
+  return;
+#else
   // Only safe to call when no writer task is actively using I2S
   // (AirPlay playback task must be stopped, BT calls this before
   // the I2S writer task starts consuming data)
@@ -400,6 +531,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
   dac_on_i2s_started();
+#endif
 }
 
 void audio_output_flush(void) {
