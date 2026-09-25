@@ -304,6 +304,7 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
 
 static esp_err_t device_name_handler(httpd_req_t *req) {
   char content[256];
+  bool restart_after_response = false;
   int ret = httpd_req_recv(req, content, sizeof(content) - 1);
   if (ret <= 0) {
     httpd_resp_send_500(req);
@@ -327,6 +328,7 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
       wifi_set_hostname(name);
       ethernet_set_hostname(name);
       cJSON_AddBoolToObject(response, "success", true);
+      restart_after_response = true;
     } else {
       cJSON_AddBoolToObject(response, "success", false);
       cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
@@ -342,6 +344,12 @@ static esp_err_t device_name_handler(httpd_req_t *req) {
   free(json_str);
   cJSON_Delete(json);
   cJSON_Delete(response);
+
+  if (restart_after_response) {
+    ESP_LOGI(TAG, "Device name changed; restarting to refresh AirPlay/mDNS");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+  }
 
   return ESP_OK;
 }

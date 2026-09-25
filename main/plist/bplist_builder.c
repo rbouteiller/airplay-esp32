@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <string.h>
 
 #include "audio_stream.h"
@@ -45,6 +46,110 @@ static bool bplist_write_ascii_string(uint8_t *out, size_t capacity,
   }
   memcpy(out + *pos, value, len);
   *pos += len;
+  return true;
+}
+
+static bool bplist_utf8_next(const char **cursor, uint32_t *codepoint) {
+  const uint8_t *s = (const uint8_t *)*cursor;
+  uint32_t cp;
+  size_t n;
+
+  if (s[0] < 0x80) {
+    cp = s[0];
+    n = 1;
+  } else if ((s[0] & 0xE0) == 0xC0) {
+    if (s[1] == 0 || (s[1] & 0xC0) != 0x80) {
+      return false;
+    }
+    cp = ((uint32_t)(s[0] & 0x1F) << 6) |
+         (uint32_t)(s[1] & 0x3F);
+    if (cp < 0x80) {
+      return false;
+    }
+    n = 2;
+  } else if ((s[0] & 0xF0) == 0xE0) {
+    if (s[1] == 0 || s[2] == 0 || (s[1] & 0xC0) != 0x80 ||
+        (s[2] & 0xC0) != 0x80) {
+      return false;
+    }
+    cp = ((uint32_t)(s[0] & 0x0F) << 12) |
+         ((uint32_t)(s[1] & 0x3F) << 6) |
+         (uint32_t)(s[2] & 0x3F);
+    if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) {
+      return false;
+    }
+    n = 3;
+  } else if ((s[0] & 0xF8) == 0xF0) {
+    if (s[1] == 0 || s[2] == 0 || s[3] == 0 ||
+        (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 ||
+        (s[3] & 0xC0) != 0x80) {
+      return false;
+    }
+    cp = ((uint32_t)(s[0] & 0x07) << 18) |
+         ((uint32_t)(s[1] & 0x3F) << 12) |
+         ((uint32_t)(s[2] & 0x3F) << 6) |
+         (uint32_t)(s[3] & 0x3F);
+    if (cp < 0x10000 || cp > 0x10FFFF) {
+      return false;
+    }
+    n = 4;
+  } else {
+    return false;
+  }
+
+  *cursor += n;
+  *codepoint = cp;
+  return true;
+}
+
+static bool bplist_write_utf8_string(uint8_t *out, size_t capacity,
+                                     size_t *pos, const char *value) {
+  bool ascii_only = true;
+  for (const uint8_t *p = (const uint8_t *)value; *p; p++) {
+    if (*p & 0x80) {
+      ascii_only = false;
+      break;
+    }
+  }
+  if (ascii_only) {
+    return bplist_write_ascii_string(out, capacity, pos, value);
+  }
+
+  size_t utf16_units = 0;
+  const char *p = value;
+  while (*p) {
+    uint32_t cp;
+    if (!bplist_utf8_next(&p, &cp)) {
+      return false;
+    }
+    utf16_units += (cp <= 0xFFFF) ? 1 : 2;
+  }
+
+  if (!bplist_write_length(out, capacity, pos, 0x60, utf16_units) ||
+      !bplist_has_room(*pos, utf16_units * 2, capacity)) {
+    return false;
+  }
+
+  p = value;
+  while (*p) {
+    uint32_t cp;
+    if (!bplist_utf8_next(&p, &cp)) {
+      return false;
+    }
+
+    if (cp <= 0xFFFF) {
+      out[(*pos)++] = (uint8_t)(cp >> 8);
+      out[(*pos)++] = (uint8_t)cp;
+    } else {
+      cp -= 0x10000;
+      uint16_t high = (uint16_t)(0xD800 + (cp >> 10));
+      uint16_t low  = (uint16_t)(0xDC00 + (cp & 0x3FF));
+      out[(*pos)++] = (uint8_t)(high >> 8);
+      out[(*pos)++] = (uint8_t)high;
+      out[(*pos)++] = (uint8_t)(low >> 8);
+      out[(*pos)++] = (uint8_t)low;
+    }
+  }
   return true;
 }
 
@@ -549,7 +654,7 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
     return 0;
   }
   ADD_OFFSET(); // 19: device name
-  if (!bplist_write_ascii_string(out, capacity, &pos, device_name)) {
+  if (!bplist_write_utf8_string(out, capacity, &pos, device_name)) {
     return 0;
   }
   ADD_OFFSET(); // 20: "audioFormats"
