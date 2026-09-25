@@ -1,0 +1,1595 @@
+/**
+ * USB Audio Class HOST output — native UAC 2.0/1.0 isochronous-OUT streamer.
+ *
+ * The ESP32-S3 acts as a USB host and streams decoded AirPlay PCM to a
+ * connected USB-C headphone/DAC.  Espressif's usb_host_uac component only
+ * supports UAC 1.0, but common devices (e.g. Apple USB-C EarPods) are UAC 2.0,
+ * so this backend talks to the native ESP-IDF USB Host library directly:
+ *
+ *   - registers a USB host client
+ *   - on device connect: parses the active config descriptor, finds an audio
+ *     STREAMING interface alt-setting that is 16-bit stereo on an isochronous
+ *     OUT endpoint (works for UAC 1.0 and UAC 2.0 — we don't parse the class
+ *     header, just the standard AS interface/format/endpoint descriptors)
+ *   - claims that interface+alt (which issues SET_INTERFACE)
+ *   - streams PCM via a pool of isochronous OUT transfers, kept continuously
+ *     fed from a PCM FIFO that the playback task fills (silence on underrun).
+ *
+ * The connected device's endpoint is assumed synchronous (no feedback EP); we
+ * send the nominal 48 kHz data rate. Sample-rate is the compile-time
+ * the device-supported rate (44.1 kHz preferred, else e.g. 48 kHz with
+ * on-board resampling — some dongles are 48 k-only).
+ *
+ * FULL-DUPLEX (USB_HOST_FULL_DUPLEX): some headsets — notably the Apple USB-C
+ * EarPods (a "Headset" terminal, not "Headphones") — only route USB audio to
+ * their speaker while a bidirectional "call" is active. Their playback config
+ * (UAC 2.0) has a fixed mixer (bmMixerControls=0) whose USB->speaker crosspoint
+ * is connected only in that state. So in addition to the speaker OUT stream we
+ * also claim the mic capture interface and submit iso IN transfers (data
+ * discarded) to keep the capture stream live and un-gate the speaker. This is
+ * best-effort and inert on output-only DACs (which expose no iso IN audio EP).
+ */
+
+#include "audio_output.h"
+
+#include "audio_receiver.h"
+#include "audio_resample.h"
+#include "led.h"
+#include "playback_control.h" /* play/pause + volume via DACP */
+#include "rtsp_server.h"      /* airplay_get_volume_q15() */
+#include "spiram_task.h"      /* task_create_spiram() */
+
+#include "esp_check.h"
+#include "esp_err.h"
+#include "esp_intr_alloc.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
+
+#include "driver/gpio.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "usb/usb_host.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#define TAG "audio_uac_host"
+/* PREFERRED output rate (44.1 kHz = native AirPlay, no resampling). A device
+ * that doesn't list it in its descriptors runs at the closest rate it does
+ * support (s_out_rate) with on-board resampling — e.g. the Sony INZONE Buds
+ * dongle is 48 k-only: it ACKs SET_CUR(44100) on the EP but plays silence. */
+#define OUTPUT_RATE   CONFIG_OUTPUT_SAMPLE_RATE_HZ
+#define FRAME_SAMPLES 352
+/* Sized for the HIGHEST rate a device can force (48 k), not OUTPUT_RATE —
+ * s_out_rate is chosen per device at runtime. */
+#define MAX_RESAMPLE_FRAMES \
+  ((size_t)((FRAME_SAMPLES + 2) * (48000.0 / 44100) + 16))
+
+#if CONFIG_FREERTOS_UNICORE
+#define PLAYBACK_CORE 0
+#else
+#define PLAYBACK_CORE 1
+#endif
+#define USB_CORE     0
+#define USB_LIB_PRIO 9
+/* The client task dispatches iso-OUT completions and RESUBMITS the URBs.
+ * The iso schedule has hard sub-millisecond service needs: if resubmission
+ * is starved longer than the in-flight ring (NUM_URBS x PACKETS_PER_URB =
+ * 32 ms), the schedule idles frames and the OUTPUT RATE SILENTLY DROPS —
+ * measured ~9% slow (1250 8-ms URBs taking 10.9 s) with this task at prio
+ * 6 below the core-0 RTP receive task (prio 8), whose WiFi-clump decode
+ * bursts run 30-80 ms. The receive task has a 512 ms mailbox of slack; the
+ * iso schedule has none — so the client task must outrank it. */
+#define USB_CLI_PRIO 9
+/* Playback feeds the iso-OUT FIFO on a hard ~8 ms deadline while the realtime
+ * RTP receive/decode task (prio 8, shared code) has seconds of jitter buffer
+ * to spare — so playback must outrank it. At the old prio 7 the decode task
+ * preempted playback during burst decodes and starved the FIFO: underruns
+ * accumulated (~1 / 2.5 s) even at ZERO packet loss. Fixing it HERE (raise the
+ * consumer) instead of lowering the shared receive task keeps the change in
+ * this backend and leaves other outputs' scheduling untouched. */
+#define PLAYBACK_PRIO 10
+
+/* Largest iso-OUT wMaxPacketSize the controller can take. On S2/S3 the
+ * periodic TX FIFO is carved to 150 lines = 600 B in audio_output_init(); an
+ * alt-setting with a bigger EP (e.g. 96k/32-bit stereo = 768 B) can never get
+ * a pipe ("EP MPS exceeds supported limit"), so skip it at selection time. */
+#if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+#define ISO_OUT_MPS_LIMIT 600
+#else
+/* HS targets (P4): balanced-bias periodic OUT */
+#define ISO_OUT_MPS_LIMIT 512
+#endif
+
+/* Isochronous OUT transfer pool. Full-speed: 1 packet per 1 ms frame.
+ * 48 kHz 16-bit stereo = 192 bytes/frame. */
+#define NUM_URBS        4
+#define PACKETS_PER_URB 8 /* 8 ms per URB; 32 ms of transfers in flight */
+#define NUM_IN_URBS     2 /* mic-IN capture pool (full-duplex un-gate) */
+
+/* Open the mic-IN stream together with the speaker-OUT stream. Set to 0 to
+ * stream output only (plain USB DAC, or to A/B-test the un-gate effect). */
+/* Full-duplex (open the mic IN stream alongside the speaker) was an attempt to
+ * "un-gate" headsets — disproven: the silence was the missing SET_INTERFACE,
+ * not gating. Playback-only is correct; leave at 0. */
+#define USB_HOST_FULL_DUPLEX 0
+
+/* PCM FIFO (producer = playback task, consumer = iso OUT callbacks) */
+#define FIFO_CAP 16384 /* bytes; ~85 ms at 48 kHz stereo 16-bit */
+/* Target FIFO depth (~80 ms). The playback task fills to here then yields, so
+ * it paces itself to the iso drain rate instead of busy-spinning. The old loop
+ * never delayed while frames were available — it pegged this core at 100% and
+ * jittered the shared timing layer into dropping frames as "late" (the
+ * play-stop-play-stop stutter). Raised 50 -> 80 ms (2026-07-09): the timing
+ * layer occasionally withholds frames for tens of ms (early-hold, refill
+ * bursts) and 50 ms of headroom let the FIFO hit empty = audible gap; the
+ * extra 30 ms of pipeline latency is absorbed by the sender lead (buffered)
+ * and the 250 ms timing threshold (realtime).
+ * Raised 80 -> 160 ms nominal (2026-08-31, = ~147 ms at a 48 k sink): with
+ * the RTP receive task pinned to core 0 (see audio_stream_realtime.c), WiFi
+ * delivery clumps stall frame delivery long enough to dent an 80 ms FIFO
+ * (~1 audible partial pop per 2.5 s); at >=147 ms the underruns stop
+ * (verified: gap=0, underruns frozen over multi-minute 48 k runs). The
+ * depth is self-reported per-rate through
+ * audio_output_get_hardware_latency_us(), so A/V sync is unaffected. */
+#define FIFO_TARGET_BYTES ((OUTPUT_RATE / 1000) * 4 * 160)
+
+/* ── USB / streaming state (owned by the USB client task) ────────────────── */
+static usb_host_client_handle_t s_client = NULL;
+static usb_device_handle_t s_dev = NULL;
+static volatile bool s_streaming = false;
+/* Resampler rebuild request. Only the playback task may call
+ * audio_resample_init/reset once it is running — see playback_task(). */
+static volatile bool resample_reinit_needed = false;
+
+static uint8_t s_out_iface = 0;
+static uint8_t s_out_alt = 0;
+static uint8_t s_out_ep = 0;
+static uint16_t s_out_mps = 0;
+/* Fractional iso packet sizing so OUTPUT_RATE can match the source (44.1 kHz)
+ * with NO resampling — packets carry 44 samples most 1 ms frames, 45 every
+ * ~10th, averaging 44.1k. */
+static int s_frame_bytes = 4;  /* bytes per audio frame (16-bit stereo) */
+static int s_pkt_base = 0;     /* floor samples/frame = OUTPUT_RATE/1000 */
+static int s_pkt_frac = 0;     /* OUTPUT_RATE % 1000 */
+static int s_frac_accum = 0;   /* fractional-sample accumulator */
+static uint8_t s_ac_iface = 0; /* AudioControl interface (for class requests) */
+static uint8_t s_clock_id = 0; /* UAC2 Clock Source entity ID (0 = none/UAC1) */
+static uint8_t s_fu_ids[8];    /* Feature Unit IDs found in the AC interface */
+static uint8_t s_fu_src[8];    /* each FU's bSourceID (upstream entity) */
+static int s_fu_count = 0;
+static uint8_t s_speaker_src =
+    0;                         /* entity feeding the speaker output terminal */
+static uint8_t s_usb_it = 0;   /* USB-streaming INPUT terminal (host audio) */
+static uint8_t s_mixer_id = 0; /* Mixer Unit ID (0 = none) */
+static uint8_t s_mic_fu = 0;   /* feature unit feeding the USB-out (mic) term */
+static uint8_t s_clock_ids[4]; /* all UAC2 Clock Source entity IDs */
+static int s_clock_count = 0;
+static int s_out_subslot =
+    2; /* device sample size (bytes): 2=16-bit, 3=24-bit */
+static uint32_t s_out_rate =
+    OUTPUT_RATE;              /* rate the chosen alt actually runs */
+static uint8_t s_uac_ver = 0; /* UAC spec major version: 1 or 2 */
+
+/* Full-duplex capture path (mic IN). Opening it alongside the speaker OUT can
+ * un-gate a headset that only routes USB audio during an active bidirectional
+ * "call" (e.g. Apple EarPods). Best-effort; absent on output-only DACs. */
+static uint8_t s_in_iface = 0xff;
+static uint8_t s_in_alt = 0;
+static uint8_t s_in_ep = 0;
+static uint16_t s_in_mps = 0;
+static int s_in_channels = 0;
+static int s_in_packet_bytes = 0;
+static usb_transfer_t *s_in_urb[NUM_IN_URBS];
+static volatile bool s_capturing = false;
+static volatile uint32_t s_in_done = 0, s_in_err = 0;
+
+/* HID media-button path: the headset's own play/volume keys arrive as HID
+ * interrupt reports; we forward them to the AirPlay source via DACP. */
+static uint8_t s_hid_iface = 0xff; /* 0xff = device has no HID interface */
+static uint8_t s_hid_alt = 0;
+static uint8_t s_hid_ep = 0;
+static uint16_t s_hid_mps = 0;
+static usb_transfer_t *s_hid_urb = NULL;
+static volatile bool s_hid_active = false;
+static uint8_t s_hid_prev = 0;              /* previous bitmap (edge detect) */
+static QueueHandle_t s_hid_action_q = NULL; /* HID button -> action task */
+/* Report byte[1] bitmap bits — verified on Apple EarPods by isolating each key:
+ * center/play=0x01, Vol+=0x02, Vol-=0x04. (Edit per device if needed.) */
+#define HID_BIT_PLAY_PAUSE 0x01
+#define HID_BIT_VOL_UP     0x02
+#define HID_BIT_VOL_DOWN   0x04
+
+static usb_transfer_t *s_urb[NUM_URBS];
+static SemaphoreHandle_t s_ctrl_sem =
+    NULL; /* signals sync control completion */
+
+/* connect/disconnect handshake from the client callback to the client task */
+static volatile bool s_connect_pending = false;
+static volatile bool s_disconnect_pending = false;
+static volatile uint8_t s_pending_addr = 0;
+
+/* ── PCM queue ─────────────────────────────────────────────────────────────
+ * A FreeRTOS stream buffer gives event-driven backpressure: the playback task
+ * blocks in xStreamBufferSend until the iso-OUT callbacks drain space, so it
+ * paces itself exactly to the device's consumption rate — no busy-poll, no
+ * drop-on-full. Sized to FIFO_TARGET_BYTES (~50 ms): it runs near full, keeping
+ * the output buffering stable at that depth (see hardware_latency_us). */
+static StreamBufferHandle_t s_pcm = NULL;
+
+/* telemetry */
+static volatile uint32_t s_xfer_done = 0, s_xfer_err = 0, s_pkt_err = 0;
+static volatile uint32_t s_push_bytes = 0;
+
+/* Set to make the playback task reset + silence-prefill the FIFO at the top
+ * of its loop. The playback task is the stream buffer's only writer and the
+ * only caller of fifo_reset(); other tasks (connect/teardown, AirPlay flush)
+ * request the reset through this flag instead of touching the FIFO. */
+static volatile bool flush_requested = false;
+
+/* fifo_reset() <-> iso-callback handshake: while s_fifo_hold is set the
+ * callback emits silence without touching the stream buffer, and
+ * s_iso_cb_gen ticks at the END of every callback invocation. */
+static volatile bool s_fifo_hold = false;
+static volatile uint32_t s_iso_cb_gen = 0;
+
+static int fifo_level(void) {
+  return s_pcm ? (int)xStreamBufferBytesAvailable(s_pcm) : 0;
+}
+
+/* Reset without racing the reader: xStreamBufferReset() must never run
+ * concurrently with the callback's xStreamBufferReceive() — the reader-side
+ * tail update is lock-free, so a reset under it corrupts the buffer
+ * accounting. Raise the hold, then wait for one callback generation tick:
+ * callbacks are serialized on the USB client task, so a tick means any
+ * receive that was in flight when the hold went up has finished. The
+ * timeout covers a stopped stream (callbacks no longer ticking). Called
+ * from the playback task only — it is the sole writer, so no send can be
+ * in flight either. */
+static void fifo_reset(void) {
+  if (!s_pcm)
+    return;
+  s_fifo_hold = true;
+  if (s_streaming) {
+    uint32_t g0 = s_iso_cb_gen;
+    for (int i = 0; i < 50 && s_iso_cb_gen == g0; i++)
+      vTaskDelay(1);
+  }
+  xStreamBufferReset(s_pcm);
+  s_fifo_hold = false;
+}
+
+/* Refill the FIFO with silence after a reset. Starting from an EMPTY FIFO,
+ * the playback task races ~112 ms of REAL audio (FIFO + URB ring) into the
+ * pipeline at once, permanently parking playout that far ahead of schedule —
+ * right at the early-hold boundary, where anchor wobble quantizes into
+ * audible clicks. Pre-filled with silence, the producer is pipeline-paced
+ * from its very first real frame and playout starts on schedule. */
+static void fifo_prefill_silence(void) {
+  if (!s_pcm)
+    return;
+  static const uint8_t zeros[512] = {0};
+  size_t space = xStreamBufferSpacesAvailable(s_pcm);
+  while (space >= sizeof(zeros)) {
+    xStreamBufferSend(s_pcm, zeros, sizeof(zeros), 0);
+    space -= sizeof(zeros);
+  }
+  if (space)
+    xStreamBufferSend(s_pcm, zeros, space, 0);
+}
+
+/* Enqueue, blocking (paced by the consumer) until there is room. A long stall
+ * (e.g. the device was unplugged) eventually drops the remainder rather than
+ * wedging the playback task — but NEVER at an arbitrary byte offset: the FIFO
+ * is a raw byte stream, so losing a non-multiple of the frame size would
+ * shift every later frame boundary (channel swap + byte-shift = loud static
+ * until the next flush). On timeout, retry; if the FIFO stays full, drop the
+ * tail but zero-pad back to a frame boundary. */
+static void fifo_push(const uint8_t *src, size_t len) {
+  if (!s_pcm)
+    return;
+  s_push_bytes += len;
+  size_t sent = 0;
+  for (int tries = 0; sent < len && tries < 5 && s_streaming; tries++)
+    sent +=
+        xStreamBufferSend(s_pcm, src + sent, len - sent, pdMS_TO_TICKS(100));
+  if (sent < len) {
+    size_t mis = sent % (size_t)s_frame_bytes;
+    if (mis) {
+      static const uint8_t pad[8] = {0};
+      xStreamBufferSend(s_pcm, pad, (size_t)s_frame_bytes - mis,
+                        pdMS_TO_TICKS(20));
+    }
+  }
+}
+
+/* Dequeue up to `len` bytes (non-blocking — runs in the USB callback); pad the
+ * remainder with silence on underrun. */
+static uint32_t s_underruns = 0; /* mid-stream FIFO underruns (audible gaps) */
+
+static void fifo_pop_padded(uint8_t *dst, size_t len) {
+  if (s_fifo_hold || !s_pcm) {
+    memset(dst, 0, len); /* fifo_reset() in progress — stay off the buffer */
+    s_iso_cb_gen++;
+    return;
+  }
+  size_t got = xStreamBufferReceive(s_pcm, dst, len, 0);
+  if (got < len) {
+    memset(dst + got, 0, len - got);
+    /* A PARTIAL pop is the moment an active stream ran dry — an audible
+     * gap. (Full-zero pops also happen while idle, so don't count those.) */
+    if (got > 0) {
+      s_underruns++;
+      static int64_t s_last_ur_log = 0;
+      int64_t now = esp_timer_get_time();
+      if (now - s_last_ur_log > 2000000) {
+        s_last_ur_log = now;
+        ESP_LOGW(TAG, "FIFO underrun #%lu: gap at USB boundary",
+                 (unsigned long)s_underruns);
+      }
+    }
+  }
+  s_iso_cb_gen++; /* tick only after all buffer access is complete */
+}
+
+/* ── Optional VBUS enable ────────────────────────────────────────────────── */
+static void usb_host_vbus_enable(void) {
+#if defined(CONFIG_USB_HOST_VBUS_EN_GPIO) && CONFIG_USB_HOST_VBUS_EN_GPIO >= 0
+  gpio_config_t io = {
+      .pin_bit_mask = 1ULL << CONFIG_USB_HOST_VBUS_EN_GPIO,
+      .mode = GPIO_MODE_OUTPUT,
+  };
+  gpio_config(&io);
+  gpio_set_level(CONFIG_USB_HOST_VBUS_EN_GPIO, 1);
+  ESP_LOGI(TAG, "VBUS enable GPIO%d -> HIGH", CONFIG_USB_HOST_VBUS_EN_GPIO);
+#endif
+}
+
+/* ── USB host library daemon ─────────────────────────────────────────────── */
+static void usb_lib_task(void *arg) {
+  while (true) {
+    uint32_t flags = 0;
+    usb_host_lib_handle_events(portMAX_DELAY, &flags);
+    if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS)
+      usb_host_device_free_all();
+  }
+}
+
+/* ── Descriptor parsing ──────────────────────────────────────────────────── */
+/* Walk the (active) config descriptor and find an audio STREAMING interface
+ * alt-setting that is PCM 16-bit / 2-channel on an isochronous OUT endpoint.
+ * Records iface/alt/endpoint/MPS. Returns true on success. */
+static bool find_speaker_altsetting(const usb_config_desc_t *cfg) {
+  const uint8_t *p = (const uint8_t *)cfg;
+  const uint8_t *end = p + cfg->wTotalLength;
+  p += p[0]; /* skip the 9-byte config descriptor */
+
+  int iface = -1, alt = -1;
+  bool cur_is_as = false;  /* current alt is an AudioStreaming interface */
+  bool cur_is_ac = false;  /* current interface is AudioControl */
+  bool cur_is_hid = false; /* current interface is HID (media buttons) */
+  int as_channels = 0, as_bits = 0, as_subslot = 0;
+  uint32_t as_rate = 0; /* rate this alt would run at (0 = unknown, UAC2) */
+  bool found_speaker = false;
+  int best_rank = -1; /* rank of the speaker alt held so far (see below) */
+  s_ac_iface = 0;
+  s_uac_ver = 0;
+  s_out_subslot = 2;
+  s_out_rate = OUTPUT_RATE;
+  s_clock_id = 0;
+  s_clock_count = 0;
+  s_fu_count = 0;
+  s_speaker_src = 0;
+  s_usb_it = 0;
+  s_mic_fu = 0;
+  s_mixer_id = 0;
+  s_in_iface = 0xff;
+  s_in_alt = 0;
+  s_in_ep = 0;
+  s_in_mps = 0;
+  s_in_channels = 0;
+  s_hid_iface = 0xff;
+  s_hid_ep = 0;
+  s_hid_mps = 0;
+
+  while (p + 2 <= end) {
+    uint8_t len = p[0], type = p[1];
+    if (len < 2 || p + len > end)
+      break;
+
+    if (type == 0x04) { /* INTERFACE */
+      iface = p[2];
+      alt = p[3];
+      uint8_t cls = p[5], sub = p[6], proto = p[7];
+      cur_is_ac = (cls == 0x01 && sub == 0x01); /* AUDIO / AUDIOCONTROL */
+      cur_is_as = (cls == 0x01 && sub == 0x02); /* AUDIO / AUDIOSTREAMING */
+      cur_is_hid = (cls == 0x03);               /* HID (media buttons) */
+      if (cur_is_ac) {
+        s_ac_iface = (uint8_t)iface;
+        s_uac_ver =
+            (proto == 0x20) ? 2 : 1; /* bInterfaceProtocol 0x20 = UAC2 */
+      }
+      if (cur_is_hid && s_hid_iface == 0xff) {
+        s_hid_iface = (uint8_t)iface;
+        s_hid_alt = (uint8_t)alt;
+      }
+      as_channels = 0;
+      as_bits = 0;
+      as_subslot = 0;
+      as_rate = 0;
+    } else if (cur_is_ac && type == 0x24) { /* CS_INTERFACE (AudioControl) */
+      /* INPUT_TERMINAL (subtype 2): grab the clock feeding the USB-streaming
+       * (host->device) terminal. UAC2 layout: wTerminalType @4, bCSourceID @7
+       */
+      if (p[2] == 0x02 && len >= 8) {
+        /* INPUT_TERMINAL: clock of the USB-streaming (host->device) terminal */
+        uint16_t ttype = (uint16_t)(p[4] | (p[5] << 8));
+        if (ttype == 0x0101) { /* USB Streaming */
+          s_usb_it = p[3];     /* terminal ID — anchors the speaker path */
+          s_clock_id = p[7];
+        }
+      } else if (p[2] == 0x03 && len >= 8) {
+        /* OUTPUT_TERMINAL: bSourceID @7 feeds this terminal. A non-USB output
+         * (speaker/headset) is the physical speaker; a USB-streaming output is
+         * the mic->host path, fed by the mic feature unit. */
+        uint16_t ttype = (uint16_t)(p[4] | (p[5] << 8));
+        if ((ttype >> 8) != 0x01)
+          s_speaker_src = p[7];
+        else
+          s_mic_fu = p[7];
+      } else if (p[2] == 0x04 && len >= 5) {
+        /* MIXER_UNIT: bUnitID @3 */
+        s_mixer_id = p[3];
+      } else if (p[2] == 0x06 && len >= 5 && s_fu_count < 8) {
+        /* FEATURE_UNIT: bUnitID @3, bSourceID @4 (both UAC1 and UAC2) */
+        s_fu_src[s_fu_count] = p[4];
+        s_fu_ids[s_fu_count++] = p[3];
+      } else if (p[2] == 0x0a && len >= 4 &&
+                 s_clock_count < (int)sizeof(s_clock_ids)) {
+        /* CLOCK_SOURCE: bClockID @3 — collect so we set every clock's rate */
+        s_clock_ids[s_clock_count++] = p[3];
+      }
+    } else if (cur_is_as && type == 0x24) { /* CS_INTERFACE (AudioStreaming) */
+      uint8_t subtype = p[2];
+      if (subtype == 0x01) {
+        /* AS_GENERAL: UAC2 carries bNrChannels @10 (UAC1 carries it in the
+         * FORMAT_TYPE descriptor below). */
+        if (s_uac_ver == 2 && len >= 11)
+          as_channels = p[10];
+      } else if (subtype == 0x02) {
+        /* FORMAT_TYPE_I: UAC2 → bSubslotSize@4, bBitResolution@5;
+         *                UAC1 → bNrChannels@4, bSubframeSize@5,
+         * bBitResolution@6 */
+        if (s_uac_ver == 2) {
+          if (len >= 6) {
+            as_subslot = p[4];
+            as_bits = p[5];
+          }
+        } else if (len >= 7) {
+          as_channels = p[4];
+          as_subslot = p[5];
+          as_bits = p[6];
+          /* UAC1 lists the supported rates right here: bSamFreqType @7
+           * (0 = continuous min..max, else count of discrete rates), 3-byte
+           * rates from @8. Pick per alt: 44.1 k native > 48 k resampled >
+           * first listed. Do NOT assume a device accepts OUTPUT_RATE just
+           * because SET_CUR succeeds — 48 k-only dongles (Sony INZONE Buds)
+           * ACK 44100 and then play silence. */
+          if (len >= 8) {
+            uint8_t nfreq = p[7];
+            if (nfreq == 0 && len >= 14) { /* continuous range */
+              uint32_t lo = p[8] | (p[9] << 8) | ((uint32_t)p[10] << 16);
+              uint32_t hi = p[11] | (p[12] << 8) | ((uint32_t)p[13] << 16);
+              as_rate = (44100 >= lo && 44100 <= hi)   ? 44100
+                        : (48000 >= lo && 48000 <= hi) ? 48000
+                                                       : lo;
+            } else {
+              for (int f = 0; f < nfreq && 8 + 3 * f + 2 < len; f++) {
+                uint32_t r = p[8 + 3 * f] | (p[9 + 3 * f] << 8) |
+                             ((uint32_t)p[10 + 3 * f] << 16);
+                if (as_rate == 0)
+                  as_rate = r; /* fallback: first listed */
+                if (r == 48000 && as_rate != 44100)
+                  as_rate = 48000;
+                if (r == 44100)
+                  as_rate = 44100;
+              }
+            }
+          }
+        }
+      }
+    } else if (cur_is_as && type == 0x05) { /* ENDPOINT */
+      uint8_t ep_addr = p[2], ep_attr = p[3];
+      uint16_t mps = (uint16_t)(p[4] | (p[5] << 8));
+      bool is_out = !(ep_addr & 0x80);
+      bool is_iso = (ep_attr & 0x03) == 0x01;
+      /* sync type (bmAttributes[3:2]): 0=none 1=async 2=adaptive 3=sync.
+       * usage (bmAttributes[5:4]): 0=data 1=feedback. An async OUT has a
+       * separate feedback IN endpoint we'd need to honor to avoid drift. */
+      ESP_LOGI(TAG,
+               "  AS iface=%d alt=%d: ch=%d bits=%d sub=%d ep=0x%02x iso=%d "
+               "out=%d sync=%d use=%d mps=%u rate=%lu",
+               iface, alt, as_channels, as_bits, as_subslot, ep_addr, is_iso,
+               is_out, (ep_attr >> 2) & 0x03, (ep_attr >> 4) & 0x03, mps,
+               (unsigned long)as_rate);
+      if (is_iso && mps > 0) {
+        if (is_out && as_channels == 2 && as_subslot >= 2 && as_subslot <= 4 &&
+            mps > ISO_OUT_MPS_LIMIT) {
+          /* Pipe allocation would fail — a later/smaller alt may still work. */
+          ESP_LOGW(TAG, "  skip alt %d: iso-OUT mps %u > HW limit %d", alt, mps,
+                   ISO_OUT_MPS_LIMIT);
+        } else if (is_out && as_channels == 2 && as_subslot >= 2 &&
+                   as_subslot <= 4) {
+          /* Stereo PCM iso OUT = the speaker path. Rank, high to low: an alt
+           * whose packets can carry its rate beats one that can't (an
+           * undersized EP would underrun); then native OUTPUT_RATE — a UAC1
+           * device may expose 48 k and 44.1 k as separate sibling alts, and
+           * the sinc resampler costs far more CPU than a subslot expand;
+           * then 16-bit (subslot 2, no conversion) over 24-/32-bit (e.g.
+           * the UAC1 Bose). Ties keep the first alt in descriptor order. */
+          uint32_t alt_rate = as_rate ? as_rate : OUTPUT_RATE;
+          unsigned need = (unsigned)(alt_rate / 1000 + (alt_rate % 1000 != 0)) *
+                          2u * (unsigned)as_subslot; /* peak bytes per 1 ms */
+          int rank = (mps >= need ? 4 : 0) + (alt_rate == OUTPUT_RATE ? 2 : 0) +
+                     (as_subslot == 2 ? 1 : 0);
+          if (rank > best_rank) {
+            s_out_iface = (uint8_t)iface;
+            s_out_alt = (uint8_t)alt;
+            s_out_ep = ep_addr;
+            s_out_mps = mps;
+            s_out_subslot = as_subslot;
+            s_out_rate = alt_rate;
+            found_speaker = true;
+            best_rank = rank;
+          }
+        } else if (!is_out && as_channels >= 1 && as_subslot == 2 &&
+                   s_in_ep == 0) {
+          /* 16-bit iso IN = the mic capture path (opened for full-duplex) */
+          s_in_iface = (uint8_t)iface;
+          s_in_alt = (uint8_t)alt;
+          s_in_ep = ep_addr;
+          s_in_mps = mps;
+          s_in_channels = as_channels;
+        }
+      }
+    } else if (cur_is_hid && type == 0x05) { /* HID interrupt endpoint */
+      uint8_t ep_addr = p[2], ep_attr = p[3];
+      uint16_t mps = (uint16_t)(p[4] | (p[5] << 8));
+      if ((ep_addr & 0x80) && (ep_attr & 0x03) == 0x03 && s_hid_ep == 0) {
+        s_hid_ep = ep_addr; /* interrupt IN — media button reports */
+        s_hid_mps = mps;
+        ESP_LOGI(TAG, "  HID iface=%u ep=0x%02x mps=%u (media buttons)",
+                 s_hid_iface, ep_addr, mps);
+      }
+    }
+    p += len;
+  }
+  return found_speaker;
+}
+
+/* ── Isochronous OUT streaming ───────────────────────────────────────────── */
+/* Size each iso packet for the (possibly fractional) rate; sets per-packet
+ * num_bytes + xfer->num_bytes, returns the urb total. */
+static int fill_out_packets(usb_transfer_t *xfer) {
+  /* Never exceed the endpoint's wMaxPacketSize: the chooser accepts an
+   * undersized iso EP as a last resort, and the URB buffer is allocated
+   * to MPS in that case — a packet sized from the rate alone would
+   * overrun both the buffer and the device limit. Return the unsent
+   * fraction to the accumulator (bounded) so a marginally-small EP still
+   * averages out; a fundamentally-too-small EP degrades gracefully. */
+  int max_samples = (int)(s_out_mps / (uint16_t)s_frame_bytes);
+  int total = 0;
+  for (int j = 0; j < PACKETS_PER_URB; j++) {
+    int samples = s_pkt_base;
+    s_frac_accum += s_pkt_frac;
+    if (s_frac_accum >= 1000) {
+      samples++;
+      s_frac_accum -= 1000;
+    }
+    if (samples > max_samples) {
+      s_frac_accum += (samples - max_samples) * 1000;
+      if (s_frac_accum > 2000)
+        s_frac_accum = 2000; /* cap the debt: the EP can't sustain the rate */
+      samples = max_samples;
+    }
+    int bytes = samples * s_frame_bytes;
+    xfer->isoc_packet_desc[j].num_bytes = bytes;
+    total += bytes;
+  }
+  xfer->num_bytes = total;
+  return total;
+}
+
+static void out_xfer_cb(usb_transfer_t *xfer) {
+  if (!s_streaming)
+    return; /* tearing down — do not resubmit */
+  s_xfer_done++;
+  if (xfer->status != USB_TRANSFER_STATUS_COMPLETED)
+    s_xfer_err++;
+  for (int j = 0; j < PACKETS_PER_URB; j++)
+    if (xfer->isoc_packet_desc[j].status != USB_TRANSFER_STATUS_COMPLETED)
+      s_pkt_err++;
+
+  int total = fill_out_packets(xfer); /* fractional sizing + xfer->num_bytes */
+  fifo_pop_padded(xfer->data_buffer, (size_t)total);
+
+  if ((s_xfer_done % 1250) == 0) { /* ~ every 10 s (1250 urbs * 8 ms) */
+    /* rx/gap deltas answer "did every UDP packet arrive in time": gap counts
+     * RTP sequence holes at ARRIVAL (before any buffering/timing). */
+    static uint32_t s_prev_rx = 0, s_prev_gap = 0;
+    audio_stats_t st;
+    audio_receiver_get_stats(&st);
+    uint32_t rx_d = st.packets_received - s_prev_rx;
+    uint32_t gap_d = st.packets_dropped - s_prev_gap;
+    s_prev_rx = st.packets_received;
+    s_prev_gap = st.packets_dropped;
+    ESP_LOGI(TAG,
+             "tlm xfers=%lu xerr=%lu pkterr=%lu push=%luB fifo=%d/%d "
+             "ur=%lu rx=%lu gap=%lu",
+             (unsigned long)s_xfer_done, (unsigned long)s_xfer_err,
+             (unsigned long)s_pkt_err, (unsigned long)s_push_bytes,
+             fifo_level(), FIFO_TARGET_BYTES, (unsigned long)s_underruns,
+             (unsigned long)rx_d, (unsigned long)gap_d);
+  }
+
+  /* Resubmit regardless of transient status so the iso stream keeps flowing;
+   * a real disconnect arrives via the DEV_GONE client event. */
+  esp_err_t e = usb_host_transfer_submit(xfer);
+  if (e != ESP_OK && (s_xfer_done % 1250) == 0)
+    ESP_LOGW(TAG, "resubmit iso OUT: %s", esp_err_to_name(e));
+}
+
+static esp_err_t start_streaming(void) {
+  /* Match the source rate (no resampling). Fractional packets: e.g. 44.1 kHz =
+   * 44 samples/frame, 45 every ~10th. Allocate the worst case (one extra
+   * sample/packet), capped at the endpoint MPS. */
+  s_frame_bytes = 2 * s_out_subslot; /* 4 = 16-bit, 6 = 24-bit (stereo) */
+  s_pkt_base = (int)(s_out_rate / 1000);
+  s_pkt_frac = (int)(s_out_rate % 1000);
+  s_frac_accum = 0;
+  int alloc = (s_pkt_base + 1) * s_frame_bytes * PACKETS_PER_URB;
+  if (alloc > (int)s_out_mps * PACKETS_PER_URB)
+    alloc = (int)s_out_mps * PACKETS_PER_URB;
+
+  /* FIFO reset + silence prefill belong to the playback task (the buffer's
+   * sole writer and fifo_reset()'s only legal caller); it services this flag
+   * at the top of its loop. Until then the callback zero-pads from the FIFO
+   * — silence either way, since teardown_device() flushed it. */
+  flush_requested = true;
+  s_streaming = true;
+  /* Prime ALL URBs before submitting ANY: fill_out_packets() advances the
+   * shared fractional accumulator, and the moment the first URB is
+   * submitted its completion callback (USB client task) starts calling it
+   * too — interleaving with this loop would race the accumulator and
+   * corrupt 44.1 kHz fractional packet sizing. With the split, the
+   * callback is the accumulator's only caller once submits begin. */
+  for (int i = 0; i < NUM_URBS; i++) {
+    ESP_RETURN_ON_ERROR(
+        usb_host_transfer_alloc(alloc, PACKETS_PER_URB, &s_urb[i]), TAG,
+        "transfer_alloc");
+    s_urb[i]->device_handle = s_dev;
+    s_urb[i]->bEndpointAddress = s_out_ep;
+    s_urb[i]->callback = out_xfer_cb;
+    s_urb[i]->context = NULL;
+    memset(s_urb[i]->data_buffer, 0, alloc); /* prime with silence */
+    fill_out_packets(s_urb[i]);              /* sets packet sizes + num_bytes */
+  }
+  for (int i = 0; i < NUM_URBS; i++)
+    ESP_RETURN_ON_ERROR(usb_host_transfer_submit(s_urb[i]), TAG, "submit");
+  ESP_LOGI(
+      TAG,
+      "Streaming: ep=0x%02x rate=%lu (%d+frac samp/frame) x %d pkt x %d urbs",
+      s_out_ep, (unsigned long)s_out_rate, s_pkt_base, PACKETS_PER_URB,
+      NUM_URBS);
+  return ESP_OK;
+}
+
+/* ── Isochronous IN capture (full-duplex) ────────────────────────────────── */
+/* We don't use the mic audio; resubmitting IN transfers just keeps the capture
+ * stream live so a headset treats this as an active call and routes USB->spkr.
+ */
+static void in_xfer_cb(usb_transfer_t *xfer) {
+  if (!s_capturing)
+    return; /* tearing down — do not resubmit */
+  s_in_done++;
+  if (xfer->status != USB_TRANSFER_STATUS_COMPLETED)
+    s_in_err++;
+  for (int j = 0; j < PACKETS_PER_URB; j++)
+    xfer->isoc_packet_desc[j].num_bytes = s_in_packet_bytes; /* discard data */
+  xfer->num_bytes = s_in_packet_bytes * PACKETS_PER_URB;
+  if ((s_in_done % 500) == 0)
+    ESP_LOGI(TAG, "tlm mic-IN done=%lu err=%lu", (unsigned long)s_in_done,
+             (unsigned long)s_in_err);
+  usb_host_transfer_submit(xfer);
+}
+
+static esp_err_t start_capture(void) {
+  s_in_packet_bytes = s_in_channels * 2 * (int)(s_out_rate / 1000);
+  if (s_in_packet_bytes > s_in_mps)
+    s_in_packet_bytes = s_in_mps;
+  int total = s_in_packet_bytes * PACKETS_PER_URB;
+  s_capturing = true;
+  for (int i = 0; i < NUM_IN_URBS; i++) {
+    if (usb_host_transfer_alloc(total, PACKETS_PER_URB, &s_in_urb[i]) !=
+        ESP_OK) {
+      s_in_urb[i] = NULL;
+      goto fail;
+    }
+    s_in_urb[i]->device_handle = s_dev;
+    s_in_urb[i]->bEndpointAddress = s_in_ep;
+    s_in_urb[i]->callback = in_xfer_cb;
+    s_in_urb[i]->context = NULL;
+    s_in_urb[i]->num_bytes = total;
+    for (int j = 0; j < PACKETS_PER_URB; j++)
+      s_in_urb[i]->isoc_packet_desc[j].num_bytes = s_in_packet_bytes;
+    if (usb_host_transfer_submit(s_in_urb[i]) != ESP_OK)
+      goto fail;
+  }
+  return ESP_OK;
+fail:
+  s_capturing = false;
+  for (int i = 0; i < NUM_IN_URBS; i++)
+    if (s_in_urb[i]) {
+      usb_host_transfer_free(s_in_urb[i]);
+      s_in_urb[i] = NULL;
+    }
+  return ESP_FAIL;
+}
+
+/* Control-transfer completion handshake. The waiter and the completion
+ * callback race at timeout: freeing an in-flight EP0 URB corrupts the USB
+ * host stack (observed: assert in hcd_urb_dequeue at a track-change
+ * teardown, hours into a session). Ownership is decided by one atomic CAS:
+ * whoever loses the race cleans up. */
+typedef enum {
+  CTRL_WAITING = 0,
+  CTRL_DONE,     /* callback fired first: waiter frees */
+  CTRL_ABANDONED /* waiter timed out first: callback frees */
+} ctrl_state_t;
+
+static void ctrl_done_cb(usb_transfer_t *t) {
+  int expected = CTRL_WAITING;
+  if (__atomic_compare_exchange_n((int *)&t->context, &expected, CTRL_DONE,
+                                  false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+    xSemaphoreGive(s_ctrl_sem);
+  } else {
+    /* Waiter abandoned this transfer on timeout — it is ours to free. */
+    usb_host_transfer_free(t);
+  }
+}
+
+/* Blocking control transfer on EP0. MUST be called from a task other than the
+ * USB client task (that task dispatches this transfer's completion callback).
+ */
+static esp_err_t ctrl_xfer_sync(uint8_t reqtype, uint8_t req, uint16_t val,
+                                uint16_t idx, const uint8_t *data,
+                                uint16_t len) {
+  usb_transfer_t *x = NULL;
+  uint16_t buflen = len ? len : 1;
+  if (usb_host_transfer_alloc(8 + buflen, 0, &x) != ESP_OK)
+    return ESP_ERR_NO_MEM;
+  usb_setup_packet_t *s = (usb_setup_packet_t *)x->data_buffer;
+  s->bmRequestType = reqtype;
+  s->bRequest = req;
+  s->wValue = val;
+  s->wIndex = idx;
+  s->wLength = len;
+  if (data && len)
+    memcpy(x->data_buffer + 8, data, len);
+  x->num_bytes = 8 + len;
+  x->device_handle = s_dev;
+  x->bEndpointAddress = 0;
+  x->callback = ctrl_done_cb;
+  x->context = (void *)CTRL_WAITING;
+  esp_err_t e = usb_host_transfer_submit_control(s_client, x);
+  if (e != ESP_OK) {
+    usb_host_transfer_free(x); /* never submitted — safe to free */
+    return e;
+  }
+  if (xSemaphoreTake(s_ctrl_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
+    e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
+    usb_host_transfer_free(x);
+    return e;
+  }
+  /* Timeout. Try to abandon the transfer to the callback; if the callback
+   * completed in this instant, consume its semaphore give and free here. */
+  int expected = CTRL_WAITING;
+  if (__atomic_compare_exchange_n((int *)&x->context, &expected, CTRL_ABANDONED,
+                                  false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+    return ESP_ERR_TIMEOUT; /* callback will free the in-flight transfer */
+  }
+  xSemaphoreTake(s_ctrl_sem, 0); /* balance the give from the callback */
+  e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
+  usb_host_transfer_free(x);
+  return e;
+}
+
+/* IN (device->host) variant of ctrl_xfer_sync: reads up to `len` bytes of a
+ * class request into `out`; *out_len gets the count actually received (may
+ * be short — devices truncate RANGE replies to what they have). */
+static esp_err_t ctrl_xfer_sync_in(uint8_t reqtype, uint8_t req, uint16_t val,
+                                   uint16_t idx, uint8_t *out, uint16_t len,
+                                   int *out_len) {
+  if (out_len)
+    *out_len = 0;
+  usb_transfer_t *x = NULL;
+  if (usb_host_transfer_alloc(8 + len, 0, &x) != ESP_OK)
+    return ESP_ERR_NO_MEM;
+  usb_setup_packet_t *s = (usb_setup_packet_t *)x->data_buffer;
+  s->bmRequestType = reqtype; /* 0xA1 = IN | class | interface */
+  s->bRequest = req;
+  s->wValue = val;
+  s->wIndex = idx;
+  s->wLength = len;
+  x->num_bytes = 8 + len;
+  x->device_handle = s_dev;
+  x->bEndpointAddress = 0;
+  x->callback = ctrl_done_cb;
+  x->context = (void *)CTRL_WAITING;
+  esp_err_t e = usb_host_transfer_submit_control(s_client, x);
+  if (e != ESP_OK) {
+    usb_host_transfer_free(x); /* never submitted — safe to free */
+    return e;
+  }
+  if (xSemaphoreTake(s_ctrl_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+    int expected = CTRL_WAITING;
+    if (__atomic_compare_exchange_n((int *)&x->context, &expected,
+                                    CTRL_ABANDONED, false, __ATOMIC_SEQ_CST,
+                                    __ATOMIC_SEQ_CST)) {
+      return ESP_ERR_TIMEOUT; /* callback will free the in-flight transfer */
+    }
+    xSemaphoreTake(s_ctrl_sem, 0); /* balance the give from the callback */
+  }
+  e = (x->status == USB_TRANSFER_STATUS_COMPLETED) ? ESP_OK : ESP_FAIL;
+  if (e == ESP_OK && out && len) {
+    int got = (int)x->actual_num_bytes - 8;
+    if (got < 0)
+      got = 0;
+    if (got > (int)len)
+      got = len;
+    memcpy(out, x->data_buffer + 8, (size_t)got);
+    if (out_len)
+      *out_len = got;
+  }
+  usb_host_transfer_free(x);
+  return e;
+}
+
+/* UAC SET_CUR helpers (class request to the AudioControl interface). */
+static esp_err_t uac_set_clock_hz(uint8_t clk_id, uint32_t hz) {
+  uint8_t d[4] = {(uint8_t)hz, (uint8_t)(hz >> 8), (uint8_t)(hz >> 16),
+                  (uint8_t)(hz >> 24)};
+  /* CS_SAM_FREQ_CONTROL (0x01) << 8 */
+  return ctrl_xfer_sync(0x21, 0x01, 0x0100,
+                        (uint16_t)((clk_id << 8) | s_ac_iface), d, 4);
+}
+/* UAC2: read the Clock Source's supported rates (RANGE on SAM_FREQ, layout-3
+ * subranges {dMIN,dMAX,dRES} x u32) and pick 44.1 k native > 48 k resampled >
+ * first advertised — mirroring the UAC1 tSamFreq parse. Do NOT infer support
+ * from SET_CUR acceptance: rate-locked devices ACK 44100 and then play
+ * silence (the UAC1 Sony failure, UAC2 edition). Returns 0 on query failure
+ * (caller keeps OUTPUT_RATE — the prior behavior). */
+static uint32_t uac2_clock_pick_rate(void) {
+  uint8_t buf[2 + 12 * 8]; /* up to 8 subranges */
+  int got = 0;
+  if (ctrl_xfer_sync_in(0xA1, 0x02 /* RANGE */, 0x0100 /* SAM_FREQ */,
+                        (uint16_t)((s_clock_id << 8) | s_ac_iface), buf,
+                        sizeof(buf), &got) != ESP_OK ||
+      got < 2)
+    return 0;
+  int n = buf[0] | (buf[1] << 8);
+  if (n <= 0)
+    return 0;
+  if (n > (got - 2) / 12)
+    n = (got - 2) / 12; /* device sent fewer subranges than it claimed */
+  uint32_t first_min = 0;
+  bool has_44100 = false, has_48000 = false;
+  for (int i = 0; i < n; i++) {
+    const uint8_t *r = buf + 2 + i * 12;
+    uint32_t mn =
+        r[0] | (r[1] << 8) | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    uint32_t mx =
+        r[4] | (r[5] << 8) | ((uint32_t)r[6] << 16) | ((uint32_t)r[7] << 24);
+    uint32_t res =
+        r[8] | (r[9] << 8) | ((uint32_t)r[10] << 16) | ((uint32_t)r[11] << 24);
+    if (i == 0)
+      first_min = mn;
+    if (44100 >= mn && 44100 <= mx && (res == 0 || (44100 - mn) % res == 0))
+      has_44100 = true;
+    if (48000 >= mn && 48000 <= mx && (res == 0 || (48000 - mn) % res == 0))
+      has_48000 = true;
+  }
+  if (has_44100)
+    return 44100;
+  if (has_48000)
+    return 48000;
+  return first_min;
+}
+
+/* UAC1: SAMPLING_FREQ_CONTROL on the streaming ENDPOINT (3-byte rate). The EP
+ * exists only after the streaming alt is selected, so call after SET_INTERFACE.
+ */
+static esp_err_t uac1_set_ep_rate(uint8_t ep, uint32_t hz) {
+  uint8_t d[3] = {(uint8_t)hz, (uint8_t)(hz >> 8), (uint8_t)(hz >> 16)};
+  return ctrl_xfer_sync(0x22, 0x01, 0x0100, ep, d, 3);
+}
+static esp_err_t uac_fu_set_mute(uint8_t fu_id, bool mute) {
+  uint8_t d = mute ? 1 : 0; /* MUTE_CONTROL (0x01) << 8, channel 0 (master) */
+  return ctrl_xfer_sync(0x21, 0x01, 0x0100,
+                        (uint16_t)((fu_id << 8) | s_ac_iface), &d, 1);
+}
+static esp_err_t uac_fu_set_volume_db(uint8_t fu_id, int16_t db_q8) {
+  uint8_t d[2] = {(uint8_t)db_q8, (uint8_t)(db_q8 >> 8)};
+  uint16_t widx = (uint16_t)((fu_id << 8) | s_ac_iface);
+  /* VOLUME_CONTROL (0x02) << 8 | channel. Master (ch 0) covers most devices
+   * (EarPods, Bose), but some — e.g. the Sony INZONE Buds receiver — STALL
+   * the master channel and only accept per-channel writes. Fall back to
+   * L (ch 1) + R (ch 2) so the 0 dB volume write still lands. */
+  esp_err_t e = ctrl_xfer_sync(0x21, 0x01, 0x0200, widx, d, 2);
+  if (e != ESP_OK) {
+    esp_err_t l = ctrl_xfer_sync(0x21, 0x01, 0x0201, widx, d, 2); /* ch 1 = L */
+    esp_err_t r = ctrl_xfer_sync(0x21, 0x01, 0x0202, widx, d, 2); /* ch 2 = R */
+    if (l == ESP_OK || r == ESP_OK)
+      e = ESP_OK;
+  }
+  return e;
+}
+static esp_err_t uac_mixer_set_db(uint8_t mixer_id, uint8_t in_ch,
+                                  uint8_t out_ch, int16_t db_q8) {
+  uint8_t d[2] = {(uint8_t)db_q8, (uint8_t)(db_q8 >> 8)};
+  /* wValue = (input channel number << 8) | output channel number */
+  return ctrl_xfer_sync(0x21, 0x01, (uint16_t)((in_ch << 8) | out_ch),
+                        (uint16_t)((mixer_id << 8) | s_ac_iface), d, 2);
+}
+
+/* ── HID media buttons (headset play/volume keys) ────────────────────────── */
+typedef enum {
+  HID_ACT_PLAY_PAUSE,
+  HID_ACT_VOL_UP,
+  HID_ACT_VOL_DOWN,
+} hid_action_t;
+
+/* DACP (play/pause, volume) does mDNS + HTTP, which can block — so the USB
+ * callback only enqueues here; this task does the network work. */
+static void hid_action_task(void *arg) {
+  (void)arg;
+  int v;
+  while (1) {
+    if (xQueueReceive(s_hid_action_q, &v, portMAX_DELAY) != pdTRUE)
+      continue;
+    switch ((hid_action_t)v) {
+    case HID_ACT_PLAY_PAUSE:
+      ESP_LOGI(TAG, "HID button -> play/pause");
+      playback_control_play_pause();
+      break;
+    case HID_ACT_VOL_UP:
+      ESP_LOGI(TAG, "HID button -> volume up");
+      playback_control_volume_up();
+      break;
+    case HID_ACT_VOL_DOWN:
+      ESP_LOGI(TAG, "HID button -> volume down");
+      playback_control_volume_down();
+      break;
+    }
+  }
+}
+
+static void hid_post(hid_action_t a) {
+  int v = (int)a;
+  if (s_hid_action_q)
+    xQueueSend(s_hid_action_q, &v, 0); /* non-blocking */
+}
+
+static void hid_in_cb(usb_transfer_t *xfer) {
+  if (!s_hid_active)
+    return;
+  if (xfer->status == USB_TRANSFER_STATUS_COMPLETED &&
+      xfer->actual_num_bytes > 0) {
+    const uint8_t *r = xfer->data_buffer;
+    int nb = xfer->actual_num_bytes;
+    /* Layout (Apple EarPods + similar): byte[0]=report ID, byte[1]=button
+     * bitmap. Keep the raw log (only fires on press/release) to support other
+     * devices, then dispatch once per new press (0->1 edge). */
+    ESP_LOGI(TAG, "HID report (%dB): %02x %02x %02x %02x", nb, r[0],
+             nb > 1 ? r[1] : 0, nb > 2 ? r[2] : 0, nb > 3 ? r[3] : 0);
+    uint8_t bm = (nb > 1) ? r[1] : 0;
+    uint8_t newly = (uint8_t)(bm & ~s_hid_prev);
+    s_hid_prev = bm;
+    if (newly & HID_BIT_PLAY_PAUSE)
+      hid_post(HID_ACT_PLAY_PAUSE);
+    if (newly & HID_BIT_VOL_UP)
+      hid_post(HID_ACT_VOL_UP);
+    if (newly & HID_BIT_VOL_DOWN)
+      hid_post(HID_ACT_VOL_DOWN);
+  }
+  if (s_hid_active)
+    usb_host_transfer_submit(xfer);
+}
+
+static esp_err_t start_hid(void) {
+  if (usb_host_transfer_alloc(s_hid_mps, 0, &s_hid_urb) != ESP_OK)
+    return ESP_ERR_NO_MEM;
+  s_hid_urb->device_handle = s_dev;
+  s_hid_urb->bEndpointAddress = s_hid_ep;
+  s_hid_urb->callback = hid_in_cb;
+  s_hid_urb->context = NULL;
+  s_hid_urb->num_bytes = s_hid_mps;
+  s_hid_active = true;
+  return usb_host_transfer_submit(s_hid_urb);
+}
+
+static void teardown_device(void); /* used on unrecoverable setup failure */
+
+static void setup_device(uint8_t addr) {
+  if (usb_host_device_open(s_client, addr, &s_dev) != ESP_OK) {
+    ESP_LOGE(TAG, "device_open(addr=%u) failed", addr);
+    s_dev = NULL;
+    return;
+  }
+  const usb_config_desc_t *cfg = NULL;
+  if (usb_host_get_active_config_descriptor(s_dev, &cfg) != ESP_OK || !cfg) {
+    ESP_LOGE(TAG, "get_active_config_descriptor failed");
+    goto fail_close;
+  }
+  if (!find_speaker_altsetting(cfg)) {
+    ESP_LOGE(TAG, "No stereo PCM iso OUT alt-setting found");
+    goto fail_close;
+  }
+  /* UAC2 rates live on the Clock Source, not in the AS descriptors, so the
+   * alt selection above assumed OUTPUT_RATE. Ask the clock what it really
+   * supports and re-pick before anything consumes s_out_rate — a rate-locked
+   * UAC2 device otherwise gets SET_CUR(44100), ACKs it, and plays silence. */
+  if (s_uac_ver == 2 && s_clock_id) {
+    uint32_t r = uac2_clock_pick_rate();
+    if (r && r != s_out_rate) {
+      unsigned need = (unsigned)(r / 1000 + (r % 1000 != 0)) * 2u *
+                      (unsigned)s_out_subslot; /* peak bytes per 1 ms */
+      if (need <= s_out_mps) {
+        ESP_LOGI(TAG, "UAC2 clock: device supports %lu Hz, not %d — using it",
+                 (unsigned long)r, OUTPUT_RATE);
+        s_out_rate = r;
+      } else {
+        ESP_LOGW(TAG, "UAC2 clock rate %lu needs %u B/pkt > mps %u — keeping",
+                 (unsigned long)r, need, s_out_mps);
+      }
+    }
+  }
+
+  ESP_LOGI(TAG,
+           "Speaker iface=%u alt=%u ep=0x%02x mps=%u rate=%lu | Mic iface=%u "
+           "alt=%u ep=0x%02x ch=%d | AC iface=%u clocks=%d FUs=%d mic_fu=%u",
+           s_out_iface, s_out_alt, s_out_ep, s_out_mps,
+           (unsigned long)s_out_rate, s_in_iface, s_in_alt, s_in_ep,
+           s_in_channels, s_ac_iface, s_clock_count, s_fu_count, s_mic_fu);
+
+  /* 0) Mute every feature unit FIRST (best-effort — some FUs reject writes).
+   * Between USB reset and the first iso packet the device's DAC is enabled
+   * but unclocked, and several DACs emit white noise in that window. Keep
+   * them muted through setup; unmute AFTER the silence stream is flowing
+   * (step 5 below). */
+  for (int i = 0; i < s_fu_count; i++)
+    uac_fu_set_mute(s_fu_ids[i], true);
+
+  /* 1) UAC2: set every clock source's sample rate BEFORE selecting a streaming
+   * alt. UAC1 has no clock entities — its rate is set on the endpoint after
+   * SET_INTERFACE (below). */
+  if (s_uac_ver == 2) {
+    for (int i = 0; i < s_clock_count; i++) {
+      esp_err_t e = uac_set_clock_hz(s_clock_ids[i], s_out_rate);
+      ESP_LOGI(TAG, "set clock id=%u %lu Hz: %s", s_clock_ids[i],
+               (unsigned long)s_out_rate, esp_err_to_name(e));
+    }
+    if (s_clock_count == 0 && s_clock_id)
+      uac_set_clock_hz(s_clock_id, s_out_rate);
+  }
+
+  /* 2) Claim the streaming interface+alt. NOTE: usb_host_interface_claim() only
+   * configures the HOST-side pipes — it does NOT send SET_INTERFACE to the
+   * device. Without the explicit SET_INTERFACE below, the device's streaming
+   * endpoint stays on alt 0 (DISABLED) and every iso-OUT packet is silently
+   * dropped (the host still reports pkt_err=0 because iso has no handshake). */
+  if (usb_host_interface_claim(s_client, s_dev, s_out_iface, s_out_alt) !=
+      ESP_OK) {
+    ESP_LOGE(TAG, "interface_claim(iface=%u alt=%u) failed", s_out_iface,
+             s_out_alt);
+    goto fail_close;
+  }
+  /* The new device may run a different rate — flag the playback task (the
+   * resampler's sole owner) to rebuild it at the top of its loop. Calling
+   * audio_resample_init() from this task would free buffers a concurrent
+   * audio_resample_process() may be reading (hot-plug during playback =
+   * use-after-free). */
+  resample_reinit_needed = true;
+  /* 2b) Prime and submit the silence URBs BEFORE SET_INTERFACE. While the
+   * device is on alt 0 it discards iso OUT data, so this is harmless — and
+   * the moment SET_INTERFACE enables its endpoint, real (zero) data is
+   * already arriving. Devices whose DAC hisses while enabled-but-unclocked
+   * (startup white noise) get clocked immediately. */
+  if (start_streaming() != ESP_OK) {
+    /* A mid-loop alloc/submit failure leaves earlier URBs allocated and
+     * possibly IN FLIGHT. Releasing the interface under them (the old
+     * cleanup) wedges the device, and the next connect would overwrite
+     * s_urb[] and orphan live transfers. teardown_device() waits them out
+     * and frees everything. */
+    ESP_LOGE(TAG, "start_streaming failed — teardown");
+    teardown_device();
+    return;
+  }
+
+  /* THE FIX: switch the DEVICE to the streaming alt (enables its endpoint).
+   * Everything hangs on this transfer: if it doesn't land, the device stays
+   * on alt 0 and every iso-OUT byte is silently discarded with zero error
+   * feedback (iso has no handshake). Retry transient control-pipe failures;
+   * on persistent failure tear down rather than run a provably silent
+   * session that logs "streaming started". */
+  esp_err_t si = ESP_FAIL;
+  for (int attempt = 0; attempt < 3 && si != ESP_OK; attempt++) {
+    if (attempt)
+      vTaskDelay(pdMS_TO_TICKS(20));
+    si = ctrl_xfer_sync(0x01, 0x0b, s_out_alt, s_out_iface, NULL, 0);
+  }
+  ESP_LOGI(TAG, "SET_INTERFACE(iface=%u alt=%u): %s", s_out_iface, s_out_alt,
+           esp_err_to_name(si));
+  if (si != ESP_OK) {
+    ESP_LOGE(TAG, "device stuck on alt 0 (output would be silent) — teardown");
+    teardown_device();
+    return;
+  }
+  /* UAC1: now that the endpoint exists, set its sampling frequency. (Until
+   * this lands the device consumes our zeros at its power-on rate — still
+   * silence, so the order is safe.) */
+  if (s_uac_ver == 1) {
+    esp_err_t er = uac1_set_ep_rate(s_out_ep, s_out_rate);
+    ESP_LOGI(TAG, "UAC1 set ep 0x%02x rate %lu Hz: %s", s_out_ep,
+             (unsigned long)s_out_rate, esp_err_to_name(er));
+  }
+
+  /* 3) Full-duplex: also claim the mic interface and run iso IN transfers, so
+   * a headset that only routes USB audio during an active bidirectional call
+   * un-gates its speaker. Best-effort — failure falls back to output-only. */
+#if USB_HOST_FULL_DUPLEX
+  if (s_in_ep) {
+    esp_err_t ce =
+        usb_host_interface_claim(s_client, s_dev, s_in_iface, s_in_alt);
+    if (ce == ESP_OK && start_capture() == ESP_OK) {
+      ESP_LOGI(TAG,
+               "Full-duplex: mic IN iface=%u alt=%u ep=0x%02x ch=%d mps=%u",
+               s_in_iface, s_in_alt, s_in_ep, s_in_channels, s_in_mps);
+    } else {
+      ESP_LOGW(TAG, "Full-duplex mic IN open failed (claim=%s) — OUT only",
+               esp_err_to_name(ce));
+      if (ce == ESP_OK)
+        usb_host_interface_release(s_client, s_dev, s_in_iface);
+      s_in_ep = 0;
+    }
+  }
+#else
+  s_in_ep = 0; /* output-only build: never open capture */
+#endif
+
+  ESP_LOGI(TAG, "USB audio OUT streaming started");
+
+  /* 4) NOW unmute — the silence stream is already flowing, so the device's
+   * DAC is clocked with real (zero) data and can't hiss. Unmute + 0 dB the
+   * speaker-path and mic-path feature units only; the rest (e.g. a
+   * mic-monitor/sidetone FU that would loop the mic into the speaker) stay
+   * muted from step 0. (History: an unmute-everything variant was tried
+   * while chasing a silent Sony receiver, but that silence was a 48 kHz-only
+   * sample-rate issue — see find_speaker_altsetting — not a hidden FU.) */
+  for (int i = 0; i < s_fu_count; i++) {
+    /* Speaker-path FU, either topology: IT->FU->OT (the FU feeds the
+     * output terminal directly, s_speaker_src == FU id) or
+     * IT->FU->Mixer->OT (common on headsets: the OT's source is the MIXER,
+     * so match the FU whose own source is the USB-streaming input
+     * terminal instead — otherwise the speaker FU stays muted from step 0
+     * and the device is silent). A sidetone FU (source = mic terminal)
+     * matches neither and stays muted. */
+    bool master =
+        (s_fu_ids[i] == s_speaker_src) || (s_usb_it && s_fu_src[i] == s_usb_it);
+    bool mic = (s_fu_ids[i] == s_mic_fu); /* feeds the USB mic-out */
+    if (!master && !mic)
+      continue; /* left muted by step 0 (sidetone hygiene) */
+    esp_err_t em = uac_fu_set_mute(s_fu_ids[i], false);
+    esp_err_t ev = uac_fu_set_volume_db(s_fu_ids[i], 0);
+    ESP_LOGI(TAG, "FU %u %s mute=0:%s vol:%s", s_fu_ids[i],
+             master ? "SPK" : "MIC", esp_err_to_name(em), esp_err_to_name(ev));
+  }
+
+  /* 5b) Route the USB stereo input through the mixer to the speaker (a headset
+   * mixer's USB crosspoints default to muted, while the mic pin is unity). */
+  if (s_mixer_id) {
+    esp_err_t a = uac_mixer_set_db(s_mixer_id, 1, 1, 0); /* USB L -> out L */
+    esp_err_t b = uac_mixer_set_db(s_mixer_id, 2, 2, 0); /* USB R -> out R */
+    ESP_LOGI(TAG, "mixer %u (1->1):%s (2->2):%s", s_mixer_id,
+             esp_err_to_name(a), esp_err_to_name(b));
+  }
+
+  /* 6) Headset media buttons: claim the HID interface (if present) and read its
+   * interrupt reports. Best-effort — failure just means no button control. */
+  if (s_hid_iface != 0xff && s_hid_ep) {
+    if (usb_host_interface_claim(s_client, s_dev, s_hid_iface, s_hid_alt) ==
+        ESP_OK) {
+      ctrl_xfer_sync(0x21, 0x0a, 0x0000, s_hid_iface, NULL, 0); /* SET_IDLE 0 */
+      if (start_hid() == ESP_OK) {
+        ESP_LOGI(TAG, "HID media buttons active (iface=%u ep=0x%02x)",
+                 s_hid_iface, s_hid_ep);
+      } else {
+        usb_host_interface_release(s_client, s_dev, s_hid_iface);
+        s_hid_iface = 0xff;
+      }
+    } else {
+      ESP_LOGW(TAG, "HID claim failed (iface=%u)", s_hid_iface);
+      s_hid_iface = 0xff;
+    }
+  }
+  return;
+
+fail_close:
+  usb_host_device_close(s_client, s_dev);
+  s_dev = NULL;
+}
+
+static void teardown_device(void) {
+  s_streaming = false;
+  s_capturing = false;
+  s_hid_active = false;
+  flush_requested = true; /* playback task drops the now-stale FIFO bytes */
+  /* Wait out in-flight URBs before freeing them: the staggered iso-OUT ring
+   * spans NUM_URBS * PACKETS_PER_URB ms (32 ms) on a still-ALIVE device
+   * (SET_INTERFACE-failure teardown), and callbacks stop resubmitting only
+   * once s_streaming is false. usb_host_transfer_free() on an in-flight URB
+   * corrupts the heap. On DEV_GONE the stack fails transfers back much
+   * faster — the extra wait just makes disconnect teardown unhurried. */
+  vTaskDelay(pdMS_TO_TICKS(NUM_URBS * PACKETS_PER_URB + 10));
+  for (int i = 0; i < NUM_URBS; i++) {
+    if (s_urb[i]) {
+      usb_host_transfer_free(s_urb[i]);
+      s_urb[i] = NULL;
+    }
+  }
+  for (int i = 0; i < NUM_IN_URBS; i++) {
+    if (s_in_urb[i]) {
+      usb_host_transfer_free(s_in_urb[i]);
+      s_in_urb[i] = NULL;
+    }
+  }
+  if (s_hid_urb) {
+    usb_host_transfer_free(s_hid_urb);
+    s_hid_urb = NULL;
+  }
+  if (s_dev) {
+    usb_host_interface_release(s_client, s_dev, s_out_iface);
+    if (s_in_ep)
+      usb_host_interface_release(s_client, s_dev, s_in_iface);
+    if (s_hid_iface != 0xff)
+      usb_host_interface_release(s_client, s_dev, s_hid_iface);
+    usb_host_device_close(s_client, s_dev);
+    s_dev = NULL;
+  }
+  s_in_ep = 0;
+  s_hid_iface = 0xff;
+  s_hid_ep = 0;
+  ESP_LOGI(TAG, "USB audio device torn down");
+}
+
+/* ── USB client (NEW_DEV / DEV_GONE) ─────────────────────────────────────── */
+static void client_event_cb(const usb_host_client_event_msg_t *msg, void *arg) {
+  if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
+    /* Latch unconditionally — NEW_DEV is edge-triggered and never retried.
+     * On a fast unplug/replug (or a device that resets itself) it can
+     * arrive while the old device's teardown hasn't cleared s_dev yet;
+     * gating on !s_dev here dropped the event and left the device dead
+     * until reboot. The setup task acts on the latch only once s_dev is
+     * free; a newer plug simply overwrites the latched address. */
+    s_pending_addr = msg->new_dev.address;
+    s_connect_pending = true;
+  } else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
+    s_disconnect_pending = true;
+  }
+}
+
+static void usb_client_task(void *arg) {
+  const usb_host_client_config_t cfg = {
+      .is_synchronous = false,
+      .max_num_event_msg = 5,
+      .async = {.client_event_callback = client_event_cb, .callback_arg = NULL},
+  };
+  if (usb_host_client_register(&cfg, &s_client) != ESP_OK) {
+    ESP_LOGE(TAG, "client_register failed");
+    vTaskDelete(NULL);
+    return;
+  }
+  ESP_LOGI(TAG, "USB host client ready; waiting for a USB speaker/headphone");
+  /* Pump events continuously: dispatches NEW_DEV / DEV_GONE, the setup task's
+   * control-transfer completions, and the iso OUT completions. */
+  while (true)
+    usb_host_client_handle_events(s_client, portMAX_DELAY);
+}
+
+/* Device setup/teardown runs on its own task (not the client task) so the
+ * blocking control transfers in setup_device() can wait while the client task
+ * keeps dispatching their completion callbacks. */
+static void usb_setup_task(void *arg) {
+  (void)arg;
+  while (true) {
+    if (s_disconnect_pending) {
+      s_disconnect_pending = false;
+      teardown_device();
+    }
+    /* Act on a latched NEW_DEV only when no device is open — teardown above
+     * runs first, so a replug connects in this same iteration. If the
+     * latched device vanished meanwhile, setup_device()'s open fails and
+     * cleans up harmlessly. */
+    if (s_connect_pending && s_client && !s_dev) {
+      s_connect_pending = false;
+      setup_device(s_pending_addr);
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+/* Graceful-reboot hook. A software reset (OTA, web-UI restart) kills the host
+ * mid-stream; a bus-powered DAC that keeps VBUS through the reboot then hisses
+ * on the dead bus until the next boot re-enumerates it (~7 s). Mute the FUs
+ * and switch the streaming interface back to alt 0 (endpoint disabled) so the
+ * device idles silently instead. Hard resets (button/power) can't run this. */
+static void usb_audio_shutdown(void) {
+  if (!s_dev)
+    return;
+  for (int i = 0; i < s_fu_count; i++)
+    uac_fu_set_mute(s_fu_ids[i], true);
+  ctrl_xfer_sync(0x01, 0x0b, 0, s_out_iface, NULL, 0); /* SET_INTERFACE alt 0 */
+}
+
+/* ── Volume + playback task ──────────────────────────────────────────────── */
+static void apply_volume(int16_t *buf, size_t n) {
+#ifndef CONFIG_DAC_CONTROLS_VOLUME
+  int32_t vol = airplay_get_volume_q15();
+  for (size_t i = 0; i < n; i++)
+    buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15);
+#endif
+}
+
+static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_STEREO;
+
+/* Apply the selected channel mode to an interleaved stereo buffer (L,R,...).
+ * LEFT/RIGHT route the chosen source channel to BOTH outputs so the selected
+ * track is heard from both speakers; STEREO leaves the buffer untouched. */
+static void apply_channel_mode(int16_t *buf, size_t frames) {
+  audio_channel_mode_t mode = channel_mode;
+  if (mode == AUDIO_CHANNEL_STEREO)
+    return;
+  size_t src = (mode == AUDIO_CHANNEL_RIGHT) ? 1 : 0;
+  for (size_t i = 0; i < frames; i++) {
+    int16_t s = buf[i * 2 + src];
+    buf[i * 2] = s;
+    buf[i * 2 + 1] = s;
+  }
+}
+
+audio_channel_mode_t audio_output_cycle_channel_mode(void) {
+  audio_channel_mode_t next;
+  switch (channel_mode) {
+  case AUDIO_CHANNEL_STEREO:
+    next = AUDIO_CHANNEL_LEFT;
+    break;
+  case AUDIO_CHANNEL_LEFT:
+    next = AUDIO_CHANNEL_RIGHT;
+    break;
+  default:
+    next = AUDIO_CHANNEL_STEREO;
+    break;
+  }
+  channel_mode = next;
+  ESP_LOGI(TAG, "Channel mode: %s",
+           next == AUDIO_CHANNEL_LEFT    ? "LEFT only"
+           : next == AUDIO_CHANNEL_RIGHT ? "RIGHT only"
+                                         : "STEREO");
+  return next;
+}
+
+audio_channel_mode_t audio_output_get_channel_mode(void) {
+  return channel_mode;
+}
+
+void audio_output_set_channel_mode(audio_channel_mode_t mode) {
+  /* apply_channel_mode() implements STEREO/LEFT/RIGHT only; MONO would fall
+   * through to the LEFT path, so clamp it instead of mislabelling it. */
+  if (mode != AUDIO_CHANNEL_LEFT && mode != AUDIO_CHANNEL_RIGHT) {
+    mode = AUDIO_CHANNEL_STEREO;
+  }
+  channel_mode = mode;
+  ESP_LOGI(TAG, "Channel mode: %s",
+           mode == AUDIO_CHANNEL_LEFT    ? "LEFT only"
+           : mode == AUDIO_CHANNEL_RIGHT ? "RIGHT only"
+                                         : "STEREO");
+}
+
+/* Routing is done in software here, so nothing fixes it the way a multi-device
+ * DAC configuration does. Without this the weak default in
+ * audio_output_common.c would report the mode as locked, greying the control
+ * out in the web UI while the hardware button still cycled it. */
+bool audio_output_channel_mode_locked(void) {
+  return false;
+}
+
+static volatile int source_rate = 44100;
+
+/* Expand n16 16-bit PCM samples to the device's subslot size, left-justified
+ * (e.g. 16-bit -> 24-bit = value << 8). Writes n16 * subslot bytes. */
+static int expand_pcm(const int16_t *src, int n16, uint8_t *dst, int subslot) {
+  int shift = 8 * (subslot - 2);
+  uint8_t *o = dst;
+  for (int i = 0; i < n16; i++) {
+    int32_t v = (int32_t)src[i] << shift;
+    for (int b = 0; b < subslot; b++)
+      *o++ = (uint8_t)(v >> (8 * b));
+  }
+  return n16 * subslot;
+}
+
+static void playback_task(void *arg) {
+  int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
+  int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
+  int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+  /* Device-format scratch for >16-bit sinks (e.g. 24-bit Bose); worst case is
+   * MAX_RESAMPLE_FRAMES stereo frames at 4 bytes/sample. */
+  uint8_t *conv_buf = malloc((size_t)MAX_RESAMPLE_FRAMES * 2 * 4);
+  if (!pcm || !silence || !resample_buf || !conv_buf) {
+    ESP_LOGE(TAG, "alloc failed");
+    free(pcm);
+    free(silence);
+    free(resample_buf);
+    free(conv_buf);
+    vTaskDelete(NULL);
+    return;
+  }
+  while (true) {
+    if (resample_reinit_needed) {
+      resample_reinit_needed = false;
+      audio_resample_init((uint32_t)source_rate, s_out_rate, 2);
+    }
+    if (flush_requested) {
+      flush_requested = false;
+      audio_resample_reset();
+      fifo_reset();
+      fifo_prefill_silence();
+    }
+    /* No FIFO-level polling here: fifo_push() blocks on the stream buffer until
+     * the iso callbacks free space, which paces this loop to the device. */
+    size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
+    if (samples > 0) {
+      if (!s_streaming) {
+        /* Standby: no USB device attached but the AirPlay session is live.
+         * Discard the paced frames BEFORE the resampler/volume chain — the
+         * receiver's timing gate paces this loop, so standby costs almost
+         * nothing, and playback resumes the moment a device connects
+         * (setup_device rebuilds the resampler and prefills the FIFO). */
+        taskYIELD();
+        continue;
+      }
+      int16_t *play_buf = pcm;
+      size_t play_samples = samples;
+      if (audio_resample_is_active()) {
+        play_samples = audio_resample_process(pcm, samples, resample_buf,
+                                              MAX_RESAMPLE_FRAMES);
+        play_buf = resample_buf;
+      }
+      apply_volume(play_buf, play_samples * 2);
+      apply_channel_mode(play_buf, play_samples);
+      led_audio_feed(play_buf, play_samples);
+      if (s_streaming) {
+        if (s_frame_bytes == 4) {
+          fifo_push((const uint8_t *)play_buf, play_samples * 4);
+        } else {
+          int n = expand_pcm(play_buf, (int)play_samples * 2, conv_buf,
+                             s_out_subslot);
+          fifo_push(conv_buf, (size_t)n);
+        }
+      } else {
+        taskYIELD();
+      }
+    } else {
+      led_audio_feed(silence, FRAME_SAMPLES);
+      vTaskDelay(1);
+    }
+  }
+}
+
+/* ── Public API ──────────────────────────────────────────────────────────── */
+esp_err_t audio_output_init(void) {
+  /* Called twice: early in app_main (USB up before the network waits, so a
+   * noisy idle DAC gets silence ASAP) and from start_airplay_services(). */
+  static bool s_inited = false;
+  if (s_inited)
+    return ESP_OK;
+  s_inited = true;
+  ESP_LOGI(TAG, "Init USB UAC HOST (native) output, rate=%d", OUTPUT_RATE);
+  /* Realtime sessions re-anchor every ~1-2 s and the timing layer logs each
+   * one at INFO ("Anchor set: ...") — steady chatter during normal play.
+   * Quiet that TAG to warnings-and-up here instead of editing the shared
+   * timing code; real problems (late drops, stuck anchors) are W-level and
+   * still show. Comment out when debugging timing. */
+  esp_log_level_set("audio_time", ESP_LOG_WARN);
+  s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
+  s_ctrl_sem = xSemaphoreCreateBinary();
+  if (!s_pcm || !s_ctrl_sem)
+    return ESP_ERR_NO_MEM;
+
+  /* Task that turns headset HID button presses into DACP commands (off the USB
+   * callback, since DACP does blocking mDNS + HTTP). */
+  s_hid_action_q = xQueueCreate(8, sizeof(int));
+  if (s_hid_action_q)
+    task_create_spiram(hid_action_task, "hid_act", 4096, NULL, 5, NULL, NULL);
+
+  usb_host_vbus_enable();
+  const usb_host_config_t host_cfg = {
+      .skip_phy_setup = false,
+      .intr_flags = ESP_INTR_FLAG_LEVEL1,
+#if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+      /* Carve the FS controller's 200-line (4 B each) FIFO for iso-OUT audio.
+       * The Kconfig default (balanced bias) gives the periodic TX FIFO only 32
+       * lines = 128 B max packet, so ANY real UAC speaker EP (192 B at
+       * 48k/16-bit stereo, 384 B on high-rate alts) fails to allocate:
+       * "HCD DWC: EP MPS (192) exceeds supported limit (128)". PTX 150 lines
+       * = 600 B iso OUT; RX 34 lines = 128 B IN (HID buttons use 64); NPTX 16
+       * lines = 64 B, enough for FS control writes. Same split as
+       * CONFIG_USB_HOST_HW_BUFFER_BIAS_PERIODIC_OUT, but independent of the
+       * builder's sdkconfig. */
+      .fifo_settings_custom =
+          {
+              .nptx_fifo_lines = 16,
+              .ptx_fifo_lines = 150,
+              .rx_fifo_lines = 34,
+          },
+#endif
+  };
+  ESP_RETURN_ON_ERROR(usb_host_install(&host_cfg), TAG, "usb_host_install");
+  esp_register_shutdown_handler(usb_audio_shutdown);
+
+  xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, NULL, USB_LIB_PRIO,
+                          NULL, USB_CORE);
+  xTaskCreatePinnedToCore(usb_client_task, "usb_cli", 5120, NULL, USB_CLI_PRIO,
+                          NULL, USB_CORE);
+  xTaskCreatePinnedToCore(usb_setup_task, "usb_setup", 5120, NULL, USB_CLI_PRIO,
+                          NULL, USB_CORE);
+
+  audio_resample_init(44100, OUTPUT_RATE, 2);
+  return ESP_OK;
+}
+
+void audio_output_start(void) {
+  xTaskCreatePinnedToCore(playback_task, "uac_play", 4096, NULL, PLAYBACK_PRIO,
+                          NULL, PLAYBACK_CORE);
+}
+
+void audio_output_flush(void) {
+  flush_requested = true;
+}
+
+void audio_output_set_source_rate(int rate) {
+  if (rate > 0 && rate != source_rate) {
+    source_rate = rate;
+    resample_reinit_needed = true;
+  }
+}
+
+uint32_t audio_output_get_hardware_latency_us(void) {
+  /* The real output buffering the AirPlay timing layer must lead by. The
+   * playback task keeps the PCM FIFO near FIFO_TARGET_BYTES, and the iso URB
+   * queue holds NUM_URBS x PACKETS_PER_URB ms in flight, so a frame pushed now
+   * is not heard until it drains through both. The task pulls frames this far
+   * ahead of their acoustic time to keep the pipeline full; if the timing layer
+   * thinks the pipeline is only ~4 ms deep (the old hardcoded value), it treats
+   * those pulled-ahead frames as "early" and emits silence, the receive buffer
+   * backs up and ages, and stale frames then drop as "late" — the oscillation
+   * heard as stutter. Reporting the true depth makes them release on time. */
+  uint32_t fifo_us = (uint32_t)((uint64_t)FIFO_TARGET_BYTES * 1000000ULL /
+                                (s_out_rate * (uint32_t)s_frame_bytes));
+  uint32_t urb_us = (uint32_t)NUM_URBS * PACKETS_PER_URB * 1000;
+  return fifo_us + urb_us;
+}
