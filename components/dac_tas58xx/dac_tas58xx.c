@@ -214,7 +214,7 @@ static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
 
     // Auto-mute: enable for both channels
-    {REG_AUTO_MUTE_CTRL, 0x03},
+    {REG_AUTO_MUTE_CTRL, 0x07},
     {REG_AUTO_MUTE_TIME, 0x00},
 
     // Clear any pending faults
