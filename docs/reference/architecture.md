@@ -161,6 +161,7 @@ main/
 ├── plist/                      # Apple property list parsing
 ├── network/                    # WiFi, Ethernet, mDNS, PTP, NTP, web server, OTA
 ├── dacp_client.c               # DACP remote commands
+├── amp_gpio_control.c          # Optional external amp SD/mute outputs
 ├── playback_control.c          # Unified playback abstraction
 └── buttons.c                   # Debounced button input
 
@@ -192,6 +193,7 @@ components/
 | Display | `components/display/` | OLED or ST7789 TFT |
 | SPIFFS storage | `components/spiffs_storage/` | Filesystem mount |
 | Buttons | `main/buttons.c` | Debounced button input |
+| Amplifier GPIOs | `main/amp_gpio_control.c` | Optional playback-controlled SD/MUTE outputs |
 
 ## Conventions
 
