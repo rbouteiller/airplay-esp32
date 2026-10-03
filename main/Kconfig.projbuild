@@ -216,6 +216,68 @@ menu "Airplay ESP Configuration"
 
     endmenu
 
+    menu "Amplifier GPIO Control"
+        config AMP_GPIO_CONTROL
+            bool "Control external amplifier GPIOs on playback changes"
+            default n
+            help
+                Drive optional SD and MUTE outputs when AirPlay or Bluetooth
+                starts and stops playback. The firmware uses the SD pin as
+                shutdown/enable and the MUTE pin as mute, with independently
+                configured playing levels.
+
+        if AMP_GPIO_CONTROL
+            config AMP_GPIO_SD_GPIO
+                int "Amplifier SD/shutdown GPIO"
+                default -1
+                help
+                    GPIO connected to the amplifier SD/shutdown input. Set to
+                    -1 if this output is not used.
+
+            config AMP_GPIO_SD_PLAYING_LEVEL
+                int "Amplifier SD level while playing"
+                default 1
+                range 0 1
+                help
+                    Logic level on the SD/shutdown GPIO during playback. The
+                    opposite level is driven when playback is idle. For a
+                    shutdown pin that is active low, use 1 so playback releases
+                    shutdown.
+
+            config AMP_GPIO_ENABLE_DELAY_MS
+                int "Delay from SD release to unmute (ms)"
+                default 10
+                range 0 1000
+                help
+                    Time to wait after releasing SD before releasing MUTE.
+                    Only applies when both GPIOs are configured.
+
+            config AMP_GPIO_MUTE_GPIO
+                int "Amplifier mute GPIO"
+                default -1
+                help
+                    GPIO connected to the amplifier mute input. Set to -1 if
+                    this output is not used.
+
+            config AMP_GPIO_MUTE_PLAYING_LEVEL
+                int "Amplifier MUTE level while playing"
+                default 0
+                range 0 1
+                help
+                    Logic level on the MUTE GPIO during playback. The opposite
+                    level is driven when playback is idle. For a mute input
+                    that is active high, use 0 during playback.
+
+            config AMP_GPIO_SHUTDOWN_DELAY_MS
+                int "Delay from mute to SD shutdown (ms)"
+                default 10
+                range 0 1000
+                help
+                    Time to wait after muting before asserting SD. Only applies
+                    when both GPIOs are configured.
+        endif
+    endmenu
+
     menu "Bluetooth Configuration"
         depends on BT_A2DP_ENABLE
 

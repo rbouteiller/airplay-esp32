@@ -125,6 +125,7 @@ nav:
       - OLED display: features/oled-display.md
       - ST7789 TFT display: features/tft-display.md
       - Hardware buttons: features/buttons.md
+      - Amplifier GPIO control: features/amplifier-gpio.md
       - HybridFlow DSP (TAS57xx): features/hybridflow.md
       - AirPlay tuning: features/airplay-tuning.md
   - Reference:

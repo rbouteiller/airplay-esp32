@@ -1,4 +1,5 @@
 #include "audio_output.h"
+#include "amp_gpio_control.h"
 #include "audio_receiver.h"
 #include "buttons.h"
 #include "spiram_task.h"
@@ -266,6 +267,7 @@ void app_main(void) {
   spiffs_storage_init();
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
+  ESP_ERROR_CHECK(amp_gpio_control_init());
   led_init();
 
   // Initialize board-specific hardware (includes I2C/SPI bus for display and

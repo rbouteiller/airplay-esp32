@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#define MAX_LISTENERS 4
+#define MAX_LISTENERS 8
 
 typedef struct {
   rtsp_event_callback_t callback;

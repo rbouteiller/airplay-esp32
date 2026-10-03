@@ -1,6 +1,7 @@
 set( SRC_FILES
     "main.c"
     "alac_magic_cookie.c"
+    "amp_gpio_control.c"
     "settings.c"
     "audio/audio_receiver.c"
     "audio/audio_stream.c"
