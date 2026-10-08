@@ -333,12 +333,12 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
      * is already seconds old therefore fills the whole ring with unplayable
      * audio, at which point backpressure throttles the reader and reserve()
      * fails — wanted_rtp is never reached and the stream wedges silently.
-     * Publishing the floor makes that audio recyclable; trimming keeps the
-     * occupancy count honest so the reader is not throttled against it. */
+     * Even a small stale tail must be removed: it holds the old RTP phase and
+     * prevents a decoded new-phase frame from entering the timeline. Only
+     * blocks ending at or before wanted_rtp are trimmed, preserving outgoing
+     * audio that can still reach playout. */
     audio_timeline_set_playback_floor(timeline, scheduler->epoch, wanted_rtp);
-    if (audio_timeline_is_nearly_full(timeline)) {
-      (void)audio_timeline_trim_before(timeline, scheduler->epoch, wanted_rtp);
-    }
+    (void)audio_timeline_trim_before(timeline, scheduler->epoch, wanted_rtp);
 
     /* Start in sample coordinates, not block coordinates.  The requested RTP
      * may fall anywhere inside a 1024-sample AAC PCM frame.  The timeline
