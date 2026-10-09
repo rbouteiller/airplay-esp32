@@ -328,7 +328,9 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
                                    uint32_t first_rtp, const int16_t *pcm,
                                    size_t samples, uint8_t channels,
                                    uint32_t timeout_ms) {
-  if (!engine || !engine->initialized) {
+  if (!engine || !engine->initialized || !pcm || samples == 0U ||
+      samples > engine->timeline.frame_samples || channels == 0U ||
+      channels > AUDIO_V2_MAX_CHANNELS) {
     return false;
   }
 
@@ -338,8 +340,12 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
   while (audio_epoch_matches(&engine->epoch, epoch)) {
     if (!audio_timeline_phase_blocked(&engine->timeline, epoch, first_rtp) &&
         audio_timeline_free_slots(&engine->timeline) > 0U) {
-      return audio_engine_v2_push_pcm(engine, epoch, first_rtp, pcm, samples,
-                                      channels);
+      /* A free slot elsewhere in the ring does not mean this RTP block's
+       * physical slot is free yet. Keep waiting for that slot to retire. */
+      if (audio_engine_v2_push_pcm(engine, epoch, first_rtp, pcm, samples,
+                                   channels)) {
+        return true;
+      }
     }
 
     const int64_t remaining_us = deadline_us - esp_timer_get_time();
