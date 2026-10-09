@@ -263,6 +263,13 @@ static tas58xx_dev_t s_devs[TAS58XX_MAX_DEVICES];
 static int s_dev_count = 0;
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 
+/* Whether the primary amplifier is bridged (PBTL) mono. Read at init only. */
+static bool s_first_pbtl = false;
+/* The wiring the primary chip was actually brought up in. PBTL is only
+ * writable during init, so a change made later must not alter how the running
+ * chip is driven until the user has rewired and restarted. */
+static bool s_active_first_pbtl = false;
+
 /* Whether the second amplifier is bridged (PBTL) mono. Read at init only. */
 static bool s_second_pbtl = true;
 /* The wiring the chips were actually brought up in. PBTL is only writable
@@ -756,14 +763,52 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
   uint8_t ctrl1 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
   ctrl1 |= CTRL1_PBTL_EN;
+  
+  /* In PBTL mode, the channel selector bit (bit 1) determines which input
+   * channel feeds the bridged output. For mono mode (summed L+R), both channels
+   * are fed equally so the channel select bit doesn't matter. For left/right
+   * selection, the user can configure the input mixer to route only one channel.
+   * 
+   * The key requirement: if stereo is selected while in PBTL mode, default to
+   * mono (summed) and prevent stereo. Left/right selection should be allowed
+   * and remembered.
+   */
+  if (dev->mix == TAS58XX_MIX_STEREO) {
+    /* Stereo is not valid in PBTL mode - default to mono (summed) */
+    ESP_LOGW(TAG, "@0x%02X PBTL mode active - stereo selected, defaulting to mono", 
+             dev->addr);
+    dev->mix = TAS58XX_MIX_MONO;
+  }
+  
+  /* For PBTL, set the channel select bit based on the current mix setting.
+   * The input mixer handles which channels get summed to the output. */
+  switch (dev->mix) {
+    case TAS58XX_MIX_MONO:
+      /* Mono sums L+R to both outputs - channel select doesn't matter */
+      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+      break;
+    case TAS58XX_MIX_LEFT:
+      /* Left channel only - select left */
+      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+      break;
+    case TAS58XX_MIX_RIGHT:
+      /* Right channel only - select right */
+      ctrl1 |= CTRL1_PBTL_CH_SEL;
+      break;
+    default:
+      /* Default to left for any other setting */
+      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+      break;
+  }
+  
   esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "@0x%02X failed to enable PBTL: %s", dev->addr,
              esp_err_to_name(err));
     return err;
   }
-  ESP_LOGI(TAG, "@0x%02X PBTL mono mode enabled (DEVICE_CTRL1=0x%02X)",
-           dev->addr, ctrl1);
+  ESP_LOGI(TAG, "@0x%02X PBTL mono mode enabled (DEVICE_CTRL1=0x%02X, mix=%d)",
+           dev->addr, ctrl1, (int)dev->mix);
   return ESP_OK;
 }
 
@@ -1206,20 +1251,28 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   }
 
   /*
-   * Role assignment. A single chip always drives stereo satellites. On a
-   * dual-DAC board the second chip is either a bridged (PBTL) mono amplifier
-   * fed L+R, or a second stereo pair. Any crossover between the two is a
-   * matter for the biquad chains, not for the wiring.
+   * Role assignment. The primary chip is either a BTL stereo pair or a bridged
+   * (PBTL) mono amplifier. On a dual-DAC board the second chip is likewise
+   * either a bridged (PBTL) mono amplifier fed L+R, or a second stereo pair.
+   * Any crossover between the two is a matter for the biquad chains, not for
+   * the wiring.
    */
+  s_active_first_pbtl = s_first_pbtl;
+  if (s_first_pbtl) {
+    s_devs[0].pbtl_mono = true;
+  }
+
   if (s_dev_count > 1) {
     s_active_second_pbtl = s_second_pbtl;
     if (s_second_pbtl) {
       s_devs[1].pbtl_mono = true;
     }
-    ESP_LOGI(TAG, "Detected %d TAS58xx device(s) - second is %s", s_dev_count,
+    ESP_LOGI(TAG, "Detected %d TAS58xx device(s) - first is %s, second is %s",
+             s_dev_count, s_first_pbtl ? "PBTL mono" : "stereo",
              s_second_pbtl ? "PBTL mono" : "stereo");
   } else {
-    ESP_LOGI(TAG, "Detected %d TAS58xx device(s) - stereo", s_dev_count);
+    ESP_LOGI(TAG, "Detected %d TAS58xx device(s) - first is %s", s_dev_count,
+             s_first_pbtl ? "PBTL mono" : "stereo");
   }
 
   /* A bridged amplifier drives one output, so summing L+R into it is the only
@@ -1385,17 +1438,39 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     /* DEVICE_CTRL1 is reset by DEEP_SLEEP and the device is in HiZ here, so
      * re-bridge the outputs before the output stage is allowed to drive. */
     tas58xx_apply_pbtl(dev);
+    
+    /* Re-apply the channel selector after DEEP_SLEEP reset */
+    if (dev->pbtl_mono) {
+      uint8_t ctrl1 = 0;
+      tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
+      /* Re-apply PBTL mode and channel selector based on current mix setting */
+      ctrl1 |= CTRL1_PBTL_EN;
+      
+      switch (dev->mix) {
+        case TAS58XX_MIX_MONO:
+          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+          break;
+        case TAS58XX_MIX_LEFT:
+          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+          break;
+        case TAS58XX_MIX_RIGHT:
+          ctrl1 |= CTRL1_PBTL_CH_SEL;
+          break;
+        default:
+          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+          break;
+      }
+      
+      esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
+      if (err != ESP_OK) {
+        ESP_LOGE(TAG, "@0x%02X failed to set PBTL channel selector: %s", dev->addr,
+                 esp_err_to_name(err));
+      }
+    }
 
     /* DEEP_SLEEP also resets DIG_VOL to 0 dB, which would be a full-scale
      * blast on the first frame after PLAY. */
     tas58xx_write_reg(REG_DIG_VOL, tas58xx_dig_vol_reg(dev));
-
-    // Clear any faults accumulated while clocks were absent
-    tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    // Request transition to PLAY (unmuted)
-    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
 
     // Poll POWER_STATE until the device actually reaches PLAY.
     // The TAS5825M won't transition until its PLL locks on SCLK.
@@ -1641,6 +1716,20 @@ int dac_tas58xx_get_device_count(void) {
   return s_dev_count;
 }
 
+bool dac_tas58xx_get_first_pbtl(void) {
+  return s_first_pbtl;
+}
+
+bool dac_tas58xx_get_active_first_pbtl(void) {
+  return s_active_first_pbtl;
+}
+
+void dac_tas58xx_set_first_pbtl(bool pbtl) {
+  s_first_pbtl = pbtl;
+  ESP_LOGI(TAG, "Primary amplifier: %s (applied at next init)",
+           pbtl ? "PBTL mono" : "stereo");
+}
+
 bool dac_tas58xx_get_second_pbtl(void) {
   return s_second_pbtl;
 }
@@ -1666,6 +1755,12 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
   if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || mix < 0 ||
       mix >= TAS58XX_MIX_COUNT) {
     return ESP_ERR_INVALID_ARG;
+  }
+
+  /* In PBTL mode, stereo is not valid. If stereo is requested, default to mono. */
+  if (dev < s_dev_count && s_devs[dev].pbtl_mono && mix == TAS58XX_MIX_STEREO) {
+    ESP_LOGW(TAG, "Amp %d is in PBTL mode - stereo selected, defaulting to mono", dev);
+    mix = TAS58XX_MIX_MONO;
   }
 
   s_dev_mix[dev] = mix;

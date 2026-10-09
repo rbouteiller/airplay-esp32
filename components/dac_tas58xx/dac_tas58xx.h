@@ -43,6 +43,25 @@ bool dac_tas58xx_get_ch_mute(int dev, int ch);
 int dac_tas58xx_get_device_count(void);
 
 /**
+ * Whether the primary amplifier is bridged (PBTL) mono rather than a stereo
+ * pair. This describes how the board is wired and nothing more: it selects the
+ * bridged output stage and sums L+R into that chip. On a dual-DAC board any
+ * crossover between the two amplifiers is expressed as ordinary biquad
+ * sections, not as a mode.
+ */
+bool dac_tas58xx_get_first_pbtl(void);
+
+/** The wiring the primary chip was actually brought up in. */
+bool dac_tas58xx_get_active_first_pbtl(void);
+
+/**
+ * Set whether the primary amplifier is bridged. PBTL is a control-port setting
+ * that can only be changed while the output stage is idle, so the new value is
+ * stored and applied by the next dac_init() — the caller must restart.
+ */
+void dac_tas58xx_set_first_pbtl(bool pbtl);
+
+/**
  * Whether the second amplifier on a dual-DAC board is bridged (PBTL) mono
  * rather than a stereo pair. This describes how the board is wired and
  * nothing more: it selects the bridged output stage and sums L+R into that
