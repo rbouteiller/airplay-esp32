@@ -128,6 +128,7 @@ nav:
       - ST7789 TFT display: features/tft-display.md
       - Hardware buttons: features/buttons.md
       - HybridFlow DSP (TAS57xx): features/hybridflow.md
+      - Software EQ: features/software-eq.md
       - AirPlay tuning: features/airplay-tuning.md
   - Reference:
       - Build environments: reference/build-environments.md

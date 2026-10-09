@@ -72,6 +72,23 @@ void audio_output_stop(void);
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait);
 
 /**
+ * Write PCM through the same processing AirPlay gets (channel mode, software
+ * EQ, software volume) before it reaches I2S. For the USB and Bluetooth
+ * sinks, which run while the AirPlay playback task is idle.
+ *
+ * Partial frames are carried over to the next call, so @p bytes need not be
+ * a multiple of the frame size.
+ *
+ * @param data        PCM data (interleaved stereo, 16-bit)
+ * @param bytes       Number of bytes to write
+ * @param volume_q15  Software volume, 0..32768; ignored on DACs that control
+ *                    volume themselves
+ * @param wait        Maximum ticks to wait for I2S DMA space
+ */
+esp_err_t audio_output_write_pcm(const void *data, size_t bytes,
+                                 int32_t volume_q15, TickType_t wait);
+
+/**
  * Change the I2S sample rate (e.g. when BT negotiates 48 kHz)
  *
  * @param rate  Sample rate in Hz (e.g. 44100, 48000)

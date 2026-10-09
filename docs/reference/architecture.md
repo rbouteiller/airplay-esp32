@@ -98,6 +98,12 @@ flowchart LR
     class DROP bad
 ```
 
+Every source takes the same three steps on its way to the I2S bus: the channel mode
+(stereo, mono sum, left or right), the [software EQ](../features/software-eq.md) when it
+is built in, and software volume on a DAC with no volume control of its own. AirPlay and
+Sendspin reach them through the playback task, USB audio and Bluetooth through
+`audio_output_write_pcm()`.
+
 ## I2S signals
 
 | Signal | Function |
@@ -155,6 +161,7 @@ main/
 │   ├── audio_timing.c          # PTP-based early/late frame handling
 │   ├── audio_resample.c        # 44.1 → 48 kHz conversion
 │   ├── audio_output*.c         # I2S, S/PDIF and USB backends
+│   ├── audio_eq.c              # Software EQ for DACs without a DSP
 │   └── a2dp_sink.c             # Bluetooth A2DP sink
 ├── rtsp/                       # RTSP server, handlers, crypto, FairPlay
 ├── hap/                        # HomeKit pairing — SRP, Ed25519

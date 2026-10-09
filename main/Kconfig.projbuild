@@ -181,6 +181,24 @@ menu "Airplay ESP Configuration"
                 when needed.
     endchoice
 
+    config SOFTWARE_EQ
+        bool "Software parametric EQ"
+        depends on AUDIO_OUTPUT_I2S && !DAC_TAS58XX && !DAC_TAS57XX
+        depends on SOC_CPU_HAS_FPU
+        default n
+        help
+            Run the Biquad EQ page (/bq) on the ESP32 itself, for plain I2S
+            DACs and amplifiers (PCM5102A, MAX98357A, ...) that have no DSP
+            of their own: 15 sections per channel (peaking, shelves, high-
+            and low-pass, notch, ...) plus a level trim and mute per output.
+            Applies to AirPlay, Sendspin, USB and Bluetooth audio alike.
+
+            The filters run in single-precision floating point on the audio
+            task, so this needs a chip with an FPU (not the ESP32-S2 or
+            ESP32-C5), and the CPU it takes grows with the number of active
+            sections. Boosts are paid for by turning the signal down ahead
+            of the filters, so they cannot clip.
+
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
         default OUTPUT_SAMPLE_RATE_44100

@@ -27,7 +27,7 @@ its IP address in your router's list of connected clients, or via the serial mon
 | --- | --- |
 | `/` | Setup and control panel — device name, WiFi, volume |
 | `/logs` | Live log viewer |
-| `/bq` | Per-section biquad EQ and crossovers, on TAS5825M boards |
+| `/bq` | Per-section biquad EQ and crossovers, on TAS58xx boards or with the [software EQ](../features/software-eq.md) |
 
 The same interface is used for [OTA firmware updates](../reference/ota.md), so USB is only
 needed for the very first flash.

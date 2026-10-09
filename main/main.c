@@ -31,6 +31,10 @@
 #include "usb_audio_sink.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
+#endif
+
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
 #endif
@@ -408,6 +412,14 @@ void app_main(void) {
   }
 #endif
   spiffs_storage_init();
+#ifdef CONFIG_SOFTWARE_EQ
+  // Ahead of the web server, which serves the tuning, and of the first
+  // audio, which runs through it. Without it the audio passes through flat.
+  esp_err_t eq_err = audio_eq_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ init failed: %s", esp_err_to_name(eq_err));
+  }
+#endif
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();

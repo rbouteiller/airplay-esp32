@@ -18,11 +18,15 @@
 #include "audio_receiver.h"
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 #ifdef CONFIG_DAC_TAS58XX
 #include "dac_tas58xx.h"
 #endif
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
+#endif
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
 #endif
 
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
@@ -154,7 +158,7 @@ static void push_channel_mode_to_dsp(audio_channel_mode_t mode) {
 #endif
 }
 
-static void apply_volume(int16_t *buf, size_t n) {
+static void apply_volume(int16_t *buf, size_t n, int32_t target) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
   // Ramp toward the target gain instead of applying volume changes
   // instantly.  An abrupt gain step mid-waveform is a discontinuity scaled
@@ -164,8 +168,9 @@ static void apply_volume(int16_t *buf, size_t n) {
   // both channels always carry the same gain; the /256 divisor gives a
   // ~3 ms time constant and a worst-case per-frame gain step of ~0.4%,
   // with a minimum step of 1 so the ramp always completes.
+  // The ramp state is shared by every source: they never play at once, and a
+  // hand-over simply glides from one source's volume to the other's.
   static int32_t cur_q15 = -1;
-  int32_t target = airplay_get_volume_q15();
   if (cur_q15 < 0) {
     cur_q15 = target; // first call: no audio has played yet, jump silently
   }
@@ -180,6 +185,10 @@ static void apply_volume(int16_t *buf, size_t n) {
     }
     buf[i] = (int16_t)(((int32_t)buf[i] * cur_q15) >> 15);
   }
+#else
+  (void)buf;
+  (void)n;
+  (void)target;
 #endif
 }
 
@@ -211,14 +220,22 @@ static void apply_channel_mode(int16_t *buf, size_t frames) {
   }
 }
 
+// Everything a source's PCM goes through on its way to I2S. The EQ runs
+// ahead of the volume so its filters see full-resolution samples.
+static void process_pcm(int16_t *buf, size_t frames, int32_t volume_q15) {
+  apply_channel_mode(buf, frames);
+#ifdef CONFIG_SOFTWARE_EQ
+  audio_eq_process(buf, frames);
+#endif
+  apply_volume(buf, frames * 2, volume_q15);
+}
+
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
-  int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
   int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
-  if (!pcm || !silence || !resample_buf) {
+  if (!pcm || !resample_buf) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
-    free(silence);
     playback_task_handle = NULL;
     free(resample_buf);
     vTaskDelete(NULL);
@@ -255,8 +272,7 @@ static void playback_task(void *arg) {
                                               MAX_RESAMPLE_FRAMES);
         play_buf = resample_buf;
       }
-      apply_volume(play_buf, play_samples * 2);
-      apply_channel_mode(play_buf, play_samples);
+      process_pcm(play_buf, play_samples, airplay_get_volume_q15());
       led_audio_feed(play_buf, play_samples);
       if (i2s_channel_write(tx_handle, play_buf,
                             play_samples * 2 * sizeof(int16_t), &written,
@@ -270,8 +286,13 @@ static void playback_task(void *arg) {
       // Receiver underflow — output a frame of silence.  Block on the DMA
       // write (portMAX_DELAY) so the write itself paces the loop, instead of a
       // short timeout plus vTaskDelay(1) which produced jittery silence.
-      led_audio_feed(silence, FRAME_SAMPLES);
-      if (i2s_channel_write(tx_handle, silence,
+      // Through the same processing, like the USB and Bluetooth underruns, so
+      // EQ tails and volume ramps carry on rather than freeze until the next
+      // audio arrives.
+      memset(pcm, 0, (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t));
+      process_pcm(pcm, FRAME_SAMPLES, airplay_get_volume_q15());
+      led_audio_feed(pcm, FRAME_SAMPLES);
+      if (i2s_channel_write(tx_handle, pcm,
                             (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t),
                             &written, portMAX_DELAY) == ESP_OK) {
         __atomic_add_fetch(&output_submitted_frames,
@@ -282,7 +303,6 @@ static void playback_task(void *arg) {
   }
 
   free(pcm);
-  free(silence);
   playback_task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -410,6 +430,56 @@ esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
   return i2s_channel_write(tx_handle, data, bytes, &written, wait);
 }
 
+#define PCM_FRAME_BYTES (2 * sizeof(int16_t))
+// The USB and Bluetooth sinks hand over at most 512 bytes at a time, so this
+// takes a whole item plus a carried partial frame in two passes at most.
+#define PCM_STAGE_FRAMES 128
+
+// Processing needs whole frames, but a byte ring buffer can hand them over
+// split at its wrap point, so a partial frame waits here for the rest. Only
+// one such source plays at a time, so static state is enough. Cleared on
+// flush: a source that drops its buffer must not leave half a frame behind
+// to knock every later frame out of alignment.
+static uint8_t pcm_carry[PCM_FRAME_BYTES];
+static size_t pcm_carry_len;
+
+esp_err_t audio_output_write_pcm(const void *data, size_t bytes,
+                                 int32_t volume_q15, TickType_t wait) {
+  static int16_t stage[PCM_STAGE_FRAMES * 2];
+
+  const uint8_t *src = data;
+  esp_err_t err = ESP_OK;
+  while (bytes > 0) {
+    size_t have = pcm_carry_len;
+    uint8_t *dst = (uint8_t *)stage;
+    memcpy(dst, pcm_carry, have);
+    size_t take = sizeof(stage) - have;
+    if (take > bytes) {
+      take = bytes;
+    }
+    memcpy(dst + have, src, take);
+    src += take;
+    bytes -= take;
+    have += take;
+
+    size_t frames = have / PCM_FRAME_BYTES;
+    pcm_carry_len = have - frames * PCM_FRAME_BYTES;
+    memcpy(pcm_carry, dst + frames * PCM_FRAME_BYTES, pcm_carry_len);
+    if (frames == 0) {
+      continue;
+    }
+
+    process_pcm(stage, frames, volume_q15);
+    size_t written = 0;
+    err = i2s_channel_write(tx_handle, stage, frames * PCM_FRAME_BYTES,
+                            &written, wait);
+    if (err != ESP_OK) {
+      break;
+    }
+  }
+  return err;
+}
+
 void audio_output_set_sample_rate(uint32_t rate) {
   // Only safe to call when no writer task is actively using I2S
   // (AirPlay playback task must be stopped, BT calls this before
@@ -419,6 +489,10 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   s_output_rate = rate;
+#ifdef CONFIG_SOFTWARE_EQ
+  // Corners are relative to the clock, so follow it.
+  audio_eq_set_rate(rate);
+#endif
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
   dac_on_i2s_started(rate);
@@ -426,6 +500,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
 
 void audio_output_flush(void) {
   flush_requested = true;
+  pcm_carry_len = 0;
 }
 
 void audio_output_set_source_rate(int rate) {

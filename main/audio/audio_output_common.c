@@ -114,3 +114,12 @@ __attribute__((weak)) bool audio_output_channel_mode_locked(void) {
 __attribute__((weak)) bool audio_output_channel_mode_in_dsp(void) {
   return false;
 }
+
+// Backends without software processing pass the PCM straight through.
+__attribute__((weak)) esp_err_t audio_output_write_pcm(const void *data,
+                                                       size_t bytes,
+                                                       int32_t volume_q15,
+                                                       TickType_t wait) {
+  (void)volume_q15;
+  return audio_output_write(data, bytes, wait);
+}

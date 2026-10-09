@@ -65,6 +65,9 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
+      - name: Test software EQ against a reference
+        run: python3 tests/audio_eq/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -120,6 +123,10 @@ jobs:
           - name: usb
             target: esp32s3
             sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb"
+          # Not an output backend, but no release board turns it on either.
+          - name: software-eq
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac;config/sdkconfig.defaults.software-eq"
     steps:
       - uses: actions/checkout@v6
         with:

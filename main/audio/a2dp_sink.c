@@ -42,6 +42,8 @@
 #include "freertos/task.h"
 
 #include <inttypes.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -109,6 +111,10 @@ static bool s_bt_suspended = false;
 // Advertised BT device name, saved so it can be re-applied after a resume.
 static char s_device_name[64] = {0};
 static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume */
+// The same volume as a software gain, for DACs that cannot attenuate
+// themselves (audio_output_write_pcm ignores it on those that can). Set on
+// the BT app task, read by the I2S writer.
+static _Atomic int32_t s_volume_q15 = 32768;
 static volatile bool s_vol_ntf_pending =
     false; /* phone registered for volume change */
 
@@ -175,18 +181,22 @@ static void bt_i2s_writer_task(void *arg) {
   // Wait for ringbuffer to reach prefetch level
   xSemaphoreTake(s_i2s_sem, portMAX_DELAY);
 
-  int16_t silence[256] = {0};
+  static const int16_t silence[256] = {0};
 
   while (s_i2s_task_running) {
     size_t item_size = 0;
     void *data =
         xRingbufferReceiveUpTo(s_ringbuf, &item_size, pdMS_TO_TICKS(20), 512);
+    // Through the same processing as AirPlay: channel mode, software EQ and
+    // software volume.
+    int32_t volume_q15 = atomic_load(&s_volume_q15);
     if (data != NULL && item_size > 0) {
-      audio_output_write(data, item_size, portMAX_DELAY);
+      audio_output_write_pcm(data, item_size, volume_q15, portMAX_DELAY);
       vRingbufferReturnItem(s_ringbuf, data);
     } else {
       // Buffer underrun — write silence to keep I2S fed
-      audio_output_write(silence, sizeof(silence), pdMS_TO_TICKS(10));
+      audio_output_write_pcm(silence, sizeof(silence), volume_q15,
+                             pdMS_TO_TICKS(10));
     }
   }
 
@@ -609,6 +619,18 @@ static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event,
 /* AVRCP Target — handle volume commands from source device                   */
 /* ========================================================================== */
 
+// Apply an AVRCP volume (0-127, mapped to -30..0 dB) to the DAC and to the
+// software gain, and return it in dB. As on USB, the bottom of the phone's
+// slider is silence in software rather than just -30 dB.
+static float bt_apply_volume(uint8_t volume) {
+  float volume_db = ((float)volume / 127.0f) * 30.0f - 30.0f;
+  dac_set_volume(volume_db);
+  atomic_store(
+      &s_volume_q15,
+      volume == 0 ? 0 : (int32_t)(32768.0f * powf(10.0f, volume_db / 20.0f)));
+  return volume_db;
+}
+
 static void bt_avrc_tg_evt_handler(uint16_t event, void *param) {
   esp_avrc_tg_cb_param_t *tg = (esp_avrc_tg_cb_param_t *)param;
 
@@ -623,11 +645,9 @@ static void bt_avrc_tg_evt_handler(uint16_t event, void *param) {
     s_avrc_volume = volume;
     ESP_LOGD(TAG, "Set absolute volume: %d/127", volume);
 
-    // Map 0-127 → -30..0 dB and apply to DAC
     // dac_set_volume does I2C — safe here because bt_app_task dispatches
     // sequentially, but keep it lightweight
-    float volume_db = ((float)volume / 127.0f) * 30.0f - 30.0f;
-    dac_set_volume(volume_db);
+    bt_apply_volume(volume);
     break;
   }
 
@@ -777,8 +797,7 @@ static void bt_restore_saved_volume(void) {
   if (settings_get_bt_volume(&saved_vol) == ESP_OK) {
     s_avrc_volume = saved_vol;
   }
-  float volume_db = ((float)s_avrc_volume / 127.0f) * 30.0f - 30.0f;
-  dac_set_volume(volume_db);
+  float volume_db = bt_apply_volume(s_avrc_volume);
   ESP_LOGI(TAG, "BT volume restored: %d/127 (%.1f dB)", s_avrc_volume,
            volume_db);
 }
@@ -1150,8 +1169,7 @@ void bt_a2dp_send_volume_up(void) {
     new_vol = 127;
   }
   s_avrc_volume = new_vol;
-  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
-  dac_set_volume(volume_db);
+  bt_apply_volume(new_vol);
   notify_volume_changed();
   ESP_LOGI(TAG, "AVRCP: volume up -> %d/127", new_vol);
 }
@@ -1164,8 +1182,7 @@ void bt_a2dp_send_volume_down(void) {
     new_vol = 0;
   }
   s_avrc_volume = new_vol;
-  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
-  dac_set_volume(volume_db);
+  bt_apply_volume(new_vol);
   notify_volume_changed();
   ESP_LOGI(TAG, "AVRCP: volume down -> %d/127", new_vol);
 }
