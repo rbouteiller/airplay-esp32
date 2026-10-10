@@ -26,6 +26,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_GAIN       "amp_gain"
 #define NVS_KEY_AMP_MUTE       "amp_mute"
 #define NVS_KEY_AMP_MIX        "amp_mix"
+#define NVS_KEY_FIRST_PBTL     "amp1_pbtl"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
@@ -695,6 +696,53 @@ esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]) {
     ESP_LOGI(TAG, "Saved amp input routing: 1 %u, 2 %u", mix[0], mix[1]);
   } else {
     ESP_LOGE(TAG, "Failed to save amp input routing: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* ================================================================== */
+/*  Primary amplifier wiring                                           */
+/* ================================================================== */
+
+esp_err_t settings_get_first_pbtl(bool *pbtl) {
+  if (!pbtl) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  uint8_t stored;
+  err = nvs_get_u8(nvs, NVS_KEY_FIRST_PBTL, &stored);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    *pbtl = stored != 0;
+  }
+  return err;
+}
+
+esp_err_t settings_set_first_pbtl(bool pbtl) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_FIRST_PBTL, pbtl ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved primary amplifier: %s", pbtl ? "PBTL mono" : "stereo");
+  } else {
+    ESP_LOGE(TAG, "Failed to save primary amplifier wiring: %s",
+             esp_err_to_name(err));
   }
   return err;
 }

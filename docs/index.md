@@ -115,7 +115,6 @@ a Bluetooth speaker can play to them when AirPlay is idle.
 ### Limitations
 
 - Audio only — no AirPlay video or photos
-- One speaker per ESP32 board
 - Needs a decent WiFi signal for stable streaming
 
 ## Acknowledgements

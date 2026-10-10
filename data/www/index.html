@@ -92,6 +92,13 @@ input:focus{outline:none;border-color:#e94560}
 <option value='3'>Mono (L+R)</option>
 </select></div>
 <div id='chan-msg'></div></div>
+<div id='pbtl-group' style='display:none;margin-top:18px'>
+<div class='form-group'><label for='pbtl-mode'>Primary Amplifier</label>
+<select id='pbtl-mode' onchange='savePbtl()'>
+<option value='0'>Stereo (BTL)</option>
+<option value='1'>Bridged mono (PBTL)</option>
+</select></div>
+<div id='pbtl-msg'></div></div>
 <div id='dual-group' style='display:none;margin-top:18px'>
 <div class='form-group'><label for='dual-mode'>Second Amplifier</label>
 <select id='dual-mode' onchange='saveDual()'>
@@ -169,6 +176,8 @@ async function loadChannel(){
   catch(e){console.warn('Could not load channel mode',e);}
   applyChanLabels();
   applyAmpLayout();}
+var primaryPbtl=false;
+var pbtlLoaded=false;
 var dualDevices=1;
 var dualPbtl=true;
 var dualLoaded=false;
@@ -186,9 +195,13 @@ function applyChanLabels(){
   o[0].text=chanDsp?'Both (L+R)/2':'Stereo';
   o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
 }
+var PBTL_WARN={
+  1:'Bridge the primary amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nPower off and rewire.',
+  0:'Unbridge the primary amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+};
 var DUAL_WARN={
-  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nRewire before restarting.',
-  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\Power off and rewire.',
+  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
 };
 /* With two amps the DAC configuration already fixes the routing, so per-output
    channel selection has no meaning. */
@@ -205,12 +218,32 @@ async function saveChannel(){
       chanLocked=!!d.locked;applyAmpLayout();}
     else{msg('chan-msg',d.error,'err');}}
   catch(e){msg('chan-msg','Error','err');console.error('saveChannel failed',e);}}
+async function loadPbtl(){
+  try{var r=await fetch('/api/audio/pbtl');if(!r.ok)return;var d=await r.json();
+    if(d.success){primaryPbtl=!!d.pbtl;
+      document.getElementById('pbtl-mode').value=d.pbtl?'1':'0';
+      document.getElementById('pbtl-group').style.display='';
+      if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
+      else if(d.restart_required){msg('pbtl-msg','Restart to apply the new wiring.','err');}}
+    else if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}}
+  catch(e){console.warn('Could not load primary amplifier wiring',e);}}
+async function savePbtl(){
+  var sel=document.getElementById('pbtl-mode');
+  var v=Number.parseInt(sel.value,10);
+  var pbtl=v===1;
+  if(pbtl!==primaryPbtl&&!confirm(PBTL_WARN[v])){sel.value=primaryPbtl?'1':'0';return;}
+  try{var r=await fetch('/api/audio/pbtl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
+    var d=await r.json();
+    if(d.success){primaryPbtl=pbtl;msg('pbtl-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
+    else{sel.value=primaryPbtl?'1':'0';msg('pbtl-msg',d.error,'err');}}
+  catch(e){sel.value=primaryPbtl?'1':'0';msg('pbtl-msg','Error','err');console.error('savePbtl failed',e);}}
 async function loadDual(){
   try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
     if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
       document.getElementById('dual-mode').value=d.pbtl?'1':'0';
       document.getElementById('dual-group').style.display='';
-      if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
+      if(d.forced){msg('dual-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
+      else if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
   catch(e){console.warn('Could not load second amplifier wiring',e);}
   applyAmpLayout();}
 async function saveDual(){
@@ -287,9 +320,10 @@ async function loadInfo(){
       document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
       if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
-      /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
-         warning on the device for every page load. */
-      if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
+      /* Only a TAS58xx build registers /api/audio/pbtl and /api/audio/dual;
+         asking anyway logs a warning on the device for every page load. */
+      if(i.dual_supported){if(!pbtlLoaded){pbtlLoaded=true;loadPbtl();}
+        if(!dualLoaded){dualLoaded=true;loadDual();}}
       /* Only a Sendspin build registers /api/sendspin/mode. */
       if(i.sendspin_supported){document.getElementById('sendspin-group').style.display='';
         if(!sendspinLoaded){sendspinLoaded=true;loadSendspin();}

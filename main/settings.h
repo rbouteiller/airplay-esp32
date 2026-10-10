@@ -273,6 +273,20 @@ esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]);
  */
 esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]);
 
+// ---- Primary amplifier wiring ----
+
+/**
+ * Get whether the primary amplifier is bridged (PBTL) mono.
+ * @param pbtl Output: true = bridged mono, false = stereo pair
+ * @return ESP_OK if found, error otherwise
+ */
+esp_err_t settings_get_first_pbtl(bool *pbtl);
+
+/**
+ * Save whether the primary amplifier is bridged (PBTL) mono.
+ */
+esp_err_t settings_set_first_pbtl(bool pbtl);
+
 // ---- Dual DAC (second amplifier) wiring ----
 
 /**

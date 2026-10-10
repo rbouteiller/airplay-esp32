@@ -762,6 +762,74 @@ static esp_err_t ch_trim_post_handler(httpd_req_t *req) {
 #endif /* DAC_HAS_CH_TRIM */
 
 #ifdef CONFIG_DAC_TAS58XX
+/* How the primary amplifier is wired: bridged (PBTL) mono or a stereo pair.
+ * Available on every TAS58xx board, single- or dual-DAC alike — a bridged
+ * primary drives one speaker from the summed L+R. */
+static esp_err_t pbtl_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddNumberToObject(json, "devices", dac_tas58xx_get_device_count());
+  cJSON_AddBoolToObject(json, "pbtl", dac_tas58xx_get_first_pbtl());
+  cJSON_AddBoolToObject(json, "restart_required",
+                        dac_tas58xx_get_first_pbtl() !=
+                            dac_tas58xx_get_active_first_pbtl());
+  cJSON_AddBoolToObject(json, "forced", dac_tas58xx_is_first_pbtl_forced());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t pbtl_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 128);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+
+  if (dac_tas58xx_is_first_pbtl_forced()) {
+    /* PBTL mode is forced by configuration - reject any changes */
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(
+        response, "error",
+        "PBTL mode is forced by configuration and cannot be changed");
+    cJSON_AddBoolToObject(response, "restart_required", false);
+  } else {
+    cJSON *val = cJSON_GetObjectItem(json, "pbtl");
+    if (!val || !cJSON_IsBool(val)) {
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error", "Expected {\"pbtl\": bool}");
+    } else {
+      const bool pbtl = cJSON_IsTrue(val);
+      dac_tas58xx_set_first_pbtl(pbtl);
+      settings_set_first_pbtl(pbtl);
+      cJSON_AddBoolToObject(response, "success", true);
+      /* PBTL is a control-port setting that can only be changed while the
+       * output stage is idle, so the change lands on the next boot. */
+      cJSON_AddBoolToObject(response, "restart_required", true);
+    }
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
 /* How the second amplifier on a dual-DAC board is wired: bridged (PBTL) mono
  * or a stereo pair. Any crossover between the two is a matter for the biquad
  * chains, so this is the whole of the dual-DAC configuration. */
@@ -1994,7 +2062,7 @@ static esp_err_t bq_page_handler(httpd_req_t *req) {
  * without duplicating the dual-DAC wiring logic. */
 static const char *bq_amp_role(int dev) {
   if (dev == 0) {
-    return "stereo";
+    return dac_tas58xx_get_active_first_pbtl() ? "mono" : "stereo";
   }
   return dac_tas58xx_get_active_second_pbtl() ? "mono" : "stereo";
 }
@@ -2324,8 +2392,8 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // per-channel level get/post
 #endif
 #ifdef CONFIG_DAC_TAS58XX
-  // dual DAC wiring plus the biquad page/API
-  config.max_uri_handlers += 7;
+  // primary + dual DAC wiring plus the biquad page/API
+  config.max_uri_handlers += 9;
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
@@ -2449,6 +2517,16 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 
 #ifdef CONFIG_DAC_TAS58XX
+  httpd_uri_t pbtl_get_uri = {.uri = "/api/audio/pbtl",
+                              .method = HTTP_GET,
+                              .handler = pbtl_get_handler};
+  httpd_register_uri_handler(s_server, &pbtl_get_uri);
+
+  httpd_uri_t pbtl_post_uri = {.uri = "/api/audio/pbtl",
+                               .method = HTTP_POST,
+                               .handler = pbtl_post_handler};
+  httpd_register_uri_handler(s_server, &pbtl_post_uri);
+
   httpd_uri_t dual_mode_get_uri = {.uri = "/api/audio/dual",
                                    .method = HTTP_GET,
                                    .handler = dual_mode_get_handler};
