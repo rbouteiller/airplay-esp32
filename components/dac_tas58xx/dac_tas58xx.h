@@ -156,3 +156,10 @@ esp_err_t dac_tas58xx_bq_revert(void);
 
 /** Reset every chain to bypass, in memory and on the hardware. */
 esp_err_t dac_tas58xx_bq_reset(void);
+
+/**
+ * Whether PBTL mode on the primary amplifier is forced by configuration.
+ * Returns true if CONFIG_TAS58XX_FORCE_PBTL is enabled, which means
+ * the PBTL setting cannot be changed from the web UI.
+ */
+bool dac_tas58xx_is_first_pbtl_forced(void);

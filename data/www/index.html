@@ -223,7 +223,9 @@ async function loadPbtl(){
     if(d.success){primaryPbtl=!!d.pbtl;
       document.getElementById('pbtl-mode').value=d.pbtl?'1':'0';
       document.getElementById('pbtl-group').style.display='';
-      if(d.restart_required){msg('pbtl-msg','Restart to apply the new wiring.','err');}}}
+      if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
+      else if(d.restart_required){msg('pbtl-msg','Restart to apply the new wiring.','err');}}
+    else if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}}
   catch(e){console.warn('Could not load primary amplifier wiring',e);}}
 async function savePbtl(){
   var sel=document.getElementById('pbtl-mode');
@@ -240,7 +242,8 @@ async function loadDual(){
     if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
       document.getElementById('dual-mode').value=d.pbtl?'1':'0';
       document.getElementById('dual-group').style.display='';
-      if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
+      if(d.forced){msg('dual-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
+      else if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
   catch(e){console.warn('Could not load second amplifier wiring',e);}
   applyAmpLayout();}
 async function saveDual(){

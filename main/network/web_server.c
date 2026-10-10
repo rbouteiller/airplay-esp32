@@ -772,6 +772,7 @@ static esp_err_t pbtl_get_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(json, "restart_required",
                         dac_tas58xx_get_first_pbtl() !=
                             dac_tas58xx_get_active_first_pbtl());
+  cJSON_AddBoolToObject(json, "forced", dac_tas58xx_is_first_pbtl_forced());
   cJSON_AddBoolToObject(json, "success", true);
   char *json_str = cJSON_Print(json);
   httpd_resp_set_type(req, "application/json");
@@ -796,18 +797,28 @@ static esp_err_t pbtl_post_handler(httpd_req_t *req) {
   }
 
   cJSON *response = cJSON_CreateObject();
-  cJSON *val = cJSON_GetObjectItem(json, "pbtl");
-  if (!val || !cJSON_IsBool(val)) {
+
+  if (dac_tas58xx_is_first_pbtl_forced()) {
+    /* PBTL mode is forced by configuration - reject any changes */
     cJSON_AddBoolToObject(response, "success", false);
-    cJSON_AddStringToObject(response, "error", "Expected {\"pbtl\": bool}");
+    cJSON_AddStringToObject(
+        response, "error",
+        "PBTL mode is forced by configuration and cannot be changed");
+    cJSON_AddBoolToObject(response, "restart_required", false);
   } else {
-    const bool pbtl = cJSON_IsTrue(val);
-    dac_tas58xx_set_first_pbtl(pbtl);
-    settings_set_first_pbtl(pbtl);
-    cJSON_AddBoolToObject(response, "success", true);
-    /* PBTL is a control-port setting that can only be changed while the
-     * output stage is idle, so the change lands on the next boot. */
-    cJSON_AddBoolToObject(response, "restart_required", true);
+    cJSON *val = cJSON_GetObjectItem(json, "pbtl");
+    if (!val || !cJSON_IsBool(val)) {
+      cJSON_AddBoolToObject(response, "success", false);
+      cJSON_AddStringToObject(response, "error", "Expected {\"pbtl\": bool}");
+    } else {
+      const bool pbtl = cJSON_IsTrue(val);
+      dac_tas58xx_set_first_pbtl(pbtl);
+      settings_set_first_pbtl(pbtl);
+      cJSON_AddBoolToObject(response, "success", true);
+      /* PBTL is a control-port setting that can only be changed while the
+       * output stage is idle, so the change lands on the next boot. */
+      cJSON_AddBoolToObject(response, "restart_required", true);
+    }
   }
 
   char *json_str = cJSON_Print(response);

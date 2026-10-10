@@ -277,6 +277,15 @@ static bool s_second_pbtl = true;
  * are driven until the user has rewired and restarted. */
 static bool s_active_second_pbtl = true;
 
+/* Whether PBTL mode is forced by configuration (cannot be changed from UI). */
+#ifndef CONFIG_DAC_TAS58XX
+static bool s_forced_first_pbtl = false;
+#elif !defined(CONFIG_TAS58XX_FORCE_PBTL)
+static bool s_forced_first_pbtl = false;
+#else
+static bool s_forced_first_pbtl = CONFIG_TAS58XX_FORCE_PBTL;
+#endif
+
 /* Cached master AirPlay volume so a level change can be re-applied alone. */
 static float s_last_airplay_db = -15.0f;
 
@@ -1734,6 +1743,11 @@ bool dac_tas58xx_get_active_first_pbtl(void) {
 }
 
 void dac_tas58xx_set_first_pbtl(bool pbtl) {
+  if (s_forced_first_pbtl) {
+    ESP_LOGW(TAG, "Primary amplifier PBTL mode is forced by configuration - "
+                  "ignoring request");
+    return;
+  }
   s_first_pbtl = pbtl;
   ESP_LOGI(TAG, "Primary amplifier: %s (applied at next init)",
            pbtl ? "PBTL mono" : "stereo");
@@ -1758,6 +1772,10 @@ bool dac_tas58xx_is_pbtl(int dev) {
     return false;
   }
   return s_devs[dev].pbtl_mono;
+}
+
+bool dac_tas58xx_is_first_pbtl_forced(void) {
+  return s_forced_first_pbtl;
 }
 
 esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
