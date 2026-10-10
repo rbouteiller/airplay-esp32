@@ -1472,6 +1472,13 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
      * blast on the first frame after PLAY. */
     tas58xx_write_reg(REG_DIG_VOL, tas58xx_dig_vol_reg(dev));
 
+    // Clear any faults accumulated while clocks were absent
+    tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    // Request transition to PLAY (unmuted)
+    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
+    
     // Poll POWER_STATE until the device actually reaches PLAY.
     // The TAS5825M won't transition until its PLL locks on SCLK.
     uint8_t ps = 0;

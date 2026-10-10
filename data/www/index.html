@@ -176,7 +176,7 @@ async function loadChannel(){
   catch(e){console.warn('Could not load channel mode',e);}
   applyChanLabels();
   applyAmpLayout();}
-var pbtlPbtl=false;
+var primaryPbtl=false;
 var pbtlLoaded=false;
 var dualDevices=1;
 var dualPbtl=true;
@@ -196,12 +196,12 @@ function applyChanLabels(){
   o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
 }
 var PBTL_WARN={
-  1:'Bridge the primary amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nRewire before restarting.',
-  0:'Unbridge the primary amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+  1:'Bridge the primary amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nPower off and rewire.',
+  0:'Unbridge the primary amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
 };
 var DUAL_WARN={
-  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nRewire before restarting.',
-  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\Power off and rewire.',
+  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
 };
 /* With two amps the DAC configuration already fixes the routing, so per-output
    channel selection has no meaning. */
@@ -220,7 +220,7 @@ async function saveChannel(){
   catch(e){msg('chan-msg','Error','err');console.error('saveChannel failed',e);}}
 async function loadPbtl(){
   try{var r=await fetch('/api/audio/pbtl');if(!r.ok)return;var d=await r.json();
-    if(d.success){pbtlPbtl=!!d.pbtl;
+    if(d.success){primaryPbtl=!!d.pbtl;
       document.getElementById('pbtl-mode').value=d.pbtl?'1':'0';
       document.getElementById('pbtl-group').style.display='';
       if(d.restart_required){msg('pbtl-msg','Restart to apply the new wiring.','err');}}}
@@ -229,12 +229,12 @@ async function savePbtl(){
   var sel=document.getElementById('pbtl-mode');
   var v=Number.parseInt(sel.value,10);
   var pbtl=v===1;
-  if(pbtl!==pbtlPbtl&&!confirm(PBTL_WARN[v])){sel.value=pbtlPbtl?'1':'0';return;}
+  if(pbtl!==primaryPbtl&&!confirm(PBTL_WARN[v])){sel.value=primaryPbtl?'1':'0';return;}
   try{var r=await fetch('/api/audio/pbtl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
     var d=await r.json();
-    if(d.success){pbtlPbtl=pbtl;msg('pbtl-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
-    else{sel.value=pbtlPbtl?'1':'0';msg('pbtl-msg',d.error,'err');}}
-  catch(e){sel.value=pbtlPbtl?'1':'0';msg('pbtl-msg','Error','err');console.error('savePbtl failed',e);}}
+    if(d.success){primaryPbtl=pbtl;msg('pbtl-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
+    else{sel.value=primaryPbtl?'1':'0';msg('pbtl-msg',d.error,'err');}}
+  catch(e){sel.value=primaryPbtl?'1':'0';msg('pbtl-msg','Error','err');console.error('savePbtl failed',e);}}
 async function loadDual(){
   try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
     if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
