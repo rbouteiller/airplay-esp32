@@ -1,14 +1,4 @@
 dependencies:
-  espressif/cmake_utilities:
-    component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.1'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.1
   espressif/esp_audio_codec:
     component_hash: 16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
     dependencies:
@@ -19,20 +9,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.5.0
-  espressif/esp_lvgl_port:
-    component_hash: 8c57ca912f5c52ed29cd0fb5c9709f1ed65a91ec4c02f947d90e524bd9358433
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4'
-    - name: lvgl/lvgl
-      registry_url: https://components.espressif.com
-      require: public
-      version: '>=8,<10'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.3.3
   espressif/led_strip:
     component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
     dependencies:
@@ -63,89 +39,15 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.11.1
-  espressif/tinyusb:
-    component_hash: a40b7f67df6ac254a4afd96c6401cc56f2059ae747d6d7e66b568bca53ad0edc
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32h4
-    - esp32s31
-    version: 0.19.0~3
-  espressif/usb_device_uac:
-    component_hash: e4665bee61baaee5e06acae662438ffd5ad794ce6d44b10c30173e9940b80896
-    dependencies:
-    - name: espressif/cmake_utilities
-      registry_url: https://components.espressif.com
-      require: private
-      version: '*'
-    - name: espressif/tinyusb
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.19.0~3
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32s31
-    - esp32h4
-    version: 1.3.1
   idf:
     source:
       type: idf
     version: 5.5.5
-  lvgl/lvgl:
-    component_hash: 7d82410747bbfb319531449749e940f440f8414f041f9eaba13f0d1dd7f58cdd
-    dependencies:
-    - name: espressif/freetype
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: idf_version >=5.5 && $CONFIG{LV_USE_FREETYPE} == True
-      version: ^2.14.3
-    - name: espressif/libjpeg-turbo
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: idf_version >=5.5 && $CONFIG{LV_USE_LIBJPEG_TURBO} == True
-      version: ^3.1.1
-    - name: espressif/libpng
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: idf_version >=5.5 && $CONFIG{LV_USE_LIBPNG} == True
-      version: ^1.6.58
-    - name: espressif/lz4
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: idf_version >=5.5 && $CONFIG{LV_USE_LZ4} == True && $CONFIG{LV_USE_LZ4_INTERNAL} == False
-      version: ^1.10.0
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 9.6.0~1
 direct_dependencies:
 - espressif/esp_audio_codec
-- espressif/esp_lvgl_port
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
-- espressif/usb_device_uac
-- lvgl/lvgl
 manifest_hash: 1db657f1e48c9c365a58386edea188b375f8c3b2f4bcce6ced4107af1ebcaa86
-target: esp32s3
+target: esp32
 version: 2.0.0
