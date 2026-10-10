@@ -763,44 +763,46 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
   uint8_t ctrl1 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
   ctrl1 |= CTRL1_PBTL_EN;
-  
+
   /* In PBTL mode, the channel selector bit (bit 1) determines which input
    * channel feeds the bridged output. For mono mode (summed L+R), both channels
    * are fed equally so the channel select bit doesn't matter. For left/right
-   * selection, the user can configure the input mixer to route only one channel.
-   * 
+   * selection, the user can configure the input mixer to route only one
+   * channel.
+   *
    * The key requirement: if stereo is selected while in PBTL mode, default to
    * mono (summed) and prevent stereo. Left/right selection should be allowed
    * and remembered.
    */
   if (dev->mix == TAS58XX_MIX_STEREO) {
     /* Stereo is not valid in PBTL mode - default to mono (summed) */
-    ESP_LOGW(TAG, "@0x%02X PBTL mode active - stereo selected, defaulting to mono", 
+    ESP_LOGW(TAG,
+             "@0x%02X PBTL mode active - stereo selected, defaulting to mono",
              dev->addr);
     dev->mix = TAS58XX_MIX_MONO;
   }
-  
+
   /* For PBTL, set the channel select bit based on the current mix setting.
    * The input mixer handles which channels get summed to the output. */
   switch (dev->mix) {
-    case TAS58XX_MIX_MONO:
-      /* Mono sums L+R to both outputs - channel select doesn't matter */
-      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-      break;
-    case TAS58XX_MIX_LEFT:
-      /* Left channel only - select left */
-      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-      break;
-    case TAS58XX_MIX_RIGHT:
-      /* Right channel only - select right */
-      ctrl1 |= CTRL1_PBTL_CH_SEL;
-      break;
-    default:
-      /* Default to left for any other setting */
-      ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-      break;
+  case TAS58XX_MIX_MONO:
+    /* Mono sums L+R to both outputs - channel select doesn't matter */
+    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+    break;
+  case TAS58XX_MIX_LEFT:
+    /* Left channel only - select left */
+    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+    break;
+  case TAS58XX_MIX_RIGHT:
+    /* Right channel only - select right */
+    ctrl1 |= CTRL1_PBTL_CH_SEL;
+    break;
+  default:
+    /* Default to left for any other setting */
+    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+    break;
   }
-  
+
   esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "@0x%02X failed to enable PBTL: %s", dev->addr,
@@ -1438,33 +1440,33 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     /* DEVICE_CTRL1 is reset by DEEP_SLEEP and the device is in HiZ here, so
      * re-bridge the outputs before the output stage is allowed to drive. */
     tas58xx_apply_pbtl(dev);
-    
+
     /* Re-apply the channel selector after DEEP_SLEEP reset */
     if (dev->pbtl_mono) {
       uint8_t ctrl1 = 0;
       tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
       /* Re-apply PBTL mode and channel selector based on current mix setting */
       ctrl1 |= CTRL1_PBTL_EN;
-      
+
       switch (dev->mix) {
-        case TAS58XX_MIX_MONO:
-          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-          break;
-        case TAS58XX_MIX_LEFT:
-          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-          break;
-        case TAS58XX_MIX_RIGHT:
-          ctrl1 |= CTRL1_PBTL_CH_SEL;
-          break;
-        default:
-          ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-          break;
+      case TAS58XX_MIX_MONO:
+        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+        break;
+      case TAS58XX_MIX_LEFT:
+        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+        break;
+      case TAS58XX_MIX_RIGHT:
+        ctrl1 |= CTRL1_PBTL_CH_SEL;
+        break;
+      default:
+        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
+        break;
       }
-      
+
       esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
       if (err != ESP_OK) {
-        ESP_LOGE(TAG, "@0x%02X failed to set PBTL channel selector: %s", dev->addr,
-                 esp_err_to_name(err));
+        ESP_LOGE(TAG, "@0x%02X failed to set PBTL channel selector: %s",
+                 dev->addr, esp_err_to_name(err));
       }
     }
 
@@ -1478,7 +1480,7 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
 
     // Request transition to PLAY (unmuted)
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
-    
+
     // Poll POWER_STATE until the device actually reaches PLAY.
     // The TAS5825M won't transition until its PLL locks on SCLK.
     uint8_t ps = 0;
@@ -1764,9 +1766,12 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  /* In PBTL mode, stereo is not valid. If stereo is requested, default to mono. */
+  /* In PBTL mode, stereo is not valid. If stereo is requested, default to mono.
+   */
   if (dev < s_dev_count && s_devs[dev].pbtl_mono && mix == TAS58XX_MIX_STEREO) {
-    ESP_LOGW(TAG, "Amp %d is in PBTL mode - stereo selected, defaulting to mono", dev);
+    ESP_LOGW(TAG,
+             "Amp %d is in PBTL mode - stereo selected, defaulting to mono",
+             dev);
     mix = TAS58XX_MIX_MONO;
   }
 
