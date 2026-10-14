@@ -23,7 +23,7 @@ data/
 ├── www/               # Web interface pages
 │   ├── index.html     # Setup and control panel
 │   ├── logs.html      # Live log viewer
-│   ├── bq.html        # Parametric biquad chains (TAS5825M boards)
+│   ├── bq.html        # Parametric biquad chains (TAS58xx, or the software EQ)
 │   ├── hf.html        # Hybrid flow tuning (SqueezeAMP)
 │   └── speedtest.html # Network throughput test
 ├── hf/                # DSP programs loaded at boot

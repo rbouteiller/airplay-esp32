@@ -21,7 +21,10 @@ Bluetooth builds are separate environments rather than being enabled everywhere.
 - Bluetooth discoverability is disabled during an active AirPlay session, so a stray phone
   cannot interrupt playback
 - AVRCP provides volume sync and track metadata (artist, title, album) for the display
+- The phone's volume is applied on the DAC where it has a volume control, and otherwise
+  in software, where the bottom of the phone's slider is silence
 - Bluetooth volume is saved to NVS and restored on reconnect
+- Audio goes through the same channel mode and [software EQ](software-eq.md) as AirPlay
 
 The [coexistence state diagram](../reference/architecture.md#runtime-coexistence-rules)
 shows how the two protocols hand off to each other.

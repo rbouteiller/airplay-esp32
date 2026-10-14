@@ -219,6 +219,7 @@ esp_err_t settings_get_sub_offset(float *offset_db);
 esp_err_t settings_set_sub_offset(float offset_db);
 
 // ---- Per-output level and mute (dual-DAC boards) ----
+// The software EQ keeps its two output trims and mutes in A0 and B0.
 
 /** Amplifiers whose outputs can be levelled against each other. */
 #define SETTINGS_AMPS 2

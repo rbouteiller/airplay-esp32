@@ -18,11 +18,15 @@
 #include "audio_receiver.h"
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 #ifdef CONFIG_DAC_TAS58XX
 #include "dac_tas58xx.h"
 #endif
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
+#endif
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
 #endif
 
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
@@ -47,6 +51,18 @@
 // Keep these in sync with the i2s_chan_config_t initialisation below.
 #define I2S_DMA_DESC_NUM  8
 #define I2S_DMA_FRAME_NUM 256
+
+// Sample words on the I2S line. 16-bit words are made in place in the
+// source's buffer; 32-bit ones carry the EQ and the volume to the DAC
+// unrounded, the only rounding being into the word itself.
+#ifdef CONFIG_I2S_32BIT_OUTPUT
+#define OUT_WORD_BITS I2S_DATA_BIT_WIDTH_32BIT
+#define OUT_WORD_SIZE sizeof(int32_t)
+#else
+#define OUT_WORD_BITS I2S_DATA_BIT_WIDTH_16BIT
+#define OUT_WORD_SIZE sizeof(int16_t)
+#endif
+#define OUT_FRAME_BYTES (2 * OUT_WORD_SIZE)
 
 /* Max output frames after resampling one input frame */
 #define MAX_RESAMPLE_FRAMES \
@@ -96,7 +112,7 @@ static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
   (void)user_ctx;
   if (event && event->size > 0) {
     __atomic_add_fetch(&output_sent_frames,
-                       (uint64_t)(event->size / (2U * sizeof(int16_t))),
+                       (uint64_t)(event->size / OUT_FRAME_BYTES),
                        __ATOMIC_RELAXED);
     __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
   }
@@ -154,33 +170,130 @@ static void push_channel_mode_to_dsp(audio_channel_mode_t mode) {
 #endif
 }
 
-static void apply_volume(int16_t *buf, size_t n) {
 #ifndef CONFIG_DAC_CONTROLS_VOLUME
-  // Ramp toward the target gain instead of applying volume changes
-  // instantly.  An abrupt gain step mid-waveform is a discontinuity scaled
-  // by the signal's current amplitude — the classic volume "zipper" click,
-  // audible on every step of the sender's volume slider.  Approach the
-  // target exponentially, stepping once per stereo frame (even indices) so
-  // both channels always carry the same gain; the /256 divisor gives a
-  // ~3 ms time constant and a worst-case per-frame gain step of ~0.4%,
-  // with a minimum step of 1 so the ramp always completes.
-  static int32_t cur_q15 = -1;
-  int32_t target = airplay_get_volume_q15();
-  if (cur_q15 < 0) {
-    cur_q15 = target; // first call: no audio has played yet, jump silently
-  }
-  for (size_t i = 0; i < n; i++) {
-    if ((i & 1) == 0 && cur_q15 != target) {
-      int32_t diff = target - cur_q15;
-      int32_t step = diff / 256;
-      if (step == 0) {
-        step = diff > 0 ? 1 : -1;
-      }
-      cur_q15 += step;
+// Ramp toward the target gain instead of applying volume changes
+// instantly.  An abrupt gain step mid-waveform is a discontinuity scaled
+// by the signal's current amplitude — the classic volume "zipper" click,
+// audible on every step of the sender's volume slider.  Approach the
+// target exponentially, stepping once per stereo frame so both channels
+// always carry the same gain; the /256 divisor gives a ~3 ms time constant
+// and a worst-case per-frame gain step of ~0.4%, with a minimum step of 1
+// so the ramp always completes.
+// The ramp state is shared by every source: they never play at once, and a
+// hand-over simply glides from one source's volume to the other's.
+static int32_t volume_cur_q15 = -1;
+
+// The volume (Q15) for the next frame.
+static inline int32_t volume_step(int32_t target) {
+  if (volume_cur_q15 < 0) {
+    // First call: no audio has played yet, jump silently.
+    volume_cur_q15 = target;
+  } else if (volume_cur_q15 != target) {
+    int32_t diff = target - volume_cur_q15;
+    int32_t step = diff / 256;
+    if (step == 0) {
+      step = diff > 0 ? 1 : -1;
     }
-    buf[i] = (int16_t)(((int32_t)buf[i] * cur_q15) >> 15);
+    volume_cur_q15 += step;
+  }
+  return volume_cur_q15;
+}
+#else
+// The DAC does the volume.
+static inline int32_t volume_step(int32_t target) {
+  (void)target;
+  return 32768;
+}
+#endif
+
+#ifndef CONFIG_I2S_32BIT_OUTPUT
+static void apply_volume(int16_t *buf, size_t frames, int32_t target) {
+#ifndef CONFIG_DAC_CONTROLS_VOLUME
+  for (size_t i = 0; i < frames * 2; i += 2) {
+    const int32_t gain = volume_step(target);
+    buf[i] = (int16_t)(((int32_t)buf[i] * gain) >> 15);
+    buf[i + 1] = (int16_t)(((int32_t)buf[i + 1] * gain) >> 15);
+  }
+#else
+  (void)buf;
+  (void)frames;
+  (void)target;
+#endif
+}
+#else
+// A 16-bit sample times a Q15 volume is a 31-bit product, which a 32-bit
+// word holds exactly: without the EQ, the volume costs no precision at all.
+static void volume_to_words(const int16_t *pcm, size_t frames, int32_t target,
+                            int32_t *words) {
+  for (size_t i = 0; i < frames * 2; i += 2) {
+    const int32_t gain = volume_step(target);
+    words[i] = (int32_t)pcm[i] * gain * 2;
+    words[i + 1] = (int32_t)pcm[i + 1] * gain * 2;
+  }
+}
+
+#ifdef CONFIG_SOFTWARE_EQ
+// Truncating is an error of 2^-31 of full scale, far below what a float
+// resolves, so only the range needs care.
+static inline int32_t to_word(float v) {
+  if (v >= 2147483648.0f) {
+    return INT32_MAX;
+  }
+  if (v <= -2147483648.0f) {
+    return INT32_MIN;
+  }
+  return (int32_t)v;
+}
+
+// The EQ's output may run past full scale. It meets the volume first, so it
+// clips only where the volume leaves it past full scale.
+static void eq_volume_to_words(const float *eq, size_t frames, int32_t target,
+                               int32_t *words) {
+  for (size_t i = 0; i < frames * 2; i += 2) {
+    // int16 scale to a 32-bit word is x65536, and Q15 is /32768.
+    const float gain = (float)volume_step(target) * 2.0f;
+    words[i] = to_word(eq[i] * gain);
+    words[i + 1] = to_word(eq[i + 1] * gain);
+  }
+}
+#endif
+#endif
+
+// Where process_pcm() leaves its output. 16-bit words need neither buffer;
+// 32-bit words need one of their own, and the EQ one to hand its unrounded
+// output over in.
+typedef struct {
+  int32_t *words;
+  float *eq;
+} out_bufs_t;
+
+static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
+  bufs->words = NULL;
+  bufs->eq = NULL;
+#ifdef CONFIG_I2S_32BIT_OUTPUT
+  bufs->words = malloc(frames * 2 * sizeof(int32_t));
+  if (bufs->words == NULL) {
+    return false;
+  }
+#ifdef CONFIG_SOFTWARE_EQ
+  bufs->eq = malloc(frames * 2 * sizeof(float));
+  if (bufs->eq == NULL) {
+    free(bufs->words);
+    bufs->words = NULL;
+    return false;
   }
 #endif
+#else
+  (void)frames;
+#endif
+  return true;
+}
+
+static void out_bufs_free(out_bufs_t *bufs) {
+  free(bufs->words);
+  free(bufs->eq);
+  bufs->words = NULL;
+  bufs->eq = NULL;
 }
 
 // Apply the selected channel mode to an interleaved stereo buffer (L,R,...).
@@ -211,16 +324,52 @@ static void apply_channel_mode(int16_t *buf, size_t frames) {
   }
 }
 
+// Everything a source's PCM goes through on its way to I2S. The EQ runs
+// ahead of the volume so its filters see full-resolution samples. Returns
+// the words for I2S, @p frames of them: @p buf itself, made over in place,
+// with 16-bit words, else @p bufs->words.
+static const void *process_pcm(int16_t *buf, size_t frames, int32_t volume_q15,
+                               const out_bufs_t *bufs) {
+  apply_channel_mode(buf, frames);
+#ifdef CONFIG_I2S_32BIT_OUTPUT
+#ifdef CONFIG_SOFTWARE_EQ
+  if (audio_eq_process_float(buf, bufs->eq, frames)) {
+    eq_volume_to_words(bufs->eq, frames, volume_q15, bufs->words);
+    return bufs->words;
+  }
+#endif
+  volume_to_words(buf, frames, volume_q15, bufs->words);
+  return bufs->words;
+#else
+  (void)bufs;
+#ifdef CONFIG_SOFTWARE_EQ
+  audio_eq_process(buf, frames);
+#endif
+  apply_volume(buf, frames, volume_q15);
+  return buf;
+#endif
+}
+
+// The VU meter reads the words as they leave, so it follows the volume.
+static void feed_led(const void *words, size_t frames) {
+#ifdef CONFIG_I2S_32BIT_OUTPUT
+  led_audio_feed_q31(words, frames);
+#else
+  led_audio_feed(words, frames);
+#endif
+}
+
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
-  int16_t *silence = calloc((size_t)FRAME_SAMPLES * 2, sizeof(int16_t));
   int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
-  if (!pcm || !silence || !resample_buf) {
+  out_bufs_t out;
+  const bool out_ok = out_bufs_alloc(&out, MAX_RESAMPLE_FRAMES);
+  if (!pcm || !resample_buf || !out_ok) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
-    free(silence);
     playback_task_handle = NULL;
     free(resample_buf);
+    out_bufs_free(&out);
     vTaskDelete(NULL);
     return;
   }
@@ -255,14 +404,13 @@ static void playback_task(void *arg) {
                                               MAX_RESAMPLE_FRAMES);
         play_buf = resample_buf;
       }
-      apply_volume(play_buf, play_samples * 2);
-      apply_channel_mode(play_buf, play_samples);
-      led_audio_feed(play_buf, play_samples);
-      if (i2s_channel_write(tx_handle, play_buf,
-                            play_samples * 2 * sizeof(int16_t), &written,
-                            portMAX_DELAY) == ESP_OK) {
+      const void *words =
+          process_pcm(play_buf, play_samples, airplay_get_volume_q15(), &out);
+      feed_led(words, play_samples);
+      if (i2s_channel_write(tx_handle, words, play_samples * OUT_FRAME_BYTES,
+                            &written, portMAX_DELAY) == ESP_OK) {
         __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / (2U * sizeof(int16_t))),
+                           (uint64_t)(written / OUT_FRAME_BYTES),
                            __ATOMIC_RELAXED);
       }
       taskYIELD();
@@ -270,19 +418,26 @@ static void playback_task(void *arg) {
       // Receiver underflow — output a frame of silence.  Block on the DMA
       // write (portMAX_DELAY) so the write itself paces the loop, instead of a
       // short timeout plus vTaskDelay(1) which produced jittery silence.
-      led_audio_feed(silence, FRAME_SAMPLES);
-      if (i2s_channel_write(tx_handle, silence,
-                            (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t),
-                            &written, portMAX_DELAY) == ESP_OK) {
+      // Through the same processing, like the USB and Bluetooth underruns, so
+      // EQ tails and volume ramps carry on rather than freeze until the next
+      // audio arrives.
+      memset(pcm, 0, (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t));
+      const void *words =
+          process_pcm(pcm, FRAME_SAMPLES, airplay_get_volume_q15(), &out);
+      feed_led(words, FRAME_SAMPLES);
+      if (i2s_channel_write(tx_handle, words,
+                            (size_t)FRAME_SAMPLES * OUT_FRAME_BYTES, &written,
+                            portMAX_DELAY) == ESP_OK) {
         __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / (2U * sizeof(int16_t))),
+                           (uint64_t)(written / OUT_FRAME_BYTES),
                            __ATOMIC_RELAXED);
       }
     }
   }
 
   free(pcm);
-  free(silence);
+  free(resample_buf);
+  out_bufs_free(&out);
   playback_task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -321,7 +476,7 @@ esp_err_t audio_output_init(void) {
 
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(OUTPUT_RATE),
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(OUT_WORD_BITS,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
@@ -361,8 +516,11 @@ esp_err_t audio_output_init(void) {
 
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
-  ESP_LOGI(TAG, "I2S initialized: Rate=%u, DMA_Desc=%d, DMA_Frame=%d",
-           (unsigned int)OUTPUT_RATE, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
+  ESP_LOGI(TAG,
+           "I2S initialized: Rate=%u, %u-bit words, DMA_Desc=%d, "
+           "DMA_Frame=%d",
+           (unsigned int)OUTPUT_RATE, (unsigned int)(OUT_WORD_SIZE * 8),
+           I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
 
   // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
   // clock setup; amplifiers that manage power from board RTSP events can ignore
@@ -403,11 +561,75 @@ void audio_output_stop(void) {
   } else {
     ESP_LOGI(TAG, "Playback task stopped");
   }
+#ifdef CONFIG_SOFTWARE_EQ
+  // The task stops mid-stream, so whatever writes next must not play the
+  // tails it left in the filters.
+  audio_eq_reset();
+#endif
 }
 
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
   size_t written = 0;
   return i2s_channel_write(tx_handle, data, bytes, &written, wait);
+}
+
+#define PCM_FRAME_BYTES (2 * sizeof(int16_t))
+// The USB and Bluetooth sinks hand over at most 512 bytes at a time, so this
+// takes a whole item plus a carried partial frame in two passes at most.
+#define PCM_STAGE_FRAMES 128
+
+// Processing needs whole frames, but a byte ring buffer can hand them over
+// split at its wrap point, so a partial frame waits here for the rest. Only
+// one such source plays at a time, so static state is enough. Cleared on
+// flush: a source that drops its buffer must not leave half a frame behind
+// to knock every later frame out of alignment.
+static uint8_t pcm_carry[PCM_FRAME_BYTES];
+static size_t pcm_carry_len;
+
+esp_err_t audio_output_write_pcm(const void *data, size_t bytes,
+                                 int32_t volume_q15, TickType_t wait) {
+  static int16_t stage[PCM_STAGE_FRAMES * 2];
+  static out_bufs_t out;
+  static bool out_ready;
+  if (!out_ready) {
+    out_ready = out_bufs_alloc(&out, PCM_STAGE_FRAMES);
+    if (!out_ready) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
+
+  const uint8_t *src = data;
+  esp_err_t err = ESP_OK;
+  while (bytes > 0) {
+    size_t have = pcm_carry_len;
+    uint8_t *dst = (uint8_t *)stage;
+    memcpy(dst, pcm_carry, have);
+    size_t take = sizeof(stage) - have;
+    if (take > bytes) {
+      take = bytes;
+    }
+    memcpy(dst + have, src, take);
+    src += take;
+    bytes -= take;
+    have += take;
+
+    size_t frames = have / PCM_FRAME_BYTES;
+    pcm_carry_len = have - frames * PCM_FRAME_BYTES;
+    memcpy(pcm_carry, dst + frames * PCM_FRAME_BYTES, pcm_carry_len);
+    if (frames == 0) {
+      continue;
+    }
+
+    const void *words = process_pcm(stage, frames, volume_q15, &out);
+    feed_led(words, frames);
+    size_t written = 0;
+    err = i2s_channel_write(tx_handle, words, frames * OUT_FRAME_BYTES,
+                            &written, wait);
+    if (err != ESP_OK) {
+      break;
+    }
+  }
+  return err;
 }
 
 void audio_output_set_sample_rate(uint32_t rate) {
@@ -419,6 +641,13 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   s_output_rate = rate;
+#ifdef CONFIG_SOFTWARE_EQ
+  // Corners are relative to the clock, so follow it. The stream breaks here
+  // anyway, and this is where Bluetooth hands the output back without having
+  // rung its tails out, so start the filters from rest.
+  audio_eq_set_rate(rate);
+  audio_eq_reset();
+#endif
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
   dac_on_i2s_started(rate);
@@ -426,6 +655,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
 
 void audio_output_flush(void) {
   flush_requested = true;
+  pcm_carry_len = 0;
 }
 
 void audio_output_set_source_rate(int rate) {

@@ -21,6 +21,7 @@
 #include "audio_output.h"
 
 #include "audio_receiver.h"
+#include "led.h"
 
 // ~5 ms of scheduling + write delay between this call and the samples
 // reaching the backend.  Mirrors PIPELINE_LATENCY_US in audio_timing.c.
@@ -113,4 +114,15 @@ __attribute__((weak)) bool audio_output_channel_mode_locked(void) {
 
 __attribute__((weak)) bool audio_output_channel_mode_in_dsp(void) {
   return false;
+}
+
+// Backends without software processing pass the PCM straight through, so
+// the VU meter reads it as it is.
+__attribute__((weak)) esp_err_t audio_output_write_pcm(const void *data,
+                                                       size_t bytes,
+                                                       int32_t volume_q15,
+                                                       TickType_t wait) {
+  (void)volume_q15;
+  led_audio_feed(data, bytes / (2 * sizeof(int16_t)));
+  return audio_output_write(data, bytes, wait);
 }

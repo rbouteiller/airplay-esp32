@@ -553,7 +553,14 @@ static void on_playback_event(playback_source_t source, playback_event_t event,
 
 static int64_t s_last_update_us = 0;
 
-void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
+// Sample @p i on the int16 scale, from whichever of the two buffers is set.
+static inline int32_t level_at(const int16_t *pcm16, const int32_t *pcm32,
+                               size_t i) {
+  return pcm16 != NULL ? pcm16[i] : pcm32[i] >> 16;
+}
+
+static void audio_feed(const int16_t *pcm16, const int32_t *pcm32,
+                       size_t stereo_samples) {
   if (stereo_samples == 0 || s_current_state != STATE_PLAYING) {
     return;
   }
@@ -570,7 +577,7 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
   // Compute RMS energy
   uint64_t sum_sq = 0;
   for (size_t i = 0; i < total; i++) {
-    int32_t s = pcm[i];
+    int32_t s = level_at(pcm16, pcm32, i);
     sum_sq += (uint64_t)(s * s);
   }
   float rms = sqrtf((float)sum_sq / (float)total);
@@ -578,7 +585,7 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
   // Simple bass energy estimate
   uint64_t diff_sum = 0;
   for (size_t i = 2; i < total; i += 2) {
-    int32_t d = (int32_t)pcm[i] - (int32_t)pcm[i - 2];
+    int32_t d = level_at(pcm16, pcm32, i) - level_at(pcm16, pcm32, i - 2);
     diff_sum += (uint64_t)(d < 0 ? -d : d);
   }
   float high_energy = (float)diff_sum / ((float)total / 2.0f);
@@ -604,6 +611,14 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
 
   status_led_set_vu(norm);
   rgb_led_set_vu(norm, bass_ratio);
+}
+
+void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
+  audio_feed(pcm, NULL, stereo_samples);
+}
+
+void led_audio_feed_q31(const int32_t *pcm, size_t stereo_samples) {
+  audio_feed(NULL, pcm, stereo_samples);
 }
 
 // ============================================================================

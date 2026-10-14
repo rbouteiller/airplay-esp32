@@ -22,7 +22,6 @@
 
 #include "audio_output.h"
 #include "dac.h"
-#include "led.h"
 #include "playback_events.h"
 #include "settings.h"
 
@@ -38,6 +37,7 @@
 #endif
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,6 +78,9 @@ static const char *TAG = "usb_sink";
 
 #define VOLUME_MIN_DB (-30.0f)
 #define VOLUME_MAX_DB 0.0f
+// The range usb_device_uac advertises to the host, -50..0 dB in 1 dB steps,
+// which it hands over as 0..100: (dB + 50) * 2.
+#define HOST_VOLUME_MIN_DB (-50.0f)
 
 static RingbufHandle_t s_ringbuf;
 static TaskHandle_t s_task;
@@ -97,9 +100,31 @@ static int64_t s_stats_us;
 // never stalls behind the bus.  -1 means "nothing pending".
 static _Atomic int32_t s_pending_volume = -1;
 static _Atomic int32_t s_pending_mute = -1;
+// The host's volume twice over: on AirPlay's -30..0 dB scale, which a DAC's
+// own volume curve expects, and as the dB the host asked for, which the
+// software volume applies.
 static float s_unmuted_db = -15.0f;
+static float s_host_db = -15.0f;
 // Latched mute state, owned by the sink task.
 static bool s_muted;
+// Host volume as a software gain, for DACs that cannot attenuate themselves
+// (audio_output_write_pcm ignores it on those that can). Owned by the sink
+// task.
+static int32_t s_volume_q15 = 32768;
+
+// Only the host's mute means silence. Its slider stops at the bottom of the
+// range advertised above and carries on down in software, so silencing that
+// floor cut off the bottom of the slider: on Linux, whose slider is cubic,
+// everything under about 15 %.
+static int32_t volume_q15(bool muted, float db) {
+  if (muted) {
+    return 0;
+  }
+  if (db >= 0.0f) {
+    return 32768;
+  }
+  return (int32_t)(32768.0f * powf(10.0f, db / 20.0f));
+}
 
 // ============================================================================
 // UAC callbacks
@@ -118,7 +143,6 @@ static esp_err_t uac_output_cb(uint8_t *buf, size_t len, void *cb_ctx) {
 
   s_last_rx_us = esp_timer_get_time();
   atomic_fetch_add(&s_rx_bytes, (uint32_t)len);
-  led_audio_feed((const int16_t *)buf, len / BYTES_PER_FRAME);
 
   if (xRingbufferSend(ringbuf, buf, len, 0) != pdTRUE) {
     // Either the sink task is still handing I2S over from AirPlay, or the
@@ -158,14 +182,15 @@ static void apply_host_controls(void) {
   if (volume >= 0) {
     s_unmuted_db = VOLUME_MIN_DB +
                    ((float)volume / 100.0f) * (VOLUME_MAX_DB - VOLUME_MIN_DB);
-    ESP_LOGI(TAG, "Host volume %" PRId32 " %% -> %.1f dB", volume,
-             s_unmuted_db);
+    s_host_db = HOST_VOLUME_MIN_DB + (float)volume / 2.0f;
+    ESP_LOGI(TAG, "Host volume %.0f dB", s_host_db);
   }
 
   // Mute is a latched state, not an event: a volume change while muted must
   // update s_unmuted_db without lifting the mute.
   if (mute >= 0 || volume >= 0) {
     dac_set_volume(s_muted ? VOLUME_MIN_DB : s_unmuted_db);
+    s_volume_q15 = volume_q15(s_muted, s_host_db);
   }
 }
 
@@ -249,7 +274,7 @@ static void usb_sink_task(void *arg) {
     void *data =
         xRingbufferReceiveUpTo(s_ringbuf, &item_size, pdMS_TO_TICKS(20), 512);
     if (data != NULL) {
-      audio_output_write(data, item_size, portMAX_DELAY);
+      audio_output_write_pcm(data, item_size, s_volume_q15, portMAX_DELAY);
       vRingbufferReturnItem(s_ringbuf, data);
       continue;
     }
@@ -269,8 +294,11 @@ static void usb_sink_task(void *arg) {
     }
 
     // Short gap between USB packets — keep I2S fed rather than underrun.
+    // Through the same processing, so filter tails and volume ramps carry on
+    // rather than stop dead.
     s_underruns++;
-    audio_output_write(silence, sizeof(silence), pdMS_TO_TICKS(10));
+    audio_output_write_pcm(silence, sizeof(silence), s_volume_q15,
+                           pdMS_TO_TICKS(10));
   }
 }
 
@@ -284,6 +312,8 @@ esp_err_t usb_audio_sink_init(usb_audio_sink_state_cb_t state_cb) {
   }
 
   (void)settings_get_volume(&s_unmuted_db);
+  s_host_db = s_unmuted_db;
+  s_volume_q15 = volume_q15(false, s_host_db);
 
   s_state_cb = state_cb;
   s_last_rx_us = esp_timer_get_time();

@@ -91,10 +91,11 @@ input:disabled,select:disabled{opacity:0.25}
 <input type='range' id='master' step='0.5' oninput='masterChanged()'
        onchange='masterCommit()'>
 <b id='master-val'>&mdash;</b></div>
-<p class='hint'>Master is the AirPlay volume and moves every output together.
-The output levels below are trimmed against it, applied in the DSP input mixer
-ahead of the filters, so they only attenuate and cost no filter headroom. Use
-them to match drivers of differing sensitivity.</p>
+<p class='hint' id='trim-hint'>Master is the AirPlay volume and moves every
+output together. The output levels below are trimmed against it, applied in the
+DSP input mixer ahead of the filters, so they only attenuate and cost no filter
+headroom. Use them to match drivers of differing sensitivity.</p>
+<p class='hint' id='preamp' style='display:none'></p>
 <div id='gains'></div>
 </div>
 
@@ -1216,14 +1217,35 @@ function plotAll(){
 }
 
 /* ---- server ---- */
+/* Only the software EQ reports a preamp: it has no DSP headroom, so it turns
+   the signal down ahead of the filters by as much as the curves boost. */
+function softwareEq(){return !!data&&data.preamp_db!==undefined;}
+function showPreamp(){
+  var e=$('preamp');
+  if(!softwareEq()){e.style.display='none';return;}
+  $('trim-hint').textContent='Master is the AirPlay volume and moves every'+
+    ' output together. The output levels below are trimmed against it; use'+
+    ' them to match drivers of differing sensitivity. This board runs the EQ'+
+    ' in software, which turns the signal down ahead of the filters by as'+
+    ' much as the curves boost, so that nothing clips. Trimming an output'+
+    ' down gives some of that back.';
+  e.textContent=data.preamp_db<-0.05
+    ?'Turned down '+(-data.preamp_db).toFixed(1)+
+     ' dB for the current boosts.'
+    :'Nothing is turned down: the current curves do not boost past 0 dB.';
+  e.style.display='';
+}
 function post(body,okText){
   return fetch('/api/bq',{method:'POST',
                           headers:{'Content-Type':'application/json'},
                           body:JSON.stringify(body)})
     .then(function(r){
       if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
-      if(okText)show($('msg'),okText,'ok');
-      return true;
+      return r.json().catch(function(){return {};}).then(function(j){
+        if(j.preamp_db!==undefined){data.preamp_db=j.preamp_db;showPreamp();}
+        if(okText)show($('msg'),okText,'ok');
+        return true;
+      });
     })
     .catch(function(e){show($('msg'),'Failed: '+e.message,'err');return false;});
 }
@@ -1956,8 +1978,9 @@ function aeqRun(){
       (r.bands.length===1?'':'s')+' into slot '+(keep+1)+' onwards, deviation '+
       r.before.toFixed(1)+' dB RMS before and '+r.after.toFixed(1)+
       ' dB after. Summed EQ '+r.peak.toFixed(1)+' dB at its highest'+
-      (r.peak>0.05?', so take that much off this output to keep the headroom.'
-                 :', so it costs no headroom.');
+      (r.peak<=0.05?', so it costs no headroom.'
+       :softwareEq()?', which is taken off ahead of the filters once applied.'
+       :', so take that much off this output to keep the headroom.');
     show($('msg'),'Filters fitted. Apply to hear them.','info');
   },30);
 }
@@ -1991,7 +2014,7 @@ function load(){
     if(isGanged(data.amps[amp]))ch=0;
     $('sub').textContent='15 biquads per output at '+d.rate+' Hz';
     var left=autoShape();
-    drawTabs();drawMix();drawGains();loadRows();plot();
+    drawTabs();drawMix();drawGains();loadRows();plot();showPreamp();
     if(left)
       show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
            ' this page offers reproduces the coefficients. They are still'+

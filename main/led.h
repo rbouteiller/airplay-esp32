@@ -29,6 +29,11 @@ void led_init(void);
 void led_audio_feed(const int16_t *pcm, size_t stereo_samples);
 
 /**
+ * The same, for audio already in 32-bit I2S words (CONFIG_I2S_32BIT_OUTPUT).
+ */
+void led_audio_feed_q31(const int32_t *pcm, size_t stereo_samples);
+
+/**
  * Set error state (e.g., speaker fault, decode failure).
  * Clears automatically on next playback state change.
  */

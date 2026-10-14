@@ -181,6 +181,43 @@ menu "Airplay ESP Configuration"
                 when needed.
     endchoice
 
+    config SOFTWARE_EQ
+        bool "Software parametric EQ"
+        depends on AUDIO_OUTPUT_I2S && !DAC_TAS58XX && !DAC_TAS57XX
+        depends on SOC_CPU_HAS_FPU
+        default n
+        help
+            Run the Biquad EQ page (/bq) on the ESP32 itself, for plain I2S
+            DACs and amplifiers (PCM5102A, MAX98357A, ...) that have no DSP
+            of their own: 15 sections per channel (peaking, shelves, high-
+            and low-pass, notch, ...) plus a level trim and mute per output.
+            Applies to AirPlay, Sendspin, USB and Bluetooth audio alike.
+
+            The filters run in single-precision floating point on the audio
+            task, so this needs a chip with an FPU (not the ESP32-S2 or
+            ESP32-C5), and the CPU it takes grows with the number of active
+            sections. Boosts are paid for by turning the signal down ahead
+            of the filters, so they cannot clip.
+
+    config I2S_32BIT_OUTPUT
+        bool "Send 32-bit words over I2S"
+        depends on AUDIO_OUTPUT_I2S && !DAC_TAS58XX && !DAC_TAS57XX
+        default n
+        help
+            Send each sample as a 32-bit word (64 bit clocks per frame)
+            instead of a 16-bit one. The software EQ then hands its output
+            over unrounded, the software volume is applied at full precision,
+            and the only rounding left is into the 32-bit word. With 16-bit
+            words both are cut back to 16 bits, whose noise floor sits above
+            that of a good DAC or amplifier: the MAX98357A's is specified
+            with 24- or 32-bit data.
+
+            The DAC must accept 32-bit I2S frames. The MAX98357A picks the
+            word length from the bit clock by itself; a DAC set up over I2C
+            needs its driver to agree. Costs about 12 KB more internal RAM,
+            16 KB with the software EQ: the DMA ring doubles, and the words
+            need buffers of their own.
+
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
         default OUTPUT_SAMPLE_RATE_44100

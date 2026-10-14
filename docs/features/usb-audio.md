@@ -2,7 +2,7 @@
 
 Boards with a USB OTG port can present themselves to an attached computer as a **stereo USB
 speaker**. Audio sent by the host plays through the same output path AirPlay uses, sharing
-the DAC's DSP, EQ and volume control.
+its channel mode, EQ and volume control.
 
 !!! warning "Needs USB OTG and a device-role port"
 
@@ -20,7 +20,8 @@ consumer-control interface that sends media keys back to the host.
 - AirPlay is suspended as soon as the host starts streaming
 - The output is handed back once the host stream has been idle for
   `CONFIG_USB_AUDIO_SINK_IDLE_MS`, 2000 ms by default
-- Host volume and mute are applied to the DAC, so the computer's own volume slider works
+- Host volume and mute follow the computer's own slider — on the DAC where it has a volume
+  control, and in software where it does not
 - [Hardware buttons](buttons.md) send play/pause, track skip, volume and mute to the host
   over HID, since UAC itself carries no transport controls
 
