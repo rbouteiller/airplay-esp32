@@ -65,6 +65,9 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
+      - name: Test the PTP offset filter
+        run: python3 tests/ptp_clock/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

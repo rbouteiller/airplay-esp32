@@ -65,13 +65,30 @@ static const char *TAG = "ptp_clock";
 #define SMOOTH_POS_STEADY_DIV  16  // later, apply 1/16 of positive jitter
 #define SMOOTH_NEG_DIV         256 // always apply only 1/256 of negative jitter
 #define SMOOTH_NEG_CLAMP_NS    (-2500000LL) // clamp negative jitter at -2.5ms
-#define STARTUP_DURATION_MS 1000 // first second: aggressive positive tracking
+#define STARTUP_DURATION_MS    1000 // first second: aggressive positive tracking
 
 // Threshold above which we reset the PTP smoothing filter on resume.
 // E.g. at 50 ppm crystal accuracy, 30 s of pause accumulates ~1.5 ms of drift —
 // large enough to be audible in multi-room but well within the 50 ms outlier
 // window.  Below this threshold the drift is negligible (<0.25 ms at 5 s).
 #define PTP_LONG_PAUSE_THRESHOLD_MS 30000
+
+// A sample newer than this means the master is still sending, so the next
+// session can carry on with the lock rather than spend ~0.75 s re-acquiring it.
+#define SESSION_KEEP_MS 2000
+// A run of samples far below the estimate is either congestion holding SYNCs
+// up or the master's clock moving back: an iPhone's stops while it sleeps, so
+// its offset falls by the time it slept, 0.5 s to minutes on the board.
+// Congestion there held every SYNC 52-206 ms late for 2 s and more, several
+// times an hour of playback, and each follow threw the playout error out by
+// up to tens of ms for 10-20 s.  So a fall larger than congestion causes is
+// followed after ~2 s of SYNCs, and a smaller one only once it has lasted
+// ~20 s, far longer than congestion did.
+#define OUTLIER_RUN_RESET       16
+#define OUTLIER_RUN_RESET_SMALL 160
+#define SMALL_STEP_NS           500000000LL // 500 ms
+// sample_clock_id when samples from more than one master have been mixed.
+#define PTP_CLOCK_ID_MIXED UINT64_MAX
 
 // PTP state
 static struct {
@@ -115,6 +132,15 @@ static struct {
 
   // Master clock filter (0 = accept any master)
   uint64_t expected_clock_id;
+  // The session that named expected_clock_id has ended. The filter stays on,
+  // so no other master's samples reach the kept lock, but the next session's
+  // master is checked against the samples again.
+  bool session_ended;
+  // Master behind the samples since the last reset (0 = none yet,
+  // PTP_CLOCK_ID_MIXED = more than one).
+  uint64_t sample_clock_id;
+  uint32_t consecutive_outliers;
+  int64_t outlier_run_best_ns; // highest offset in the current run
 } ptp = {0};
 
 // Parse 8-byte clockIdentity (big-endian) from PTP sourcePortIdentity
@@ -158,9 +184,14 @@ static inline int64_t get_local_time_ns(void) {
 // dampening negative jitter (smaller offset = longer delay) slowly, the
 // filter converges to the offset corresponding to the minimum network
 // delay — the best available approximation of the true clock offset.
-static void update_offset(int64_t new_offset_ns) {
+static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
   uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
   ptp.last_sync_ms = now_ms;
+  if (ptp.sample_count == 0) {
+    ptp.sample_clock_id = src_clock_id;
+  } else if (src_clock_id != ptp.sample_clock_id) {
+    ptp.sample_clock_id = PTP_CLOCK_ID_MIXED;
+  }
   ptp.sample_count++;
   // Record the raw sample before any smoothing or outlier rejection, so the
   // divergence between measured and filtered offset stays observable.
@@ -173,35 +204,61 @@ static void update_offset(int64_t new_offset_ns) {
     smoothed_offset = new_offset_ns;
     ptp.mastership_start_ms = now_ms;
   } else {
-    // Reject obvious outliers (more than 50ms from current estimate)
     int64_t diff = new_offset_ns - ptp.filtered_offset_ns;
-    if (diff < 0) {
-      diff = -diff;
-    }
     if (diff > OUTLIER_THRESHOLD_NS) {
+      // Far above the estimate: this SYNC got through faster than the ones it
+      // was built on.  Queuing only ever delays a SYNC, so those were held up
+      // (or the master's clock stepped forward) -- take this one as it is.
+      // Rejecting it instead left a filter seeded by one delayed sample
+      // refusing every good one after it.
+      ptp.consecutive_outliers = 0;
+      smoothed_offset = new_offset_ns;
+    } else if (diff < -OUTLIER_THRESHOLD_NS) {
       ptp.outlier_count++;
-      return;
-    }
-
-    int64_t jitter = new_offset_ns - ptp.previous_offset;
-    uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
-
-    if (jitter >= 0) {
-      // Positive jitter: offset increased → shorter network delay → more
-      // accurate.  Accept quickly, especially during startup.
-      if (mastership_time_ms < STARTUP_DURATION_MS) {
-        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STARTUP_DIV;
-      } else {
-        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STEADY_DIV;
+      if (ptp.consecutive_outliers == 0 ||
+          new_offset_ns > ptp.outlier_run_best_ns) {
+        ptp.outlier_run_best_ns = new_offset_ns;
       }
+      const int64_t fall = ptp.filtered_offset_ns - ptp.outlier_run_best_ns;
+      const uint32_t run_needed =
+          fall < SMALL_STEP_NS ? OUTLIER_RUN_RESET_SMALL : OUTLIER_RUN_RESET;
+      if (++ptp.consecutive_outliers < run_needed) {
+        return; // a burst of delayed SYNCs, most likely
+      }
+      // Too many in a row for delay: the master's clock went back (an
+      // iPhone's stops while it sleeps).  Step to the least delayed sample of
+      // the run and keep the lock -- a playing stream follows one step, but
+      // an unlocked clock reads as an offset of 0 until it re-locks.
+      ESP_LOGI(TAG, "offset fell by %lld ms and stayed there, following it",
+               (long long)(fall / 1000000));
+      smoothed_offset = ptp.outlier_run_best_ns;
+      ptp.consecutive_outliers = 0;
+      ptp.mastership_start_ms = now_ms; // track upwards quickly again
     } else {
-      // Negative jitter: offset decreased → longer network delay → less
-      // reliable.  Clamp and apply only a tiny fraction.
-      int64_t clamped_jitter = jitter;
-      if (clamped_jitter < SMOOTH_NEG_CLAMP_NS) {
-        clamped_jitter = SMOOTH_NEG_CLAMP_NS;
+      ptp.consecutive_outliers = 0;
+
+      int64_t jitter = new_offset_ns - ptp.previous_offset;
+      uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
+
+      if (jitter >= 0) {
+        // Positive jitter: offset increased → shorter network delay → more
+        // accurate.  Accept quickly, especially during startup.
+        if (mastership_time_ms < STARTUP_DURATION_MS) {
+          smoothed_offset =
+              ptp.previous_offset + jitter / SMOOTH_POS_STARTUP_DIV;
+        } else {
+          smoothed_offset =
+              ptp.previous_offset + jitter / SMOOTH_POS_STEADY_DIV;
+        }
+      } else {
+        // Negative jitter: offset decreased → longer network delay → less
+        // reliable.  Clamp and apply only a tiny fraction.
+        int64_t clamped_jitter = jitter;
+        if (clamped_jitter < SMOOTH_NEG_CLAMP_NS) {
+          clamped_jitter = SMOOTH_NEG_CLAMP_NS;
+        }
+        smoothed_offset = ptp.previous_offset + clamped_jitter / SMOOTH_NEG_DIV;
       }
-      smoothed_offset = ptp.previous_offset + clamped_jitter / SMOOTH_NEG_DIV;
     }
   }
 
@@ -237,13 +294,12 @@ static void update_offset(int64_t new_offset_ns) {
         }
       }
     } else {
+      // A held lock is never dropped on one sample.  Every path above keeps
+      // the sample within OUTLIER_THRESHOLD_NS of the estimate except a
+      // followed run, whose last sample can sit hundreds of ms below the one
+      // it steps to, and a playing stream reads an unlocked clock as an
+      // offset of 0.  Silence (ptp_clock_is_locked()) or a reset drops it.
       ptp.lock_candidate_start_ms = 0;
-      if (ptp.locked && dev > LOCK_THRESHOLD_NS * 4) {
-        ptp.locked = false;
-        ptp.lock_start_ms = 0;
-        ESP_LOGW(TAG, "LOST LOCK: dev=%lldns (threshold=%lldns)",
-                 (long long)dev, (long long)(LOCK_THRESHOLD_NS * 4));
-      }
     }
   }
 }
@@ -274,7 +330,7 @@ static void process_sync(const uint8_t *data, size_t len, uint16_t seq) {
       ptp_time_ns = (uint64_t)((int64_t)ptp_time_ns + correction_field);
     }
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset);
+    update_offset(offset, parse_ptp_clock_id(data));
     ptp.awaiting_followup = false;
   }
 }
@@ -312,7 +368,7 @@ static void process_followup(const uint8_t *data, size_t len, uint16_t seq) {
 
     // offset = PTP_time - local_time_at_sync_receipt
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset);
+    update_offset(offset, parse_ptp_clock_id(data));
   }
 }
 
@@ -566,6 +622,33 @@ void ptp_clock_clear(void) {
   // Drop the master filter so the next session can lock to whatever master
   // its anchor packet names (which may differ from the previous session).
   ptp.expected_clock_id = 0;
+  ptp.session_ended = false;
+  ptp.sample_clock_id = 0;
+  ptp.consecutive_outliers = 0;
+}
+
+// True when the samples still describe the master: it sent one recently and
+// that one was accepted.  An iPhone's PTP clock stops while it sleeps, so after
+// a pause the first samples can land seconds away from the filtered offset --
+// a lock carried across that would place the next anchor that far out.
+static bool samples_current(void) {
+  uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  return ptp.sample_count > 0 && ptp.consecutive_outliers == 0 &&
+         ptp.last_sync_ms != 0 && (now_ms - ptp.last_sync_ms) < SESSION_KEEP_MS;
+}
+
+void ptp_clock_end_session(void) {
+  if (!samples_current()) {
+    ptp_clock_clear();
+    return;
+  }
+  // The master is still sending, so the samples are current. Keep its filter:
+  // with it dropped, any other master on the network (an Apple TV, a HomePod)
+  // would feed the offset until the next session names one, and mark the
+  // samples mixed, which drops the lock this path keeps. The next session may
+  // still name a different master; naming this one again keeps the lock (see
+  // ptp_clock_set_master_clock_id()).
+  ptp.session_ended = true;
 }
 
 void ptp_clock_notify_resume(uint32_t pause_duration_ms) {
@@ -614,13 +697,23 @@ int64_t ptp_clock_get_offset_ns(void) {
 }
 
 void ptp_clock_set_master_clock_id(uint64_t clock_id) {
-  if (clock_id == ptp.expected_clock_id) {
+  if (clock_id == ptp.expected_clock_id && !ptp.session_ended) {
     return;
   }
+  ptp.session_ended = false;
 
-  ESP_LOGI(TAG, "PTP master clock_id %s: %016llx", clock_id ? "set" : "cleared",
-           (unsigned long long)clock_id);
+  // A session naming the master every current sample came from -- the next
+  // track from the same phone -- keeps the lock.  Re-acquiring it takes
+  // ~0.75 s, and a start waiting on it joins the track that far in.
+  bool keep =
+      clock_id != 0 && ptp.sample_clock_id == clock_id && samples_current();
+  ESP_LOGI(TAG, "PTP master clock_id %s: %016llx%s",
+           clock_id ? "set" : "cleared", (unsigned long long)clock_id,
+           keep ? " (already measuring it, lock kept)" : "");
   ptp.expected_clock_id = clock_id;
+  if (keep) {
+    return;
+  }
 
   // Drop accumulated samples / lock state — they may have come from a
   // different (wrong) master.
@@ -632,6 +725,8 @@ void ptp_clock_set_master_clock_id(uint64_t clock_id) {
   ptp.previous_offset = 0;
   ptp.previous_offset_time_ms = 0;
   ptp.awaiting_followup = false;
+  ptp.sample_clock_id = 0;
+  ptp.consecutive_outliers = 0;
 }
 
 uint64_t ptp_clock_get_master_clock_id(void) {

@@ -31,6 +31,14 @@ void ptp_clock_stop(void);
 void ptp_clock_clear(void);
 
 /**
+ * Called at TEARDOWN.  If the master is still sending (an accepted sample
+ * within the last 2 s), keep the offset and lock and only drop the master
+ * filter, so a next session from the same master starts without re-locking;
+ * otherwise behave like ptp_clock_clear().
+ */
+void ptp_clock_end_session(void);
+
+/**
  * Check if PTP is locked to a master clock.
  * @return true if synchronized with acceptable accuracy
  */
@@ -89,9 +97,11 @@ void ptp_clock_get_stats(ptp_stats_t *stats);
  *
  * When the expected clock_id changes, the filter resets samples and lock
  * state so a stale offset to a previous (possibly wrong) master is not
- * carried over.  On a network with multiple PTP-speaking Apple devices
- * (HomePods, AppleTVs, other receivers), this is what prevents us from
- * locking to the wrong master and computing nonsense early/late deltas.
+ * carried over -- unless every sample already came from the new master and
+ * the latest, accepted, is under 2 s old, in which case they are kept.  On a
+ * network with multiple PTP-speaking Apple devices (HomePods, AppleTVs, other
+ * receivers), this is what prevents us from locking to the wrong master and
+ * computing nonsense early/late deltas.
  */
 void ptp_clock_set_master_clock_id(uint64_t clock_id);
 
