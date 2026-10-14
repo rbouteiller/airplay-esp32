@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 /*
- * A TAS5805M runs its biquads after a sample-rate converter, at 96 kHz or
- * 88.2 kHz whatever the I2S rate, so a section has to be designed at that
- * rate to land where it was asked for.
+ * A TAS5805M, and a TAS5825M in Process Flow 1, run their biquads after a
+ * sample-rate converter, at 96 kHz or 88.2 kHz whatever the I2S rate, so a
+ * section has to be designed at that rate to land where it was asked for.
  */
 
 #include "tas58xx_biquad.h"
@@ -55,7 +55,7 @@ static void test_rates(void) {
       {96000, 96000}, {32000, 96000},
   };
   for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-    double got = tas5805m_dsp_rate(cases[i].i2s);
+    double got = tas58xx_dsp_rate(cases[i].i2s);
     CHECK(got == cases[i].dsp, "%.0f Hz in runs at %.0f, got %.0f",
           cases[i].i2s, cases[i].dsp, got);
   }
@@ -71,7 +71,7 @@ static void test_cut_lands_where_asked(void) {
   bq.q = 5.0f;
   bq.gain_db = -12.0f;
 
-  const double run_fs = tas5805m_dsp_rate(48000.0);
+  const double run_fs = tas58xx_dsp_rate(48000.0);
   double c[5];
 
   tas58xx_bq_design(&bq, run_fs, c);
@@ -93,6 +93,6 @@ int main(void) {
     printf("%d check(s) failed\n", s_failed);
     return EXIT_FAILURE;
   }
-  printf("all TAS5805M filter rate tests passed\n");
+  printf("all TAS58xx filter rate tests passed\n");
   return EXIT_SUCCESS;
 }

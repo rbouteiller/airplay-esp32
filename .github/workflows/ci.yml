@@ -65,8 +65,8 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
-      - name: Test the rate a TAS5805M's filters are designed at
-        run: python3 tests/tas5805m_rate/run.py
+      - name: Test the rate a TAS58xx's filters are designed at
+        run: python3 tests/tas58xx_rate/run.py
 
   lint-check:
     needs: changes

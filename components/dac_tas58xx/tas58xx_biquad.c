@@ -352,7 +352,7 @@ static bq_coeff_t bq_phase_shift(double freq, double bw, double fs) {
 
 /* ---------------- public entry points ---------------- */
 
-double tas5805m_dsp_rate(double i2s_rate_hz) {
+double tas58xx_dsp_rate(double i2s_rate_hz) {
   const long hz = lround(i2s_rate_hz);
   return (hz > 0 && hz % 11025 == 0) ? 88200.0 : 96000.0;
 }

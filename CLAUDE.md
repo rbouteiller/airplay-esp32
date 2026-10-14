@@ -190,7 +190,7 @@ components/
 
 - **Two parts, one driver.** The model is guessed from the I2C address (0x4C–0x4F → TAS5825M, 0x2C–0x2F → TAS5805M), then confirmed against the die ID in register 0x67; a disagreement is logged as a warning.
 - **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
-- **A TAS5805M's biquads run at 96 kHz, not the I2S rate.** Its ROM flow converts every input to 96 kHz (88.2 kHz for the 44.1 kHz family) ahead of the EQ (TI SLOA263A, Process Flow 1), so `bq_design_fs()` designs its sections at `tas5805m_dsp_rate()` and `/api/bq` reports that rate. Designed at the I2S rate instead, every section plays an octave high at 48 kHz. Designed at 96 kHz, our coefficients match the PPC3-generated ones for this part to within 3 LSB. A TAS5825M's sections run at the I2S rate.
+- **The biquads run at 96 kHz, not the I2S rate.** Both parts convert every input to 96 kHz (88.2 kHz for the 44.1 kHz family) ahead of the EQ: a TAS5825M in Process Flow 1, which its init sequence selects (TI SLAA786A §3.1), and a TAS5805M in its ROM flow (TI SLOA263A, Process Flow 1). So `bq_design_fs()` designs every section at `tas58xx_dsp_rate()` and `/api/bq` reports that rate. Designed at the I2S rate instead, every section plays an octave high. On a TAS5805M, our coefficients designed at 96 kHz match the PPC3-generated ones to within 3 LSB, and a measurement confirms the corners; the TAS5825M has not been measured yet.
 - **PPC3 dump filenames**, searched most specific first: `tas5825m_fw<i>-<rate>.bin` → `tas5825m_fw-<rate>.bin` → `tas5825m_fw<i>.bin` → `tas5825m_fw.bin`. The unindexed names only stand in for device 0. `components/dac_tas58xx/ppc3_convert.py` produces them from a PPC3 export.
 - **Fault handling.** A clock fault is expected when the I2S clock stops at the end of a track, so it is logged and cleared rather than muting the amplifier; channel and global2 faults still mute. Rev D has no fault line at all and is polled instead.
 
@@ -222,7 +222,7 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**Host tests**: `tests/pcm51xx/run.py` and `tests/tas5805m_rate/run.py` compile the real driver and TAS5805M filter-rate code against small mocks with the host C compiler, and run in CI's `format-check` job. There is no test framework beyond that; everything else needs testing on hardware.
+**Host tests**: `tests/pcm51xx/run.py` and `tests/tas58xx_rate/run.py` compile the real driver and TAS58xx filter-rate code against small mocks with the host C compiler, and run in CI's `format-check` job. There is no test framework beyond that; everything else needs testing on hardware.
 
 ## Documentation site
 

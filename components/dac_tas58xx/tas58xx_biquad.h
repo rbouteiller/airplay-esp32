@@ -75,14 +75,16 @@ typedef struct {
 void tas58xx_bq_init_bypass(tas58xx_bq_t *bq);
 
 /**
- * The rate a TAS5805M's biquads run at, for audio arriving at @p i2s_rate_hz.
+ * The rate a TAS58xx's biquads run at, for audio arriving at @p i2s_rate_hz.
  *
- * Its ROM process flow puts a sample-rate converter ahead of the EQ, which
- * takes every input to 96 kHz, or to 88.2 kHz for the 44.1 kHz family (TI
- * SLOA263A, Process Flow 1). A section designed at the I2S rate therefore
- * plays an octave high at 48 kHz, so the part's sections are designed here.
+ * In the flow this driver runs, both parts put a sample-rate converter ahead
+ * of the EQ that takes every input to 96 kHz, or to 88.2 kHz for the 44.1 kHz
+ * family: Process Flow 1 on a TAS5825M, which its init sequence selects (TI
+ * SLAA786A, section 3.1), and the ROM flow on a TAS5805M (TI SLOA263A,
+ * Process Flow 1). A section designed at the I2S rate therefore plays an
+ * octave high at 44.1 or 48 kHz, so every section is designed here.
  */
-double tas5805m_dsp_rate(double i2s_rate_hz);
+double tas58xx_dsp_rate(double i2s_rate_hz);
 
 /**
  * Compute the five device coefficients for @p bq at @p sample_rate_hz.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check the rate a TAS5805M's filters are designed at, on the host.
+"""Check the rate a TAS58xx's filters are designed at, on the host.
 
 Requires Python 3 and a C compiler; no ESP-IDF installation or hardware needed.
-Run from any directory with: python3 tests/tas5805m_rate/run.py
+Run from any directory with: python3 tests/tas58xx_rate/run.py
 """
 
 import os
@@ -15,7 +15,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-with tempfile.TemporaryDirectory(prefix="tas5805m-rate-tests-") as temporary:
+with tempfile.TemporaryDirectory(prefix="tas58xx-rate-tests-") as temporary:
     build = Path(temporary)
     (build / "esp_err.h").write_text("typedef int esp_err_t;\n")
 
@@ -28,6 +28,6 @@ with tempfile.TemporaryDirectory(prefix="tas5805m-rate-tests-") as temporary:
         str(ROOT / "components/dac_tas58xx/tas58xx_biquad.c"),
         "-lm", "-o", str(build / "test"),
     ]
-    print("TAS5805M filter rate host tests", flush=True)
+    print("TAS58xx filter rate host tests", flush=True)
     subprocess.run(command, check=True)
     subprocess.run([str(build / "test")], check=True)

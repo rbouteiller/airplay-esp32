@@ -189,11 +189,12 @@ menu "Airplay ESP Configuration"
             Sample rate for I2S/SPDIF output. If the AirPlay source sends a
             different rate, the audio is resampled automatically.
 
-            TAS58xx has no sample rate converter — its DSP runs at whatever
-            rate arrives — and the driver redesigns every biquad when the
-            rate changes, so 44100 is exact and skips the resampler. Pick
-            48000 only for a PPC3 process flow exported at that rate, whose
-            baked coefficients cannot be redesigned.
+            TAS58xx parts convert whatever rate arrives to 88.2 or 96 kHz
+            ahead of their DSP, and the driver designs every biquad for that
+            rate and redesigns it when the input rate changes, so 44100 is
+            exact and skips the resampler. Pick 48000 only for a PPC3 process
+            flow exported at that rate, whose baked coefficients cannot be
+            redesigned.
 
         config OUTPUT_SAMPLE_RATE_44100
             bool "44100 Hz (native AirPlay, no resampling)"
