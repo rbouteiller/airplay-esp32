@@ -1654,11 +1654,20 @@ static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev) {
 // Re-apply the cached master volume to every chip. Per-output level lives in
 // the input mixer, not here. Assumes REG_LOCK is held.
 static void tas58xx_apply_volume_locked(void) {
-  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB", s_last_airplay_db);
+  /* Log the level the amp is actually set to: AirPlay's dB maps 2:1 onto it,
+   * offset by CONFIG_TAS58XX_MAX_VOLUME, so the two differ. */
+  const uint8_t reg =
+      tas58xx_db_to_reg(tas58xx_map_volume_db(s_last_airplay_db));
+  if (reg == DIG_VOL_MUTE) {
+    ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> amp muted", s_last_airplay_db);
+  } else {
+    ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> amp %.1f dB", s_last_airplay_db,
+             (float)(DIG_VOL_0DB - (int)reg) * 0.5f);
+  }
 
   for (int i = 0; i < s_dev_count; i++) {
     s_cur = &s_devs[i];
-    tas58xx_write_reg(REG_DIG_VOL, tas58xx_dig_vol_reg(&s_devs[i]));
+    tas58xx_write_reg(REG_DIG_VOL, reg);
   }
   s_cur = NULL;
 }
@@ -1871,6 +1880,14 @@ static double s_bq_fs = 48000.0;
 
 static uint32_t tas58xx_flow_sample_rate(void) {
   return (uint32_t)s_bq_fs;
+}
+
+/* The rate the sections run at, which is what they are designed for. On both
+ * parts the EQ sits behind a converter to 96 or 88.2 kHz, so it is not the I2S
+ * rate. That holds for the TAS5825M only in Process Flow 1, which the driver
+ * assumes throughout: the biquad addresses are that flow's too. */
+static double bq_design_fs(void) {
+  return tas58xx_dsp_rate(s_bq_fs);
 }
 
 /*
@@ -2616,11 +2633,12 @@ static esp_err_t bq_program_chain(void) {
   }
 
   const bool ganged = s_bq_ganged[dev];
+  const double fs = bq_design_fs();
   for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
     uint8_t left[EQ_COEFF_BYTES], right[EQ_COEFF_BYTES];
-    tas58xx_bq_design_packed(&s_bq[dev][0][i], s_bq_fs, left);
-    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i],
-                             s_bq_fs, right);
+    tas58xx_bq_design_packed(&s_bq[dev][0][i], fs, left);
+    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i], fs,
+                             right);
     esp_err_t err = program_biquad_pair(i, left, right);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
@@ -2817,7 +2835,7 @@ typedef struct {
 } bq_cfg_file_t;
 
 uint32_t dac_tas58xx_bq_sample_rate(void) {
-  return (uint32_t)s_bq_fs;
+  return (uint32_t)bq_design_fs();
 }
 
 bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
