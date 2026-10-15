@@ -65,6 +65,9 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
+      - name: Test the drift servo's trims on a tone
+        run: python3 tests/audio_scheduler/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

@@ -221,7 +221,7 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**No unit tests**: This is embedded firmware — no test framework is in place. Manual testing on hardware is required.
+**Host tests**: `tests/pcm51xx/run.py` and `tests/audio_scheduler/run.py` compile the real driver and scheduler code against small mocks with the host C compiler, and run in CI's `format-check` job. There is no test framework beyond that; everything else needs testing on hardware.
 
 ## Documentation site
 
