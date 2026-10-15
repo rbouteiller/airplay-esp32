@@ -73,6 +73,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `louder-esp32` | ESP32 + TAS5805M DAC/amp | |
 | `louder-esp32-bt` | Same + Bluetooth | |
 | `louder-esp32-s3` | ESP32-S3 + TAS5805M | |
+| `louder-esp32-s3-mini` | Louder-ESP32-Mini: ESP32-S3 + TAS5805M | Bridged (PBTL) in copper: `CONFIG_TAS58XX_FORCE_PBTL` is not optional |
 
 Bluetooth Classic only exists on the original ESP32, so the S3 revision of a board never has a `-bt` environment.
 
@@ -148,6 +149,7 @@ components/
 ├── dac_tas57xx/            # TI TAS57xx (TAS5756/5754/5751) DAC driver with hybrid flow DSP
 ├── dac_tas58xx/            # TI TAS58xx (TAS5825M/TAS5805M) driver with on-chip DSP + biquad chains
 ├── dac_es8311/             # Everest ES8311 codec driver
+├── husb238a/               # HUSB238A USB-PD trigger: asks a USB-C charger for up to 20 V
 ├── display/                # Display drivers
 │   ├── display.c           # Common display API
 │   ├── display_st7789.c    # ST7789 TFT with LVGL 9 rendering (ESP32-S3)
@@ -189,9 +191,10 @@ components/
 ## TAS58xx notes
 
 - **Two parts, one driver.** The model is guessed from the I2C address (0x4C–0x4F → TAS5825M, 0x2C–0x2F → TAS5805M), then confirmed against the die ID in register 0x67; a disagreement is logged as a warning.
-- **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
+- **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo: `dac_tas58xx_can_route()` is false, `dac_tas58xx_set_mix()` returns `ESP_ERR_NOT_SUPPORTED`, init drops a stored routing, and `/api/bq` reports the amp as `mix_fixed` so the page greys the control out. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
 - **PPC3 dump filenames**, searched most specific first: `tas5825m_fw<i>-<rate>.bin` → `tas5825m_fw-<rate>.bin` → `tas5825m_fw<i>.bin` → `tas5825m_fw.bin`. The unindexed names only stand in for device 0. `components/dac_tas58xx/ppc3_convert.py` produces them from a PPC3 export.
 - **Fault handling.** A clock fault is expected when the I2S clock stops at the end of a track, so it is logged and cleared rather than muting the amplifier; channel and global2 faults still mute. Rev D has no fault line at all and is polled instead.
+- **The digital gain is set by hand.** The gain does not change with PVDD: at 0 dB analog gain, 0 dBFS is 29.5 V peak, and the output clips at about 93 % of PVDD. `dac_tas58xx_clean_db()` gives the loudest clean level for a supply (−16.5 dB at 5 V, −11 dB at 9 V), which the settings page shows as the recommendation, but nothing applies it automatically: the user picks the digital gain (`dac_tas58xx_set_full_volume_db()`, the level AirPlay's full volume maps to) alongside the USB-PD request. A `CONFIG_HUSB238A` build with nothing stored starts at the 5 V level. It lives at `/api/audio/digital-gain` and in NVS (`full_vol`, half-dB steps). An EQ boost is not taken off it either: the `/bq` page finds the chain's peak and says what the gain should come down to. The HUSB238A trigger forgets on power loss and is asked again on every boot, and only for the fixed 5–20 V offers, never EPR.
 
 ## Code Quality
 
@@ -221,7 +224,7 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**No unit tests**: This is embedded firmware — no test framework is in place. Manual testing on hardware is required.
+**Host tests**: `tests/pcm51xx/run.py` and `tests/husb238a/run.py` compile the real driver and USB-PD trigger code against small mocks with the host C compiler, and run in CI's `format-check` job. There is no test framework beyond that; everything else needs testing on hardware.
 
 ## Documentation site
 

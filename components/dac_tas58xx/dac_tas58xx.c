@@ -293,6 +293,11 @@ static bool s_forced_first_pbtl = CONFIG_TAS58XX_FORCE_PBTL;
 /* Cached master AirPlay volume so a level change can be re-applied alone. */
 static float s_last_airplay_db = -15.0f;
 
+/* DAC level for AirPlay full volume, the digital gain:
+ * CONFIG_TAS58XX_MAX_VOLUME until one is set (dac_tas58xx_set_full_volume_db).
+ */
+static float s_max_volume_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
+
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
 static bool s_ch_mute[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -787,8 +792,11 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
    * mono (summed) and prevent stereo. Left/right selection should be allowed
    * and remembered.
    */
-  if (dev->mix == TAS58XX_MIX_STEREO) {
-    /* Stereo is not valid in PBTL mode - default to mono (summed) */
+  if (dev->mix == TAS58XX_MIX_STEREO &&
+      dac_tas58xx_can_route((int)(dev - s_devs))) {
+    /* Stereo is not valid in PBTL mode - default to mono (summed). A
+     * TAS5805M cannot route, so it keeps the pair and plays the left
+     * channel; the output channel mode decides what that carries. */
     ESP_LOGW(TAG,
              "@0x%02X PBTL mode active - stereo selected, defaulting to mono",
              dev->addr);
@@ -1293,12 +1301,22 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   /* A bridged amplifier drives one output, so summing L+R into it is the only
    * sensible default; everything else passes the pair straight through. A
    * stereo routing stored before the amplifier was bridged is meaningless now,
-   * so it falls back to the sum as well. */
+   * so it falls back to the sum as well. A TAS5805M cannot route at all (see
+   * tas58xx_apply_input_mix()), so it keeps the pair whatever was stored: a
+   * routing it cannot play would only cost it the output trims and mutes.
+   * Bridged, it plays the left I2S channel, and the output channel mode
+   * decides what that carries. */
   for (int i = 0; i < s_dev_count; i++) {
-    s_devs[i].mix = s_dev_mix_cfg[i]      ? s_dev_mix[i]
-                    : s_devs[i].pbtl_mono ? TAS58XX_MIX_MONO
-                                          : TAS58XX_MIX_STEREO;
-    if (s_devs[i].pbtl_mono && s_devs[i].mix == TAS58XX_MIX_STEREO) {
+    const bool routes = dac_tas58xx_can_route(i);
+    const bool sum = s_devs[i].pbtl_mono && routes;
+    s_devs[i].mix = s_dev_mix_cfg[i] ? s_dev_mix[i]
+                    : sum            ? TAS58XX_MIX_MONO
+                                     : TAS58XX_MIX_STEREO;
+    if (!routes && s_devs[i].mix != TAS58XX_MIX_STEREO) {
+      ESP_LOGI(TAG, "Amp %d cannot route its inputs; stored routing %d dropped",
+               i, (int)s_devs[i].mix);
+      s_devs[i].mix = TAS58XX_MIX_STEREO;
+    } else if (sum && s_devs[i].mix == TAS58XX_MIX_STEREO) {
       s_devs[i].mix = TAS58XX_MIX_MONO;
     }
     s_dev_mix[i] = s_devs[i].mix;
@@ -1599,10 +1617,10 @@ static float tas58xx_map_volume_db(float volume_airplay_db) {
   }
 
   // Volume mapping (2:1 scaling):
-  //   AirPlay 0 dB    -> DAC CONFIG_TAS58XX_MAX_VOLUME
+  //   AirPlay 0 dB    -> DAC s_max_volume_db (CONFIG_TAS58XX_MAX_VOLUME)
   //   AirPlay -25 dB  -> DAC (MAX - 50)
   //   AirPlay -30..-25 dB -> steep roll-off to mute
-  float max_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
+  float max_db = s_max_volume_db;
   float db_level;
 
   if (volume_airplay_db >= -25.0f) {
@@ -1661,6 +1679,38 @@ static void tas58xx_apply_volume_locked(void) {
     tas58xx_write_reg(REG_DIG_VOL, tas58xx_dig_vol_reg(&s_devs[i]));
   }
   s_cur = NULL;
+}
+
+/* At 0 dB analog gain, full scale drives the output to 29.5 V peak (the
+ * datasheet's AGAIN table), and the output clips at its supply less what the
+ * output stage drops: about 7 % into a 4 ohm load. */
+#define FULL_SCALE_PEAK_V 29.5f
+#define SWING_PER_SUPPLY  0.93f
+
+float dac_tas58xx_clean_db(int supply_mv) {
+  /* The loudest level that still clears the supply, in the register's
+   * 0.5 dB steps. */
+  const float clean_db = 20.0f * log10f(SWING_PER_SUPPLY * (float)supply_mv /
+                                        1000.0f / FULL_SCALE_PEAK_V);
+  return fminf(floorf(clean_db * 2.0f) / 2.0f, 0.0f);
+}
+
+void dac_tas58xx_set_full_volume_db(float db) {
+  db = roundf(fminf(fmaxf(db, TAS58XX_FULL_VOLUME_MIN_DB), 0.0f) * 2.0f) / 2.0f;
+  if (db == s_max_volume_db) {
+    return;
+  }
+  s_max_volume_db = db;
+  ESP_LOGI(TAG, "Digital gain at full volume: %.1f dB", db);
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+    tas58xx_apply_volume_locked();
+    REG_UNLOCK();
+  }
+}
+
+float dac_tas58xx_get_full_volume_db(void) {
+  return s_max_volume_db;
 }
 
 static void tas58xx_set_volume(float volume_airplay_db) {
@@ -1778,6 +1828,13 @@ bool dac_tas58xx_is_pbtl(int dev) {
   return s_devs[dev].pbtl_mono;
 }
 
+bool dac_tas58xx_can_route(int dev) {
+  if (dev < 0 || dev >= s_dev_count) {
+    return false;
+  }
+  return s_devs[dev].model == TAS58XX_MODEL_TAS5825M;
+}
+
 bool dac_tas58xx_is_first_pbtl_forced(void) {
   return s_forced_first_pbtl;
 }
@@ -1788,9 +1845,19 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
     return ESP_ERR_INVALID_ARG;
   }
 
+  /* Refused rather than stored, which would only cost the amplifier its trims
+   * and mutes. Before init the part is not known; tas58xx_init() drops such a
+   * routing instead. */
+  if (dev < s_dev_count && mix != TAS58XX_MIX_STEREO &&
+      !dac_tas58xx_can_route(dev)) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
   /* In PBTL mode, stereo is not valid. If stereo is requested, default to mono.
+   * An amplifier that cannot route keeps the pair and plays its left channel.
    */
-  if (dev < s_dev_count && s_devs[dev].pbtl_mono && mix == TAS58XX_MIX_STEREO) {
+  if (dev < s_dev_count && s_devs[dev].pbtl_mono && mix == TAS58XX_MIX_STEREO &&
+      dac_tas58xx_can_route(dev)) {
     ESP_LOGW(TAG,
              "Amp %d is in PBTL mode - stereo selected, defaulting to mono",
              dev);

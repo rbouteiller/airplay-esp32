@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -28,6 +29,8 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_MIX        "amp_mix"
 #define NVS_KEY_FIRST_PBTL     "amp1_pbtl"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
+#define NVS_KEY_USB_PD_VOLTS   "pd_volts"
+#define NVS_KEY_FULL_VOLUME    "full_vol"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
 #define NVS_KEY_SENDSPIN       "ss_en"
@@ -790,6 +793,107 @@ esp_err_t settings_set_second_pbtl(bool pbtl) {
   } else {
     ESP_LOGE(TAG, "Failed to save second amplifier wiring: %s",
              esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* Held in half-dB steps. */
+static esp_err_t get_half_db(const char *key, float *db) {
+  if (!db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  int8_t half_db;
+  err = nvs_get_i8(nvs, key, &half_db);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    *db = (float)half_db / 2.0f;
+  }
+  return err;
+}
+
+static esp_err_t set_half_db(const char *key, const char *what, float db) {
+  if (!(db >= -60.0f && db <= 0.0f)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_i8(nvs, key, (int8_t)lroundf(db * 2.0f));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved %s: %.1f dB", what, db);
+  } else {
+    ESP_LOGE(TAG, "Failed to save %s: %s", what, esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_full_volume_db(float *db) {
+  return get_half_db(NVS_KEY_FULL_VOLUME, db);
+}
+
+esp_err_t settings_set_full_volume_db(float db) {
+  return set_half_db(NVS_KEY_FULL_VOLUME, "digital gain", db);
+}
+
+esp_err_t settings_get_usb_pd_volts(int *volts) {
+  if (!volts) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  uint8_t stored;
+  err = nvs_get_u8(nvs, NVS_KEY_USB_PD_VOLTS, &stored);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    *volts = stored;
+  }
+  return err;
+}
+
+esp_err_t settings_set_usb_pd_volts(int volts) {
+  if (volts < 0 || volts > UINT8_MAX) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_USB_PD_VOLTS, (uint8_t)volts);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved USB-PD voltage: %d V", volts);
+  } else {
+    ESP_LOGE(TAG, "Failed to save USB-PD voltage: %s", esp_err_to_name(err));
   }
   return err;
 }

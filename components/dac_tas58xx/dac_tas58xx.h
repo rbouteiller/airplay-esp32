@@ -84,9 +84,34 @@ void dac_tas58xx_set_second_pbtl(bool pbtl);
 bool dac_tas58xx_is_pbtl(int dev);
 
 /**
+ * The digital gain at which full volume is as loud as @p supply_mv lets the
+ * output swing before it clips, in 0.5 dB steps. The gain does not change
+ * with the supply, only the point where the output clips does.
+ */
+float dac_tas58xx_clean_db(int supply_mv);
+
+/** Quietest digital gain dac_tas58xx_set_full_volume_db() takes. */
+#define TAS58XX_FULL_VOLUME_MIN_DB (-30.0f)
+
+/**
+ * Set the digital gain AirPlay's full volume maps to, in dB, rounded to
+ * 0.5 dB and held to TAS58XX_FULL_VOLUME_MIN_DB..0. Until set it is
+ * CONFIG_TAS58XX_MAX_VOLUME. Safe before dac_init().
+ */
+void dac_tas58xx_set_full_volume_db(float db);
+float dac_tas58xx_get_full_volume_db(void);
+
+/**
+ * Whether an amplifier can route its inputs at all. Routing is a process-flow
+ * change, which only a TAS5825M has: a TAS5805M plays the pair as it comes.
+ */
+bool dac_tas58xx_can_route(int dev);
+
+/**
  * Which of the incoming stereo channels an amplifier plays. A bridged (PBTL)
  * amplifier drives one output from one channel of the pair, so it has to be
- * fed a summed or single-channel routing rather than TAS58XX_MIX_STEREO.
+ * fed a summed or single-channel routing rather than TAS58XX_MIX_STEREO,
+ * unless it cannot route at all: then it plays the left channel.
  */
 typedef enum {
   TAS58XX_MIX_STEREO = 0, /* L -> output A, R -> output B */
@@ -100,6 +125,11 @@ typedef enum {
  * Set one amplifier's input routing. Applied immediately if the chip is
  * playing, and re-applied on the next PLAY transition either way. Safe to
  * call before dac_init(), which is how a stored setting is restored.
+ *
+ * An amplifier that cannot route (dac_tas58xx_can_route()) is refused
+ * anything but TAS58XX_MIX_STEREO with ESP_ERR_NOT_SUPPORTED, and nothing is
+ * stored. Before dac_init() the part is not known yet, so dac_init() drops
+ * such a routing instead.
  */
 esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix);
 

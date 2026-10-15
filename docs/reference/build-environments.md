@@ -70,6 +70,7 @@ environment has a `-bt` variant.
 | `louder-esp32-plus` | ESP32 | TAS5825M | 8 MB | — |
 | `louder-esp32-plus-bt` | ESP32 | TAS5825M | 8 MB | yes |
 | `louder-esp32-s3` | ESP32-S3 | TAS5805M | 8 MB | — |
+| `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | 8 MB | — |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | 8 MB | — |
 
 ## Targets without a PlatformIO environment

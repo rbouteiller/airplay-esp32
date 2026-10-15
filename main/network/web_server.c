@@ -39,6 +39,10 @@
 #include "dac_tas58xx.h"
 #endif
 
+#ifdef CONFIG_HUSB238A
+#include "husb238a.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
@@ -886,7 +890,138 @@ static esp_err_t dual_mode_post_handler(httpd_req_t *req) {
   cJSON_Delete(response);
   return ESP_OK;
 }
+
+/* The digital gain AirPlay's full volume maps to, chosen to suit the supply.
+ * The level that is clean on each fixed USB-PD voltage comes along as a
+ * recommendation. */
+static esp_err_t send_digital_gain(httpd_req_t *req) {
+  static const int volts[] = {5, 9, 12, 15, 20};
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "db", dac_tas58xx_get_full_volume_db());
+  cJSON_AddNumberToObject(json, "min_db", TAS58XX_FULL_VOLUME_MIN_DB);
+  cJSON *rec = cJSON_AddArrayToObject(json, "recommended");
+  for (size_t i = 0; i < sizeof volts / sizeof volts[0]; i++) {
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddNumberToObject(r, "volts", volts[i]);
+    cJSON_AddNumberToObject(r, "db", dac_tas58xx_clean_db(volts[i] * 1000));
+    cJSON_AddItemToArray(rec, r);
+  }
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t digital_gain_get_handler(httpd_req_t *req) {
+  return send_digital_gain(req);
+}
+
+/* {"db": -11} sets the digital gain. */
+static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 64);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  const cJSON *db = json ? cJSON_GetObjectItem(json, "db") : NULL;
+  if (db == NULL || !cJSON_IsNumber(db) || db->valuedouble > 0.0 ||
+      db->valuedouble < TAS58XX_FULL_VOLUME_MIN_DB) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Expected {\"db\": -30..0}");
+    return ESP_FAIL;
+  }
+  const float gain_db = (float)db->valuedouble;
+  cJSON_Delete(json);
+
+  dac_tas58xx_set_full_volume_db(gain_db);
+  settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+  return send_digital_gain(req);
+}
 #endif /* CONFIG_DAC_TAS58XX */
+
+#ifdef CONFIG_HUSB238A
+/* The USB-PD trigger: what the charger offers, what it agreed to, and the
+ * voltage the board asks it for on every boot. */
+static esp_err_t send_usb_pd(httpd_req_t *req) {
+  husb238a_status_t status;
+  const esp_err_t err = husb238a_get_status(&status);
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", err == ESP_OK);
+  if (err != ESP_OK) {
+    cJSON_AddStringToObject(json, "error", esp_err_to_name(err));
+  }
+  cJSON_AddBoolToObject(json, "attached", status.attached);
+  cJSON_AddBoolToObject(json, "pd", status.pd);
+  cJSON_AddNumberToObject(json, "volts", status.requested_volts);
+  cJSON_AddNumberToObject(json, "max_volts", status.max_volts);
+  cJSON_AddNumberToObject(json, "supply_mv", status.supply_mv);
+  cJSON *choices = cJSON_AddArrayToObject(json, "choices");
+  cJSON *offers = cJSON_AddArrayToObject(json, "offers");
+  for (int i = 0; i < HUSB238A_FIXED_PDOS; i++) {
+    const int volts = husb238a_fixed_volts[i];
+    if (volts <= status.max_volts) {
+      cJSON_AddItemToArray(choices, cJSON_CreateNumber(volts));
+    }
+    if (status.offer_ma[i] > 0) {
+      cJSON *offer = cJSON_CreateObject();
+      cJSON_AddNumberToObject(offer, "volts", volts);
+      cJSON_AddNumberToObject(offer, "ma", status.offer_ma[i]);
+      cJSON_AddItemToArray(offers, offer);
+    }
+  }
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t usb_pd_get_handler(httpd_req_t *req) {
+  return send_usb_pd(req);
+}
+
+/* Asking the charger for another voltage takes it a second or two, and the
+ * reply waits for it, so it reports the supply that resulted. */
+static esp_err_t usb_pd_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 64);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  const cJSON *val = json ? cJSON_GetObjectItem(json, "volts") : NULL;
+  if (val == NULL || !cJSON_IsNumber(val)) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Expected {\"volts\": 5, 9, 12, 15 or 20}");
+    return ESP_FAIL;
+  }
+  const int volts = val->valueint;
+  cJSON_Delete(json);
+
+  const esp_err_t err = husb238a_request(volts);
+  if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        err == ESP_ERR_INVALID_ARG
+                            ? "Not a voltage this board can ask for"
+                            : "This board has no USB-PD trigger");
+    return ESP_FAIL;
+  }
+  /* Kept even if this charger cannot give it, for one that can. */
+  settings_set_usb_pd_volts(volts);
+  return send_usb_pd(req);
+}
+#endif /* CONFIG_HUSB238A */
 
 static esp_err_t airplay_mode_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
@@ -1077,6 +1212,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "dual_supported", true);
 #else
   cJSON_AddBoolToObject(info, "dual_supported", false);
+#endif
+#ifdef CONFIG_HUSB238A
+  cJSON_AddBoolToObject(info, "usb_pd_supported", husb238a_present());
+#else
+  cJSON_AddBoolToObject(info, "usb_pd_supported", false);
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   cJSON_AddBoolToObject(info, "hf1_supported", dac_tas57xx_hf1_available());
@@ -2173,6 +2313,8 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(amp, "ganged", dac_tas58xx_bq_get_ganged(d));
     cJSON_AddNumberToObject(amp, "mix", dac_tas58xx_get_mix(d));
     cJSON_AddBoolToObject(amp, "pbtl", dac_tas58xx_is_pbtl(d));
+    /* A TAS5805M cannot route its inputs, so it has only the one routing. */
+    cJSON_AddBoolToObject(amp, "mix_fixed", !dac_tas58xx_can_route(d));
 
     cJSON *gains = cJSON_AddArrayToObject(amp, "gains");
     cJSON *mutes = cJSON_AddArrayToObject(amp, "mutes");
@@ -2287,6 +2429,12 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'mix'");
       return ESP_FAIL;
     }
+    if (mix->valueint != TAS58XX_MIX_STEREO && !dac_tas58xx_can_route(dev)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "This amplifier cannot route its inputs");
+      return ESP_FAIL;
+    }
     dac_tas58xx_set_mix(dev, (tas58xx_mix_t)mix->valueint);
     uint8_t saved[SETTINGS_AMPS];
     for (int i = 0; i < SETTINGS_AMPS; i++) {
@@ -2392,8 +2540,11 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // per-channel level get/post
 #endif
 #ifdef CONFIG_DAC_TAS58XX
-  // primary + dual DAC wiring plus the biquad page/API
-  config.max_uri_handlers += 9;
+  // primary + dual DAC wiring, digital gain, plus the biquad page/API
+  config.max_uri_handlers += 11;
+#endif
+#ifdef CONFIG_HUSB238A
+  config.max_uri_handlers += 2; // USB-PD supply get/post
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
@@ -2536,6 +2687,28 @@ esp_err_t web_server_start(uint16_t port) {
                                     .method = HTTP_POST,
                                     .handler = dual_mode_post_handler};
   httpd_register_uri_handler(s_server, &dual_mode_post_uri);
+
+  httpd_uri_t digital_gain_get_uri = {.uri = "/api/audio/digital-gain",
+                                      .method = HTTP_GET,
+                                      .handler = digital_gain_get_handler};
+  httpd_register_uri_handler(s_server, &digital_gain_get_uri);
+
+  httpd_uri_t digital_gain_post_uri = {.uri = "/api/audio/digital-gain",
+                                       .method = HTTP_POST,
+                                       .handler = digital_gain_post_handler};
+  httpd_register_uri_handler(s_server, &digital_gain_post_uri);
+#endif
+
+#ifdef CONFIG_HUSB238A
+  httpd_uri_t usb_pd_get_uri = {.uri = "/api/power/usb-pd",
+                                .method = HTTP_GET,
+                                .handler = usb_pd_get_handler};
+  httpd_register_uri_handler(s_server, &usb_pd_get_uri);
+
+  httpd_uri_t usb_pd_post_uri = {.uri = "/api/power/usb-pd",
+                                 .method = HTTP_POST,
+                                 .handler = usb_pd_post_handler};
+  httpd_register_uri_handler(s_server, &usb_pd_post_uri);
 #endif
 
   httpd_uri_t airplay_mode_get_uri = {.uri = "/api/airplay/mode",

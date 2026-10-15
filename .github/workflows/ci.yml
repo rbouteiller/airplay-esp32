@@ -65,6 +65,9 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
+      - name: Test the USB-PD trigger against a simulated charger
+        run: python3 tests/husb238a/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

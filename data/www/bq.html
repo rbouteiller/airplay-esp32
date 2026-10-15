@@ -31,6 +31,8 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .msg.ok{background:rgba(27,67,50,0.5)}
 .msg.err{background:rgba(92,26,26,0.5)}
 .msg.info{background:rgba(15,52,96,0.5)}
+.msg.warn{background:rgba(110,78,10,0.5)}
+.msg a{color:inherit}
 .hint{color:#888;font-size:12px;margin-top:8px;line-height:1.5}
 input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
 select option{background:#16213e}
@@ -117,6 +119,7 @@ spacing or the room.</p>
 
 <div class='card'>
 <h2 id='resp-title'>Response</h2>
+<div id='clip-note'></div>
 <div class='legend' id='legend'></div>
 <div class='plotlab'>Magnitude</div>
 <canvas id='mag' class='plot' width='1640' height='460'></canvas>
@@ -200,6 +203,7 @@ that instead of correcting the band the driver does cover.</p>
 <div class='trim' id='mix-row'>
 <label for='mix'>Input channels</label>
 <select id='mix' onchange='mixChanged()'></select></div>
+<p class='hint' id='mix-hint' style='display:none;margin:-6px 0 14px'></p>
 <label class='gang' id='gang-row'>
 <input type='checkbox' id='gang' onchange='gangChanged()'>
 <span>Gang outputs A and B</span></label>
@@ -976,11 +980,21 @@ function chainLabel(a){
 function drawMix(){
   var a=data.amps[amp],sel=$('mix'),h='';
   for(var m=0;m<MIXES.length;m++){
-    if(a.pbtl&&m===0)continue; /* one driver cannot carry a stereo pair */
+    /* An amplifier that cannot route lists only the routing it plays. One
+       that is bridged drives a single speaker, so it lists stereo only while
+       it is set to it. */
+    if(a.mix_fixed?m!==a.mix:a.pbtl&&m===0&&a.mix!==0)continue;
     h+="<option value='"+m+"'>"+MIXES[m]+'</option>';
   }
   sel.innerHTML=h;
   sel.value=String(a.mix);
+  sel.disabled=!!a.mix_fixed;
+  $('mix-hint').style.display=a.mix_fixed?'':'none';
+  $('mix-hint').textContent=!a.mix_fixed?'':a.pbtl
+    ?'This amplifier cannot route its inputs. Bridged, it plays the left '+
+     'channel, so Output Channel on the main page decides what it hears.'
+    :'This amplifier cannot route its inputs, so it plays the pair as it '+
+     'comes.';
 }
 function mixChanged(){
   data.amps[amp].mix=Number.parseInt($('mix').value,10);
@@ -1168,6 +1182,75 @@ function plot(){
   drawGraph($('phase'),ph,-range,range,range/2,
             function(d){return d+'\u00b0';});
   plotAll();
+  clipNote();
+}
+
+/* ---- headroom ----
+   The amplifier's digital gain is set to the loudest level its supply carries
+   cleanly, which leaves no room above it: a boost in the curves pushes full
+   volume past that and the loud passages clip. Nothing is turned down for it;
+   the note says by how much the gain should come down. */
+var gainInfo=null,supplyMv=0;
+/* Highest point of one chain, trim included: a 1/48-octave sweep finds every
+   peak, and a golden-section search between each local maximum's neighbours
+   finds its top, since a Q 20 peak is only about three steps wide. */
+function chainPeak(secs,sr,trim){
+  var top=Math.min(20000,sr*0.45),step=Math.pow(2,1/48),G=(Math.sqrt(5)-1)/2;
+  function pw(f){var h=chainH(secs,2*P*f/sr);return h.re*h.re+h.im*h.im;}
+  var best={p:0,f:0},prev=0,cur=pw(10),f,nx,lo,hi,m1,m2,p1,p2,it;
+  for(f=10;f<=top;f*=step){
+    nx=f*step<=top?pw(f*step):0;
+    if(cur>best.p)best={p:cur,f:f};
+    if(cur>=prev&&cur>=nx){
+      lo=f/step;hi=Math.min(f*step,top);
+      for(it=0;it<24;it++){
+        m1=hi-G*(hi-lo);m2=lo+G*(hi-lo);p1=pw(m1);p2=pw(m2);
+        if(p1>best.p)best={p:p1,f:m1};
+        if(p2>best.p)best={p:p2,f:m2};
+        if(p1>p2)hi=m2;else lo=m1;
+      }
+    }
+    prev=cur;cur=nx;
+  }
+  return {db:best.p>0?10*Math.log10(best.p)+trim:-Infinity,f:best.f};
+}
+function dbText(v){return (v<0?'\u2212':'+')+Math.abs(v).toFixed(1)+' dB';}
+function clipNote(){
+  var el=$('clip-note');
+  if(!gainInfo||!data){show(el,'');return;}
+  var chains=activeChains(),pk={db:-Infinity,f:0},k,r,i;
+  for(k=0;k<chains.length;k++){
+    r=chainPeak(sectionsOf(chains[k].c),fs(),chains[k].g);
+    if(r.db>pk.db)pk=r;
+  }
+  /* The level clean on the supply, where the board can say what that is.
+     Otherwise every USB-C supply gives at least 5 V, so a gain under the 5 V
+     level has that much room, and one over it is taken to have been matched
+     to a higher supply. */
+  var clean=gainInfo.db,volts=0,rec=gainInfo.recommended||[];
+  for(i=0;i<rec.length;i++){
+    if(supplyMv&&Math.round(supplyMv/1000)===rec[i].volts){clean=rec[i].db;volts=rec[i].volts;}
+    if(!supplyMv&&rec[i].volts===5&&rec[i].db>=gainInfo.db){clean=rec[i].db;volts=5;}
+  }
+  var reach=gainInfo.db+pk.db;
+  if(!(pk.db>0.05&&reach>clean+0.05)){show(el,'');return;}
+  var want=Math.max(Math.floor((clean-pk.db)*2)/2,gainInfo.min_db);
+  var hz=pk.f>=1000?(pk.f/1000).toFixed(1)+' kHz':Math.round(pk.f)+' Hz';
+  show(el,'The filters boost by up to '+dbText(pk.db)+' (at '+hz+'), so full'+
+    ' volume reaches '+dbText(reach)+', past the '+dbText(clean)+' that stays'+
+    ' clean '+(volts?'on '+volts+' V':'on the supply Digital gain is set for')+
+    '. The loudest passages will clip. To keep them clean, turn Digital gain'+
+    ' down to '+dbText(want)+" on the <a href='/'>settings page</a>, or take"+
+    ' some of the boost out.','warn');
+}
+function loadGain(){
+  return fetch('/api/audio/digital-gain').then(function(r){
+    if(!r.ok)return;
+    return r.json().then(function(d){gainInfo=d;
+      return fetch('/api/power/usb-pd').then(function(r){return r.ok?r.json():null;})
+        .then(function(p){if(p&&p.supply_mv>0)supplyMv=p.supply_mv;},function(){});
+    });
+  }).then(clipNote,function(){});
 }
 
 /* Every chain that is actually driving a driver, across both amplifiers, so
@@ -1311,6 +1394,14 @@ function xoLayouts(){
     L.push({n:'Satellites on '+ampLabel(0)+', subwoofer on '+ampLabel(1),
             parts:[{a:0,o:-1,hi:1},{a:1,o:-1,hi:0}],gang:1,mix:[0,1],ok:1});
   }
+  /* An arrangement that needs a routing an amplifier cannot take is out. */
+  L.forEach(function(l){
+    for(var i=0;l.ok&&l.mix&&i<l.mix.length&&i<data.amps.length;i++)
+      if(data.amps[i].mix_fixed&&l.mix[i]!==data.amps[i].mix){
+        l.ok=0;
+        l.why=ampLabel(i)+' cannot route its inputs, which this needs.';
+      }
+  });
   return L;
 }
 function xoPick(){
@@ -2006,7 +2097,7 @@ window.onload=function(){
   })();
   fetch('/api/audio/volume').then(function(r){return r.json();})
     .then(function(v){master=v;drawMaster();}).catch(function(){});
-  load().catch(function(e){
+  load().then(loadGain,function(e){
     show($('msg'),'Could not read the current tuning: '+e.message,'err');
   });
 };

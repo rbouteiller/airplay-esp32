@@ -28,6 +28,9 @@
 #if defined(CONFIG_ETH_W5500_ENABLED) || defined(CONFIG_DISPLAY_BUS_SPI)
 #include "driver/spi_master.h"
 #endif
+#ifdef CONFIG_HUSB238A
+#include "husb238a.h"
+#endif
 
 #define ISR_HANDLER_TASK_STACK_SIZE 4096
 #define ISR_HANDLER_TASK_PRIORITY   5
@@ -188,6 +191,16 @@ esp_err_t iot_board_init(void) {
   s_spi_bus_initialized = true;
   ESP_LOGI(TAG, "SPI bus initialized: mosi=%d, miso=%d, clk=%d",
            BOARD_SPI_MOSI_GPIO, BOARD_SPI_MISO_GPIO, BOARD_SPI_CLK_GPIO);
+#endif
+
+#ifdef CONFIG_HUSB238A
+  /* Settle the amplifier's supply before the amplifier comes up. A board
+   * without the trigger (the 42 mm Louder-ESP32-Mini, say) does not answer
+   * at its address and stays on the 5 V every USB-C port gives. The digital
+   * gain is the user's to match to the supply, so nothing is told of it. */
+  int pd_volts = CONFIG_HUSB238A_DEFAULT_VOLTS;
+  settings_get_usb_pd_volts(&pd_volts);
+  husb238a_init(s_i2c_bus_handle, pd_volts, NULL);
 #endif
 
   err = dac_init(s_i2c_bus_handle);

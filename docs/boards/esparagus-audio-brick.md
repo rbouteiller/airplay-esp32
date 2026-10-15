@@ -125,9 +125,10 @@ Two things do not carry over:
 
 The **input mixer** is TAS5825M-only too. Summing to mono or feeding one channel to both
 outputs is done in the DSP mixer, and only the TAS5825M's mixer is implemented here, so
-a TAS5805M passes the stereo pair straight through and logs a warning if asked for
-anything else. That also means no crossover layout needing a summed or single-channel
-feed — the ones that route the pair as-is still work.
+a TAS5805M passes the stereo pair straight through: the [Equaliser](#equaliser) page
+shows its routing greyed out, and the firmware refuses any other. That also means no
+crossover layout needing a summed or single-channel feed — the ones that route the pair
+as-is still work.
 
 ## Equaliser
 
@@ -144,6 +145,13 @@ reboot. **Revert** goes back to what is in flash. For plain tone shaping, **Load
 15-band EQ** fills the chain with a flat graphic equaliser — one peaking section per
 band from 20 Hz to 16 kHz — leaving only the gains to set. It fills in the form and
 nothing more, so the amplifier hears it only once applied.
+
+A boost has to fit above the digital gain set on the settings page. Nothing turns the
+signal down to make room, so when the curves boost further than the supply leaves room
+for, the response graph says by how much and what to set the digital gain to instead.
+On a board that cannot report its supply, the page assumes 5 V, the least any USB-C
+supply gives, unless the digital gain is set higher than the 5 V level, in which case it
+takes the gain to be matched to the supply.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
 a high pass on one amplifier and a low pass on the other. **Build crossover** does that

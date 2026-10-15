@@ -1,0 +1,40 @@
+menu "USB-PD trigger (HUSB238A)"
+
+    config HUSB238A
+        bool "HUSB238A USB-PD trigger on the DAC's I2C bus"
+        depends on DAC_TAS58XX
+        default n
+        help
+            Look for a Hynetek HUSB238A, strapped for I2C at 0x42, on the
+            DAC's bus, and ask the USB-C charger for a higher voltage than
+            the 5 V every port gives. The amplifier runs from that supply,
+            so a higher one lets it play louder before it clips, and full
+            volume is raised to use it.
+
+            Strapped for I2C, the chip asks for nothing until it is told to,
+            and forgets on every power loss, so it is asked again on every
+            boot, before the amplifier comes up. A board without the chip
+            does not answer at its address and is left alone, so one build
+            can serve boards with and without it, such as the 42 mm and the
+            55 mm Louder-ESP32-Mini.
+
+    config HUSB238A_DEFAULT_VOLTS
+        int "Voltage to ask for until one is chosen on the settings page"
+        depends on HUSB238A
+        range 5 20
+        default 5
+        help
+            One of the fixed USB-PD offers: 5, 9, 12, 15 or 20 V. Anything
+            else falls to the highest of those below it, and so does a
+            voltage the charger does not offer.
+
+    config HUSB238A_MAX_VOLTS
+        int "Highest voltage the board's supply rail is rated for"
+        depends on HUSB238A
+        range 5 20
+        default 20
+        help
+            Never asked for, whatever is chosen. The chip can also negotiate
+            the 28-48 V EPR offers; those are never asked for at all.
+
+endmenu

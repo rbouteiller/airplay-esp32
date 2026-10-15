@@ -379,6 +379,17 @@ void app_main(void) {
     }
   }
 #elif defined(CONFIG_DAC_TAS58XX)
+  // Digital gain, the user's to match to the supply.
+  float full_volume_db;
+  if (settings_get_full_volume_db(&full_volume_db) == ESP_OK) {
+    dac_tas58xx_set_full_volume_db(full_volume_db);
+  }
+#ifdef CONFIG_HUSB238A
+  else {
+    // USB-C powered, and a USB-PD trigger starts every port at 5 V.
+    dac_tas58xx_set_full_volume_db(dac_tas58xx_clean_db(5000));
+  }
+#endif
   // Amplifier wiring must be known before the DAC is initialised.
   bool first_pbtl;
   if (settings_get_first_pbtl(&first_pbtl) == ESP_OK) {

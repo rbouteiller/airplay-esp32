@@ -1,4 +1,7 @@
-# Louder-ESP32-S3-mini defaults (ESP32-S3, TAS5805M)
+# Louder-ESP32-Mini defaults (ESP32-S3-WROOM-1U-N8R8, TAS5805M bridged)
+# Same pins as the Louder-ESP32-S3, without its Ethernet or display. The board
+# ties OUT_A+ to OUT_A- and OUT_B+ to OUT_B-, so the amplifier must come up in
+# PBTL: never build this board without CONFIG_TAS58XX_FORCE_PBTL.
 CONFIG_BOARD_LOUDER_ESP32_S3=y
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
@@ -8,6 +11,13 @@ CONFIG_DAC_TAS58XX=y
 CONFIG_DAC_CONTROLS_VOLUME=y
 CONFIG_TAS58XX_FORCE_PBTL=y
 
+# The 55 mm board has a HUSB238A USB-PD trigger on the DAC's bus, which stays
+# at 5 V until it is asked for more. The 42 mm board has none, and the probe
+# finds nothing there, so this one build serves both. Its supply rail is
+# rated for 20 V.
+CONFIG_HUSB238A=y
+CONFIG_HUSB238A_MAX_VOLTS=20
+
 # GPIO config
 CONFIG_I2S_SCK_IO=-1
 CONFIG_I2S_BCK_IO=14
@@ -16,3 +26,9 @@ CONFIG_I2S_DO_IO=16
 CONFIG_DAC_I2C_SDA=8
 CONFIG_DAC_I2C_SCL=9
 CONFIG_DAC_PDN_GPIO=17
+
+# ESP-IDF applies config/sdkconfig.defaults.esp32s3 after the base defaults,
+# and that layer is the generic S3 board's: an RGB LED on GPIO48 and a DAC
+# module grounded through GPIO14, which here is BCK. Neither is fitted.
+CONFIG_LED_RGB_GPIO=-1
+CONFIG_I2S_GND_IO=-1
