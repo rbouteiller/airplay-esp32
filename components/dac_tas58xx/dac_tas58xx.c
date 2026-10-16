@@ -179,9 +179,11 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
     {REG_SAP_CTRL1, 0x00}, // DATA_FORMAT=I2S(00), WORD_LENGTH=16bit(00)
     {REG_CLOCK_DET_CTRL, 0x00},
 
-    // DSP: Process Flow 1 (Base/Pro, 96kHz, 2.0)
+    // DSP: ROM Process Flow 1 (Base/Pro, 2.0). TI calls it a 96 kHz flow,
+    // but DSP_CTRL[4:3] (USER_DEFINED_PROCESSING_RATE) = 00 runs it at the
+    // input rate, so the biquads run at the I2S rate (measured on a brick).
     {REG_DSP_PGM_MODE, 0x01},
-    {REG_DSP_CTRL, 0x01}, // Use default coefficients
+    {REG_DSP_CTRL, 0x01}, // Input rate, default coefficients
 
     // Volume ramp: smooth transitions
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
@@ -219,8 +221,16 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
 
 /* TAS5805M is slightly simpler configuration, namely
    - lack of GPIO configuration
-   - no process flow select register
-   - DSP_MISC register to configure BQ coefficients per channel */
+   - no documented process flow select register
+   - DSP_MISC register to configure BQ coefficients per channel
+
+   Its register 0x46 is undocumented and does not mean what the TAS5825M's
+   DSP_CTRL does: it picks between the two ROM programs. Every PPC3 export
+   for Process Flow 1 (2.0, sample-rate converter to 96/88.2 kHz ahead of
+   the EQ) writes 0x01, and every one for the 48 kHz program (Flows 2 and
+   3: FIR and sub path) writes 0x11. Power-on already gives Flow 1; writing
+   it states the flow tas5805m_dsp_rate() assumes rather than inheriting
+   it. */
 static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
     {REG_PAGE_SEL, 0x00},          // Select Book 0 Page 0
     {REG_BOOK_SEL, 0x00},          // Select Book 0
@@ -233,6 +243,9 @@ static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
     // I2S format: standard I2S, 16-bit word length
     {REG_SAP_CTRL1, 0x00}, // DATA_FORMAT=I2S(00), WORD_LENGTH=16bit(00)
     {REG_CLOCK_DET_CTRL, 0x00},
+
+    // DSP: ROM Process Flow 1 (2.0, 96/88.2 kHz), as PPC3 selects it
+    {REG_DSP_CTRL, 0x01},
 
     // Volume ramp: smooth transitions
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
@@ -1525,8 +1538,13 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
         ESP_LOGI(TAG, "Woke from DEEP_SLEEP — re-programming DSP registers");
         tas58xx_write_reg(REG_SAP_CTRL1, 0x00); /* I2S, 16-bit */
         tas58xx_write_reg(REG_CLOCK_DET_CTRL, 0x00);
-        tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01); /* PF1 (Base/Pro, 96kHz) */
-        tas58xx_write_reg(REG_DSP_CTRL, 0x01);     /* USE_DEFAULT_COEFFS */
+        /* Process Flow 1, as the init sequences set it. Only the TAS5825M
+         * has DSP_PGM_MODE; on both, DSP_CTRL 0x01 is that flow at the rate
+         * the biquads are designed for (see the init sequences). */
+        if (dev->model == TAS58XX_MODEL_TAS5825M) {
+          tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01);
+        }
+        tas58xx_write_reg(REG_DSP_CTRL, 0x01);
         vTaskDelay(pdMS_TO_TICKS(5));
         tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
         tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
