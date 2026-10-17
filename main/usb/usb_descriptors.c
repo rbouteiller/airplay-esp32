@@ -19,6 +19,37 @@
 static const char *TAG = "usb_desc";
 
 //--------------------------------------------------------------------+
+// Host OS guess
+//--------------------------------------------------------------------+
+// The speaker tells the host how fast to send through a feedback endpoint.
+// At full speed the USB spec makes that value 10.14 in 3 bytes, the only form
+// macOS accepts, while Windows' UAC2 driver accepts only 16.16 in 4 bytes;
+// Linux takes either. TinyUSB converts to 10.14 when
+// tud_audio_feedback_format_correction_cb() asks it to, and it asks each time
+// the host opens the stream, so the choice can wait for enumeration to end.
+//
+// After the device descriptor, macOS reads the strings first and Windows and
+// Linux the configuration (TinyUSB's uac2_speaker_fb example tells hosts
+// apart the same way). The guess is kept until the next device descriptor
+// request, so a later string read on its own cannot change it.
+static bool s_after_device_desc;
+static bool s_host_is_macos;
+
+static void guess_host(bool strings_first) {
+  if (s_after_device_desc) {
+    s_after_device_desc = false;
+    s_host_is_macos = strings_first;
+  }
+}
+
+// Called by TinyUSB when the host opens the stream, full speed only.
+// CONFIG_UAC_SUPPORT_MACOS still forces 10.14 for every host.
+bool tud_audio_feedback_format_correction_cb(uint8_t func_id) {
+  (void)func_id;
+  return CFG_TUD_AUDIO_ENABLE_FEEDBACK_FORMAT_CORRECTION || s_host_is_macos;
+}
+
+//--------------------------------------------------------------------+
 // Device Descriptor
 //--------------------------------------------------------------------+
 static tusb_desc_device_t const desc_device = {
@@ -45,6 +76,7 @@ static tusb_desc_device_t const desc_device = {
     .bNumConfigurations = 0x01};
 
 uint8_t const *tud_descriptor_device_cb(void) {
+  s_after_device_desc = true;
   return (uint8_t const *)&desc_device;
 }
 
@@ -82,6 +114,7 @@ static uint8_t const desc_configuration[] = {
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
   (void)index;
+  guess_host(false);
   return desc_configuration;
 }
 
@@ -104,6 +137,7 @@ static uint16_t _desc_str[32];
 
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
   (void)langid;
+  guess_host(true);
 
   uint8_t chr_count;
 
@@ -160,7 +194,8 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
 // Bus state. usb_device_uac only logs these when it owns the descriptors.
 //--------------------------------------------------------------------+
 void tud_mount_cb(void) {
-  ESP_LOGI(TAG, "USB mounted");
+  ESP_LOGI(TAG, "USB mounted (host looks like %s)",
+           s_host_is_macos ? "macOS" : "Windows or Linux");
 }
 
 void tud_umount_cb(void) {

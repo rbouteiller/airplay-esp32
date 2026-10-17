@@ -67,8 +67,11 @@ a composite function.
 
 ## Caveats
 
-- **macOS** needs `CONFIG_UAC_SUPPORT_MACOS=y`. A single descriptor cannot satisfy macOS and
-  Windows/Linux simultaneously, so this is a build-time choice.
+- **macOS** and Windows want the rate feedback in different formats (10.14 and 16.16).
+  The firmware guesses the host from the order it reads the descriptors in, which is
+  logged as `USB mounted (host looks like …)`, and picks the format to suit, so one
+  build plays on both. `CONFIG_UAC_SUPPORT_MACOS=y` forces the macOS format for every
+  host if the guess is ever wrong.
 - **No USB console.** TinyUSB claims the USB PHY, so USB-Serial-JTAG cannot also act as a
   console. Logs stay on UART0, and you must hold BOOT while resetting to reflash over USB.
   [OTA updates](../reference/ota.md) avoid the problem entirely.

@@ -54,8 +54,9 @@ CONFIG_USB_DEVICE_UAC_AS_PART=y
 CONFIG_USB_AUDIO_SINK_MANUFACTURER="Espressif"
 CONFIG_USB_AUDIO_SINK_PRODUCT="ESP32 Audio Device"
 
-# Enable if the host is macOS (see the usb_device_uac README — the descriptor
-# cannot satisfy macOS and Windows/Linux at the same time).
+# macOS and Windows want the rate feedback in different formats; main/usb
+# guesses the host and picks one. Enable this to force macOS's format for
+# every host if the guess is ever wrong.
 # CONFIG_UAC_SUPPORT_MACOS=y
 
 # TinyUSB claims the USB PHY, so USB-Serial-JTAG cannot also be a console.
