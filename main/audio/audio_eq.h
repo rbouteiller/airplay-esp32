@@ -4,7 +4,8 @@
 #pragma once
 
 /**
- * Software parametric EQ for DACs without a DSP (CONFIG_SOFTWARE_EQ).
+ * Software parametric EQ for DACs without a DSP (CONFIG_SOFTWARE_EQ), and
+ * for comparing a TAS58xx's own EQ against (CONFIG_SOFTWARE_EQ_AB).
  *
  * Backs the /bq page on plain I2S DACs and amplifiers the way the TAS58xx
  * driver backs it on those chips: two channels of TAS58XX_BQ_SLOTS sections,
@@ -32,6 +33,17 @@
 
 /** Load the committed tuning. Call once SPIFFS and settings are up. */
 esp_err_t audio_eq_init(void);
+
+/**
+ * Instead of audio_eq_init(), for an amplifier whose own DSP keeps the
+ * tuning and lends its chains here to be compared against
+ * (CONFIG_SOFTWARE_EQ_AB): start flat, load nothing, and round the preamp
+ * down to a multiple of @p preamp_step_db, so the amplifier's volume, which
+ * moves in such steps, can give it back exactly. The amplifier keeps its
+ * own trims and mutes, so audio_eq_set_trim_db(), audio_eq_set_mute() and
+ * audio_eq_commit(), which save, are not for such a board.
+ */
+esp_err_t audio_eq_init_blank(float preamp_step_db);
 
 /**
  * Follow a new I2S clock, so the corners stay put across 44.1 and 48 kHz

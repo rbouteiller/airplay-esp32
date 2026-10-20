@@ -45,6 +45,10 @@
 #include "audio_eq.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
+#endif
+
 /* The /bq page and API run on the TAS58xx DSP or, for plain DACs, in
  * software. */
 #if defined(CONFIG_DAC_TAS58XX) || defined(CONFIG_SOFTWARE_EQ)
@@ -2820,6 +2824,13 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   if (eqb_preamp_db(&preamp_db)) {
     cJSON_AddNumberToObject(json, "preamp_db", preamp_db);
   }
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* Present only where the switch works. Not preamp_db, which would tell
+   * the page the board has no DSP. */
+  if (eq_ab_available()) {
+    cJSON_AddBoolToObject(json, "software_ab", eq_ab_get());
+  }
+#endif
 
   cJSON *amps = cJSON_AddArrayToObject(json, "amps");
   for (int d = 0; d < devices; d++) {
@@ -2880,6 +2891,26 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
     return ESP_FAIL;
   }
+
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* Which side plays the chains is the board's, not one amplifier's, so it
+   * needs no 'dev' when sent alone. */
+  const cJSON *ab = cJSON_GetObjectItem(json, "software_ab");
+  if (ab) {
+    if (!cJSON_IsBool(ab) || eq_ab_set(cJSON_IsTrue(ab)) != ESP_OK) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "The software EQ cannot stand in here");
+      return ESP_FAIL;
+    }
+    if (!cJSON_GetObjectItem(json, "dev")) {
+      cJSON_Delete(json);
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"success\":true}");
+      return ESP_OK;
+    }
+  }
+#endif
 
   const cJSON *v = cJSON_GetObjectItem(json, "dev");
   if (!json_int_in_range(v, 0, eqb_devices() - 1)) {

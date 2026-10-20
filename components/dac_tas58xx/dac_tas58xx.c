@@ -303,6 +303,13 @@ static float s_max_volume_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
 static int s_supply_mv;
 static bool s_auto_gain;
 
+/* While the software EQ plays the chains instead (dac_tas58xx_bq_set_flat),
+ * every section is written as a pass-through, and the level the software
+ * EQ takes off ahead of its filters is added back to the volume. */
+static bool s_bq_flat;
+static float s_makeup_db;
+static void (*s_eq_listener)(void);
+
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
 static bool s_ch_mute[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -364,6 +371,7 @@ static bool bq_chain_is_flat(int dev);
 static bool bq_chain_is_from_dump(int dev);
 static bool tas58xx_seed_bq_from_hf(int idx);
 static void auto_gain_update(void);
+static void eq_changed(void);
 
 /* ---------- Detect ---------- */
 
@@ -1376,7 +1384,7 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
 #endif
 
   /* The chains and the amplifiers are known now. */
-  auto_gain_update();
+  eq_changed();
   return ESP_OK;
 }
 
@@ -1632,7 +1640,7 @@ static float tas58xx_map_volume_db(float volume_airplay_db) {
   //   AirPlay 0 dB    -> DAC s_max_volume_db (CONFIG_TAS58XX_MAX_VOLUME)
   //   AirPlay -25 dB  -> DAC (MAX - 50)
   //   AirPlay -30..-25 dB -> steep roll-off to mute
-  float max_db = s_max_volume_db;
+  float max_db = s_max_volume_db + s_makeup_db;
   float db_level;
 
   if (volume_airplay_db >= -25.0f) {
@@ -2790,6 +2798,12 @@ out:
 static void bq_design_slot(int dev, int ch, int slot,
                            uint8_t out[EQ_COEFF_BYTES]) {
   const int src = s_bq_ganged[dev] ? 0 : ch;
+  if (s_bq_flat) {
+    tas58xx_bq_t flat;
+    tas58xx_bq_init_bypass(&flat);
+    tas58xx_bq_design_packed(&flat, bq_design_fs(dev), out);
+    return;
+  }
   tas58xx_bq_design_packed(&s_bq[dev][src][slot], bq_design_fs(dev), out);
 }
 
@@ -3112,7 +3126,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     s_cur = NULL;
   }
   REG_UNLOCK();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3128,7 +3142,7 @@ void dac_tas58xx_bq_set_ganged(int dev, bool ganged) {
   }
   s_bq_ganged[dev] = ganged;
   bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
 }
 
 bool dac_tas58xx_bq_get_ganged(int dev) {
@@ -3144,7 +3158,7 @@ bool dac_tas58xx_bq_get_ganged(int dev) {
 esp_err_t dac_tas58xx_bq_reset(void) {
   bq_chain_defaults();
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3265,7 +3279,7 @@ esp_err_t dac_tas58xx_bq_revert(void) {
     bq_chain_defaults();
   }
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3350,6 +3364,50 @@ static void auto_gain_update(void) {
              "Digital gain follows %.1f dB clean on %.1f V less %+.2f dB of "
              "EQ at %.0f Hz",
              clean, (float)s_supply_mv / 1000.0f, boost, at_hz);
+  }
+  if (s_reg_mutex != NULL) {
+    REG_UNLOCK();
+  }
+}
+
+/* The chains, their ganging or the rate changed: follow with the gain, and
+ * tell whoever mirrors the chains (dac_tas58xx_set_eq_listener). */
+static void eq_changed(void) {
+  auto_gain_update();
+  if (s_eq_listener != NULL) {
+    s_eq_listener();
+  }
+}
+
+void dac_tas58xx_set_eq_listener(void (*listener)(void)) {
+  s_eq_listener = listener;
+}
+
+void dac_tas58xx_bq_set_flat(bool flat) {
+  if (flat == s_bq_flat) {
+    return;
+  }
+  s_bq_flat = flat;
+  ESP_LOGI(TAG, "EQ %s",
+           flat ? "set flat: the software EQ plays the chains"
+                : "back on the DSP");
+  bq_reprogram_all();
+}
+
+bool dac_tas58xx_bq_get_flat(void) {
+  return s_bq_flat;
+}
+
+void dac_tas58xx_set_makeup_db(float db) {
+  db = fmaxf(db, 0.0f);
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+  }
+  if (db != s_makeup_db) {
+    s_makeup_db = db;
+    if (s_reg_mutex != NULL) {
+      tas58xx_apply_volume_locked();
+    }
   }
   if (s_reg_mutex != NULL) {
     REG_UNLOCK();
@@ -3466,5 +3524,5 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   }
   s_cur = NULL;
   REG_UNLOCK();
-  auto_gain_update();
+  eq_changed();
 }

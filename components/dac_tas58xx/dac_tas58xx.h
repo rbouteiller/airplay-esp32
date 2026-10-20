@@ -237,6 +237,31 @@ typedef struct {
 esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out);
 
 /**
+ * Write every section as a pass-through while keeping the chains, so the
+ * software EQ can play them instead and the two can be compared by ear. The
+ * chains, their API and auto gain are unchanged; only what reaches the
+ * chip's coefficient RAM is. Not saved here; safe before dac_init(), so a
+ * saved choice can be set before the chains are first written.
+ */
+void dac_tas58xx_bq_set_flat(bool flat);
+bool dac_tas58xx_bq_get_flat(void);
+
+/**
+ * Raise the volume by @p db (>= 0) on top of the digital gain, to give back
+ * what an EQ ahead of the amplifier takes off before its filters. It moves
+ * the register in 0.5 dB steps, so a level that is not a multiple of 0.5 dB
+ * is not returned exactly.
+ */
+void dac_tas58xx_set_makeup_db(float db);
+
+/**
+ * Called after the chains, their ganging or the sample rate change, from
+ * the task that changed them (the web server, or an audio task on a new
+ * rate). One listener; NULL removes it.
+ */
+void dac_tas58xx_set_eq_listener(void (*listener)(void));
+
+/**
  * Whether PBTL mode on the primary amplifier is forced by configuration.
  * Returns true if CONFIG_TAS58XX_FORCE_PBTL is enabled, which means
  * the PBTL setting cannot be changed from the web UI.

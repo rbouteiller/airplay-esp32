@@ -133,6 +133,9 @@ static float s_trim_db[AUDIO_EQ_CHANNELS];
 static bool s_mute[AUDIO_EQ_CHANNELS];
 static uint32_t s_rate = CONFIG_OUTPUT_SAMPLE_RATE_HZ;
 static float s_preamp_db;
+/* The preamp is rounded down to a multiple of this, 0 to leave it exact
+ * (audio_eq_init_blank). */
+static float s_preamp_step_db;
 static int s_tb_back = 0;
 
 static _Atomic int s_tb_mid = 1;
@@ -291,7 +294,11 @@ static float preamp_for(const eq_config_t *cfg, uint32_t rate) {
   if (!(peak_db > 0.0f)) {
     return 0.0f; /* nothing boosts past 0 dBFS, or every output is muted */
   }
-  return fmaxf(-peak_db, PREAMP_MIN_DB);
+  float pre_db = fmaxf(-peak_db, PREAMP_MIN_DB);
+  if (s_preamp_step_db > 0.0f) {
+    pre_db = floorf(pre_db / s_preamp_step_db) * s_preamp_step_db;
+  }
+  return pre_db;
 }
 
 /* Design both channels of the current model at @p rate into @p cfg, and
@@ -461,10 +468,7 @@ static void levels_load(void) {
 
 /* ---------- public API ---------- */
 
-esp_err_t audio_eq_init(void) {
-  if (s_mutex != NULL) {
-    return ESP_OK;
-  }
+static esp_err_t model_alloc(void) {
   s_model = heap_caps_calloc(1, sizeof(*s_model),
                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (s_model == NULL) {
@@ -485,6 +489,17 @@ esp_err_t audio_eq_init(void) {
     s_model = NULL;
     return ESP_ERR_NO_MEM;
   }
+  return ESP_OK;
+}
+
+esp_err_t audio_eq_init(void) {
+  if (s_mutex != NULL) {
+    return ESP_OK;
+  }
+  esp_err_t err = model_alloc();
+  if (err != ESP_OK) {
+    return err;
+  }
   cfg_file_t *cfg = chains_read();
   xSemaphoreTake(s_mutex, portMAX_DELAY);
   chains_default();
@@ -496,6 +511,22 @@ esp_err_t audio_eq_init(void) {
   redesign();
   xSemaphoreGive(s_mutex);
   free(cfg);
+  return ESP_OK;
+}
+
+esp_err_t audio_eq_init_blank(float preamp_step_db) {
+  if (s_mutex != NULL) {
+    return ESP_OK;
+  }
+  esp_err_t err = model_alloc();
+  if (err != ESP_OK) {
+    return err;
+  }
+  xSemaphoreTake(s_mutex, portMAX_DELAY);
+  s_preamp_step_db = preamp_step_db;
+  chains_default();
+  redesign();
+  xSemaphoreGive(s_mutex);
   return ESP_OK;
 }
 

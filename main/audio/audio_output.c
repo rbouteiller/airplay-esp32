@@ -25,7 +25,7 @@
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
 #include "audio_eq.h"
 #endif
 
@@ -238,7 +238,7 @@ static void volume_to_words(const int16_t *pcm, size_t frames, int32_t target,
   }
 }
 
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
 // Truncating is an error of 2^-31 of full scale, far below what a float
 // resolves, so only the range needs care.
 static inline int32_t to_word(float v) {
@@ -281,7 +281,7 @@ static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
   if (bufs->words == NULL) {
     return false;
   }
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   bufs->eq = malloc(frames * 2 * sizeof(float));
   if (bufs->eq == NULL) {
     free(bufs->words);
@@ -338,7 +338,7 @@ static const void *process_pcm(int16_t *buf, size_t frames, int32_t volume_q15,
                                const out_bufs_t *bufs) {
   apply_channel_mode(buf, frames);
 #ifdef CONFIG_I2S_32BIT_OUTPUT
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   if (audio_eq_process_float(buf, bufs->eq, frames)) {
     eq_volume_to_words(bufs->eq, frames, volume_q15, bufs->words);
     return bufs->words;
@@ -348,7 +348,7 @@ static const void *process_pcm(int16_t *buf, size_t frames, int32_t volume_q15,
   return bufs->words;
 #else
   (void)bufs;
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   audio_eq_process(buf, frames);
 #endif
   apply_volume(buf, frames, volume_q15);
@@ -571,7 +571,7 @@ void audio_output_stop(void) {
   } else {
     ESP_LOGI(TAG, "Playback task stopped");
   }
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   // The task stops mid-stream, so whatever writes next must not play the
   // tails it left in the filters.
   audio_eq_reset();
@@ -651,7 +651,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   s_output_rate = rate;
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   // Corners are relative to the clock, so follow it. The stream breaks here
   // anyway, and this is where Bluetooth hands the output back without having
   // rung its tails out, so start the filters from rest.

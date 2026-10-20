@@ -69,9 +69,13 @@ if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND SRC_FILES "bt_coex.c")
 endif()
 
-# Software parametric EQ for DACs without a DSP (I2S backend only)
-if(CONFIG_SOFTWARE_EQ)
+# Software parametric EQ for DACs without a DSP (I2S backend only), also
+# lent to a TAS58xx to compare its own EQ against
+if(CONFIG_AUDIO_EQ)
     list(APPEND SRC_FILES "audio/audio_eq.c")
+endif()
+if(CONFIG_SOFTWARE_EQ_AB)
+    list(APPEND SRC_FILES "audio/eq_ab.c")
 endif()
 
 # USB Audio Class sink (host -> I2S, chips with USB OTG only)

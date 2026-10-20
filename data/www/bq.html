@@ -271,6 +271,13 @@ to match drivers; they only cut, so they cost no filter headroom.</p>
 reaches. Automatic keeps it at the loudest that stays clean on the supply with
 the EQ playing.'></select></div>
 </div>
+<div id='ab' style='display:none'>
+<div class='trim'><label for='ab-sel'>EQ runs on</label>
+<select id='ab-sel' onchange='pickAb()'>
+<option value='dsp'>Amplifier DSP</option>
+<option value='sw'>ESP32</option></select></div>
+<p class='hint' id='ab-hint'></p>
+</div>
 </div>
 </div>
 
@@ -1387,6 +1394,25 @@ function pickGain(){
     .then(function(d){gainInfo=d;Shell.tick(sel,true);},
           function(e){Shell.tick(sel,false,e.message);})
     .then(function(){drawPower();showHeadroom();});
+}
+/* ---- software A/B ----
+   The same filters on the ESP32 instead, to tell a fault in the amplifier's
+   DSP from one in the tuning by ear. The board saves the choice. */
+function drawAb(){
+  if(!data||data.software_ab===undefined){$('ab').style.display='none';return;}
+  $('ab').style.display='';
+  $('ab-sel').value=data.software_ab?'sw':'dsp';
+  $('ab-hint').textContent=data.software_ab
+    ?'The ESP32 plays these filters at the stream\'s rate, with the'+
+     ' amplifier\'s set flat and the level matched.'
+    :'Switch to hear the same filters played on the ESP32 instead.';
+}
+function pickAb(){
+  var sel=$('ab-sel'),on=sel.value==='sw';
+  Shell.post('/api/bq',{software_ab:on})
+    .then(function(){data.software_ab=on;Shell.tick(sel,true);},
+          function(e){Shell.tick(sel,false,e.message);})
+    .then(drawAb);
 }
 function loadPower(){
   /* Digital gain is the TAS58xx's; a software EQ build has no such endpoint,
@@ -2800,7 +2826,7 @@ function load(){
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
     var left=autoShape();
-    drawTabs();drawMix();drawGains();loadRows();plot();showPreamp();
+    drawTabs();drawMix();drawGains();loadRows();plot();showPreamp();drawAb();
     if(left)
       show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
            ' this page offers reproduces the coefficients. They are still'+

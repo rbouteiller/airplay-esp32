@@ -343,3 +343,10 @@ esp_err_t settings_set_usb_pd_auto(bool on);
  */
 bool settings_get_gain_auto(void);
 esp_err_t settings_set_gain_auto(bool on);
+
+/**
+ * Whether a TAS58xx board plays its EQ on the ESP32 rather than the
+ * amplifier's DSP (CONFIG_SOFTWARE_EQ_AB). Off until turned on.
+ */
+bool settings_get_software_eq_ab(void);
+esp_err_t settings_set_software_eq_ab(bool on);

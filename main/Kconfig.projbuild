@@ -208,6 +208,23 @@ menu "Airplay ESP Configuration"
             sections. Its tables live in PSRAM, so it needs that too. Boosts are paid for by turning the signal down ahead
             of the filters, so they cannot clip.
 
+    config SOFTWARE_EQ_AB
+        bool "Software EQ A/B switch on a TAS58xx amplifier"
+        depends on AUDIO_OUTPUT_I2S && DAC_TAS58XX
+        depends on SOC_CPU_HAS_FPU && SPIRAM
+        default y
+        help
+            Add a switch to the Biquad EQ page (/bq) that plays the
+            amplifier's filters on the ESP32's software EQ instead of its
+            DSP, with the DSP's sections set flat and the level matched, so
+            a fault in the DSP path can be told by ear from one in the
+            tuning. The choice is saved. Only for a board with one
+            amplifier.
+
+    config AUDIO_EQ
+        bool
+        default y if SOFTWARE_EQ || SOFTWARE_EQ_AB
+
     config I2S_32BIT_OUTPUT
         bool "Send 32-bit words over I2S"
         depends on AUDIO_OUTPUT_I2S && !DAC_TAS58XX && !DAC_TAS57XX

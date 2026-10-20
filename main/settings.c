@@ -33,6 +33,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_FULL_VOLUME    "full_vol"
 #define NVS_KEY_USB_PD_AUTO    "pd_auto"
 #define NVS_KEY_GAIN_AUTO      "gain_auto"
+#define NVS_KEY_SOFTWARE_EQ_AB "sw_eq_ab"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
 #define NVS_KEY_SENDSPIN       "ss_en"
@@ -955,6 +956,37 @@ bool settings_get_gain_auto(void) {
 
 esp_err_t settings_set_gain_auto(bool on) {
   return set_auto(NVS_KEY_GAIN_AUTO, "digital gain", on);
+}
+
+bool settings_get_software_eq_ab(void) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    return false;
+  }
+  uint8_t stored = 0;
+  nvs_get_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, &stored);
+  nvs_close(nvs);
+  return stored != 0;
+}
+
+esp_err_t settings_set_software_eq_ab(bool on) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+  err = nvs_set_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, on ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved EQ engine: %s", on ? "ESP32" : "amplifier DSP");
+  } else {
+    ESP_LOGE(TAG, "Failed to save EQ engine: %s", esp_err_to_name(err));
+  }
+  return err;
 }
 
 /* ================================================================== */
