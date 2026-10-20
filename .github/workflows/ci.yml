@@ -97,6 +97,9 @@ jobs:
       - name: Test every TAS58xx filter shape, as designed and as packed
         run: python3 tests/tas58xx_bq/run.py
 
+      - name: Test the EQ page draws the filters the firmware designs
+        run: python3 tests/bq_page/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

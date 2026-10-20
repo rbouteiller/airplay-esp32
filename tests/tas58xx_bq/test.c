@@ -64,6 +64,19 @@ static double sweep_top(double fs) {
 
 #define SWEEP_STEP pow(2.0, 1.0 / 48.0) /* 48 points per octave */
 
+/* Corners every shape is checked at: the bass, then the midrange and treble
+ * up to 20 kHz, where the bilinear transform squeezes a response hardest
+ * against Nyquist. Each check skips those its rate cannot carry. */
+static const double corners[] = {20.0,    100.0,   1000.0,  2000.0,
+                                 3150.0,  5000.0,  8000.0,  10000.0,
+                                 12500.0, 16000.0, 18000.0, 20000.0};
+#define CORNER_COUNT ((int)(sizeof(corners) / sizeof(corners[0])))
+
+/* Whether a corner fits under a rate's Nyquist with room for its skirt. */
+static bool carries(double fs, double f) {
+  return f <= 0.46 * fs;
+}
+
 /* Lowest and highest point of the response over [lo, hi]. */
 static void extremes(const double c[5], double fs, double lo, double hi,
                      double *min_db, double *max_db) {
@@ -171,16 +184,18 @@ static void on_chip(const double in[5], double out[5], bool *saturated) {
  * series are unity at every frequency, magnitude and phase.
  */
 static void check_peaking(double fs) {
-  const double freqs[] = {30.0, 1000.0, 10000.0};
   const double qs[] = {0.5, 2.0, 8.0};
   const double gains[] = {3.0, 6.0, 12.0, 20.0};
   int checked = 0;
   double worst_mirror = 0.0;
 
-  for (int fi = 0; fi < 3; fi++) {
+  for (int fi = 0; fi < CORNER_COUNT; fi++) {
+    if (!carries(fs, corners[fi])) {
+      continue;
+    }
     for (int qi = 0; qi < 3; qi++) {
       for (int gi = 0; gi < 4; gi++) {
-        const double f0 = freqs[fi], q = qs[qi], g = gains[gi];
+        const double f0 = corners[fi], q = qs[qi], g = gains[gi];
         double boost[5], cut[5];
         tas58xx_bq_t bq = peak(f0, q, g);
         tas58xx_bq_design(&bq, fs, boost);
@@ -220,7 +235,9 @@ static void check_peaking(double fs) {
       }
     }
   }
-  CHECK(worst_mirror < 1e-9, "peak at %g: boost x cut strays %.3g from unity",
+  /* A 20 Hz corner at 96 kHz puts the poles within 1e-3 of the unit circle,
+   * which costs double precision a few digits. */
+  CHECK(worst_mirror < 1e-8, "peak at %g: boost x cut strays %.3g from unity",
         fs, worst_mirror);
 
   /* The bandwidth form is the Q form with Q = f0 / bandwidth. */
@@ -255,7 +272,6 @@ static double shelf_corner_db(double g) {
  * corner at the level above, and never goes outside the two.
  */
 static void check_shelves(double fs) {
-  const double freqs[] = {50.0, 1000.0, 8000.0};
   const double gains[] = {-20.0, -15.0, -10.0, -6.0, -3.0,
                           3.0,   6.0,   10.0,  15.0, 20.0};
   double worst_overshoot = 0.0;
@@ -264,9 +280,12 @@ static void check_shelves(double fs) {
   for (int t = 0; t < 2; t++) {
     const int type = t ? TAS58XX_BQ_TREBLE_SHELF : TAS58XX_BQ_BASS_SHELF;
     const char *name = t ? "treble shelf" : "bass shelf";
-    for (int fi = 0; fi < 3; fi++) {
+    for (int fi = 0; fi < CORNER_COUNT; fi++) {
+      if (!carries(fs, corners[fi])) {
+        continue;
+      }
       for (int gi = 0; gi < 10; gi++) {
-        const double f0 = freqs[fi], g = gains[gi];
+        const double f0 = corners[fi], g = gains[gi];
         double c[5];
         const tas58xx_bq_t bq = shelf(type, f0, g);
         tas58xx_bq_design(&bq, fs, c);
@@ -303,11 +322,13 @@ static void check_shelves(double fs) {
  * which is what makes it a crossover; a first-order pair adds to exactly one.
  */
 static void check_passes(double fs) {
-  const double freqs[] = {20.0, 1000.0, 8000.0};
   int checked = 0;
 
-  for (int fi = 0; fi < 3; fi++) {
-    const double f0 = freqs[fi];
+  for (int fi = 0; fi < CORNER_COUNT; fi++) {
+    if (!carries(fs, corners[fi])) {
+      continue;
+    }
+    const double f0 = corners[fi];
     const double lo_band = f0 / 1000.0;
 
     struct {
@@ -376,11 +397,15 @@ static void check_passes(double fs) {
         /* The ripple band runs up to the corner on a low pass, and from it
          * on a high pass. */
         const double r = cases[k].ripple;
+        /* Near Nyquist the 0 dB point is too narrow in hertz for a sweep to
+         * land on, so it is searched for. */
         extremes(lp, fs, lo_band, f0, &lo_db, &hi_db);
+        hi_db = fmax(hi_db, top_db(lp, fs, lo_band, f0));
         CHECK(fabs(hi_db) < 0.01 && fabs(lo_db + r) < 0.01,
               "Chebyshev %g dB low pass %g Hz at %g: passband %+.4f..%+.4f", r,
               f0, fs, lo_db, hi_db);
         extremes(hp, fs, f0, fs / 2.0, &lo_db, &hi_db);
+        hi_db = fmax(hi_db, top_db(hp, fs, f0, fs / 2.0));
         CHECK(fabs(hi_db) < 0.01 && fabs(lo_db + r) < 0.01,
               "Chebyshev %g dB high pass %g Hz at %g: passband %+.4f..%+.4f", r,
               f0, fs, lo_db, hi_db);
@@ -419,13 +444,16 @@ static void check_passes(double fs) {
  * everywhere, half a turn at the centre. Any shape inverted is its negative.
  */
 static void check_banded(double fs) {
-  const double freqs[] = {100.0, 1000.0, 10000.0};
   const double widths[] = {20.0, 50.0, 180.0};
   int checked = 0;
 
-  for (int fi = 0; fi < 3; fi++) {
+  for (int fi = 0; fi < CORNER_COUNT; fi++) {
     for (int wi = 0; wi < 3; wi++) {
-      const double f0 = freqs[fi], bw = widths[wi] * f0 / 100.0;
+      const double f0 = corners[fi], bw = widths[wi] * f0 / 100.0;
+      /* Both edges inside the band, as the design clamps them. */
+      if (!carries(fs, f0 + bw / 2.0)) {
+        continue;
+      }
       double c[5];
 
       tas58xx_bq_t bq = banded(TAS58XX_BQ_BANDPASS, f0, bw);
@@ -491,6 +519,183 @@ static void check_banded(double fs) {
           "type %d at %g: inverting does not negate the response", bq.type, fs);
   }
   printf("  band pass, notch, phase shift: %d designs\n", checked);
+}
+
+/* ---------------- against their analog namesakes ---------------- */
+
+static const char *type_name(int type);
+
+/*
+ * The analog filters the shapes are named after, in s normalised to the
+ * corner. A peak's poles sit 1/Q wide, its zeros g/Q, and a cut is the
+ * mirror of the boost. A shelf is RBJ's with S = 1, normalised to its
+ * midpoint. The passes are the textbook alignments; Chebyshev follows the
+ * PPC3 prototype. A notch and a phase shift are the classic pair on 1/Q.
+ */
+static double complex analog_peak(double complex s, double bw, double g_db) {
+  const double g = pow(10.0, g_db / 20.0);
+  return g >= 1.0 ? (s * s + g * bw * s + 1.0) / (s * s + bw * s + 1.0)
+                  : (s * s + bw * s + 1.0) / (s * s + bw / g * s + 1.0);
+}
+
+static double complex analog_shelf(double complex s, double g_db, bool treble) {
+  const double a = pow(10.0, g_db / 40.0), r = sqrt(2.0 * a);
+  return treble ? a * (a * s * s + r * s + 1.0) / (s * s + r * s + a)
+                : a * (s * s + r * s + a) / (a * s * s + r * s + 1.0);
+}
+
+static double complex analog_pass(double complex s, int sub, double q,
+                                  double ripple, bool hp) {
+  if (sub == TAS58XX_BQ_SUB_BUTTERWORTH_1) {
+    return hp ? s / (s + 1.0) : 1.0 / (s + 1.0);
+  }
+  if (sub == TAS58XX_BQ_SUB_CHEBYSHEV_2) {
+    const double eps = sqrt(pow(10.0, ripple / 10.0) - 1.0);
+    const double al = asinh(1.0 / eps) / 2.0, sh = sinh(al), ch = cosh(al);
+    const double a = -M_SQRT2 * sh, b = 0.5 * (sh * sh + ch * ch);
+    const double c = b / sqrt(1.0 + eps * eps);
+    return hp ? (c / b) * s * s / (s * s - (a / b) * s + 1.0 / b)
+              : c / (s * s - a * s + b);
+  }
+  const double a1 = sub == TAS58XX_BQ_SUB_BUTTERWORTH_2      ? M_SQRT2
+                    : sub == TAS58XX_BQ_SUB_BESSEL_2         ? sqrt(3.0)
+                    : sub == TAS58XX_BQ_SUB_LINKWITZ_RILEY_2 ? 2.0
+                                                             : 1.0 / q;
+  return (hp ? s * s : 1.0) / (s * s + a1 * s + 1.0);
+}
+
+static double complex analog_notch(double complex s, double bw, bool allpass) {
+  return (s * s + (allpass ? -bw : 0.0) * s + 1.0) / (s * s + bw * s + 1.0);
+}
+
+/* The analog frequency, relative to the corner, that the bilinear transform
+ * prewarped at @p f0 maps @p f to. */
+static double warped(double f, double f0, double fs) {
+  return tan(M_PI * f / fs) / tan(M_PI * f0 / fs);
+}
+
+/* Midpoint, relative to the corner, of the analog shelf whose level at the
+ * corner is the PPC3 corner level, by bisection in log frequency. */
+static double shelf_midpoint(double g, bool treble) {
+  double lo = log(1e-3), hi = log(1e3);
+  const double want = shelf_corner_db(g);
+  const double at_lo = 20.0 * log10(cabs(analog_shelf(I / exp(lo), g, treble)));
+  const bool rising = at_lo < want;
+  for (int i = 0; i < 200; i++) {
+    const double mid = (lo + hi) / 2.0;
+    const double v = 20.0 * log10(cabs(analog_shelf(I / exp(mid), g, treble)));
+    if ((v < want) == rising) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return exp((lo + hi) / 2.0);
+}
+
+/*
+ * Every shape from 1 kHz up is its analog namesake through the bilinear
+ * transform prewarped at its corner: magnitude and phase, at every
+ * frequency, once the frequency is warped. That is exact, so it would show
+ * any slip in a model that only matters near Nyquist. Without the warping,
+ * how far each sits from the analog filter in plain hertz is reported: that
+ * is the treble squeeze any filter at this rate has, not an error.
+ */
+static void check_analog(double fs) {
+  double worst_exact = 0.0, plain_peak = 0.0, plain_shelf = 0.0;
+  double plain_pass = 0.0;
+  const char *worst_name = "";
+  double worst_f0 = 0.0;
+  int n = 0;
+
+  for (double f0 = 1000.0; f0 <= 20000.0 * 1.001 && carries(fs, f0);
+       f0 *= pow(2.0, 1.0 / 6.0)) {
+    tas58xx_bq_t designs[64];
+    int count = 0;
+    const double qs[] = {0.5, 1.0, 2.0, 5.0, 10.0};
+    const double gains[] = {-12.0, -6.0, 6.0, 12.0};
+    for (int qi = 0; qi < 5; qi++) {
+      for (int gi = 0; gi < 4; gi++) {
+        designs[count++] = peak(f0, qs[qi], gains[gi]);
+      }
+    }
+    for (int gi = 0; gi < 4; gi++) {
+      designs[count++] = shelf(TAS58XX_BQ_BASS_SHELF, f0, gains[gi]);
+      designs[count++] = shelf(TAS58XX_BQ_TREBLE_SHELF, f0, gains[gi]);
+    }
+    for (int sub = 0; sub < TAS58XX_BQ_SUB_COUNT; sub++) {
+      designs[count++] = pass(TAS58XX_BQ_LOWPASS, sub, f0, 2.0, 1.0);
+      designs[count++] = pass(TAS58XX_BQ_HIGHPASS, sub, f0, 2.0, 1.0);
+    }
+    designs[count++] = banded(TAS58XX_BQ_NOTCH, f0, f0 / 5.0);
+    designs[count++] = banded(TAS58XX_BQ_PHASE_SHIFT, f0, f0 / 5.0);
+
+    for (int i = 0; i < count; i++) {
+      const tas58xx_bq_t *bq = &designs[i];
+      const double fc = bq->freq_hz, w0 = 2.0 * M_PI * fc / fs;
+      double c[5];
+      tas58xx_bq_design(bq, fs, c);
+
+      /* Each shape's analog form at a frequency relative to its corner. */
+      double scale = 1.0, bw = 0.0;
+      bool is_shelf = false, is_pass = false;
+      if (bq->type == TAS58XX_BQ_PEAKING_Q) {
+        bw = w0 / (bq->q * sin(w0));
+      } else if (bq->type == TAS58XX_BQ_BASS_SHELF ||
+                 bq->type == TAS58XX_BQ_TREBLE_SHELF) {
+        is_shelf = true;
+        scale =
+            shelf_midpoint(bq->gain_db, bq->type == TAS58XX_BQ_TREBLE_SHELF);
+      } else if (bq->type == TAS58XX_BQ_NOTCH ||
+                 bq->type == TAS58XX_BQ_PHASE_SHIFT) {
+        bw = 2.0 * tan(M_PI * bq->bandwidth_hz / fs) / sin(w0);
+      } else {
+        is_pass = true;
+      }
+#define ANALOG_AT(x)                                                        \
+  (bq->type == TAS58XX_BQ_PEAKING_Q ? analog_peak(I * (x), bw, bq->gain_db) \
+   : is_shelf ? analog_shelf(I * (x) / scale, bq->gain_db,                  \
+                             bq->type == TAS58XX_BQ_TREBLE_SHELF)           \
+   : is_pass  ? analog_pass(I * (x), bq->sub, bq->q, bq->ripple_db,         \
+                            bq->type == TAS58XX_BQ_HIGHPASS)                \
+              : analog_notch(I * (x), bw, bq->type == TAS58XX_BQ_PHASE_SHIFT))
+
+      double exact = 0.0, plain = 0.0;
+      for (double f = 20.0; f <= sweep_top(fs); f *= SWEEP_STEP) {
+        const double complex d = response(c, f, fs);
+        const double complex warp = ANALOG_AT(warped(f, fc, fs));
+        exact = fmax(exact, cabs(d - warp) / fmax(cabs(warp), 1e-3));
+        const double complex same = ANALOG_AT(f / fc);
+        if (!is_pass || 20.0 * log10(cabs(same)) > -6.0) {
+          plain = fmax(plain,
+                       fabs(20.0 * log10(cabs(d)) - 20.0 * log10(cabs(same))));
+        }
+      }
+#undef ANALOG_AT
+      CHECK(exact < 1e-6,
+            "%s sub %d %g Hz Q%g %+g dB at %g: strays %.3g from "
+            "its analog form",
+            type_name(bq->type), bq->sub, fc, bq->q, bq->gain_db, fs, exact);
+      if (exact > worst_exact) {
+        worst_exact = exact;
+        worst_name = type_name(bq->type);
+        worst_f0 = fc;
+      }
+      if (bq->type == TAS58XX_BQ_PEAKING_Q) {
+        plain_peak = fmax(plain_peak, plain);
+      } else if (is_shelf) {
+        plain_shelf = fmax(plain_shelf, plain);
+      } else if (is_pass) {
+        plain_pass = fmax(plain_pass, plain);
+      }
+      n++;
+    }
+  }
+  printf("  1-20 kHz vs analog: %d designs exact to %.1g once warped (%s "
+         "%.0f Hz); in plain Hz, peaks %.2f dB, shelves %.2f dB, passes "
+         "%.2f dB above -6 dB\n",
+         n, worst_exact, worst_name, worst_f0, plain_peak, plain_shelf,
+         plain_pass);
 }
 
 /* ---------------- on the chip ---------------- */
@@ -632,7 +837,7 @@ static void check_accuracy(double fs) {
   static const char *const groups[] = {"peaks", "shelves", "low/high pass",
                                        "band shapes"};
   for (int g = 0; g < 4; g++) {
-    double worst = 0.0;
+    double worst = 0.0, worst_treble = 0.0;
     tas58xx_bq_t worst_bq;
     tas58xx_bq_init_bypass(&worst_bq);
     int n = 0;
@@ -682,6 +887,9 @@ static void check_accuracy(double fs) {
           worst = err;
           worst_bq = designs[i];
         }
+        if (f0 >= 1000.0) {
+          worst_treble = fmax(worst_treble, err);
+        }
         n++;
       }
     }
@@ -693,7 +901,7 @@ static void check_accuracy(double fs) {
     if (g == 0) {
       printf(" Q%.2f %+g dB", worst_bq.q, worst_bq.gain_db);
     }
-    printf(")\n");
+    printf("), %.4f dB from 1 kHz up\n", worst_treble);
   }
 }
 
@@ -741,6 +949,7 @@ int main(void) {
     check_shelves(rates[r]);
     check_passes(rates[r]);
     check_banded(rates[r]);
+    check_analog(rates[r]);
     check_range(rates[r]);
     check_accuracy(rates[r]);
   }
