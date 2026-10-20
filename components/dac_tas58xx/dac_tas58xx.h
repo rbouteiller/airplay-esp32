@@ -218,6 +218,24 @@ esp_err_t dac_tas58xx_bq_revert(void);
 /** Reset every chain to bypass, in memory and on the hardware. */
 esp_err_t dac_tas58xx_bq_reset(void);
 
+/** One channel's sections as designed, next to what the chip holds. */
+typedef struct {
+  uint8_t expected[TAS58XX_BQ_SLOTS][TAS58XX_BQ_COEFF_BYTES];
+  uint8_t actual[TAS58XX_BQ_SLOTS][TAS58XX_BQ_COEFF_BYTES];
+  uint8_t ctrl2;           /**< DEVICE_CTRL2 at the read: power state, mute */
+  bool eq_bypassed;        /**< EQ block bypassed, so none of it plays */
+  uint32_t design_rate_hz; /**< rate the sections are designed for */
+} tas58xx_bq_readback_t;
+
+/**
+ * Read one channel's sections back out of the chip's coefficient RAM, with
+ * the blocks the chain should have written there, to check that the designs
+ * reach the part intact. The chain is rewritten whenever the amplifier
+ * enters PLAY, so read while audio is playing: a part that has slept since
+ * may hold anything.
+ */
+esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out);
+
 /**
  * Whether PBTL mode on the primary amplifier is forced by configuration.
  * Returns true if CONFIG_TAS58XX_FORCE_PBTL is enabled, which means

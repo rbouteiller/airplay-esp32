@@ -2106,6 +2106,36 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
   return board_i2c_write(s_cur->handle, sub_addr, data, EQ_COEFF_BYTES);
 }
 
+/**
+ * Read a section's 20-byte block back out of coefficient RAM. The caller must
+ * already have selected the coefficient book. A section that starts near the
+ * end of a page carries on at 0x08 of the next, which a write reaches through
+ * the part's page auto-increment; each page's share is read on its own here,
+ * so the readback checks that layout rather than relying on it.
+ */
+static esp_err_t read_biquad_raw(uint8_t page, uint8_t sub_addr,
+                                 uint8_t out[EQ_COEFF_BYTES]) {
+  size_t done = 0;
+  while (done < EQ_COEFF_BYTES) {
+    esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+    if (err != ESP_OK) {
+      return err;
+    }
+    size_t len = 0x80u - sub_addr;
+    if (len > EQ_COEFF_BYTES - done) {
+      len = EQ_COEFF_BYTES - done;
+    }
+    err = board_i2c_read(s_cur->handle, sub_addr, out + done, len);
+    if (err != ESP_OK) {
+      return err;
+    }
+    done += len;
+    page++;
+    sub_addr = 0x08;
+  }
+  return ESP_OK;
+}
+
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
   esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
   if (err != ESP_OK) {
@@ -2486,6 +2516,29 @@ out:
   return err;
 }
 
+/** Whether the EQ block is bypassed, read from the part. */
+static esp_err_t read_eq_bypassed(bool *bypassed) {
+  esp_err_t err;
+  if (s_cur->model == TAS58XX_MODEL_TAS5805M) {
+    uint8_t value = 0;
+    err = select_default_page();
+    if (err == ESP_OK) {
+      err = tas58xx_read_reg(REG_DSP_MISC, &value);
+    }
+    *bypassed = (value & 0x01) != 0; /* bit0 = BYPASS_EQ */
+    return err;
+  }
+
+  uint8_t mode_data[EQ_MODE_SIZE] = {0};
+  err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, EQ_MODE_REG, mode_data, EQ_MODE_SIZE);
+  }
+  *bypassed = (mode_data[7] & 0x01) != 0; /* bypass_eq word */
+  select_default_page();
+  return err;
+}
+
 /** Take the EQ block out of bypass so the programmed chain is audible. */
 static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
@@ -2731,10 +2784,17 @@ out:
   return ok;
 }
 
+/* The block one section of a channel is written with. A ganged amplifier
+ * sends its left chain to both channels; the right chain stays in memory so
+ * un-ganging brings the old tuning back. */
+static void bq_design_slot(int dev, int ch, int slot,
+                           uint8_t out[EQ_COEFF_BYTES]) {
+  const int src = s_bq_ganged[dev] ? 0 : ch;
+  tas58xx_bq_design_packed(&s_bq[dev][src][slot], bq_design_fs(dev), out);
+}
+
 /*
- * Design and write the current chip's whole biquad chain from s_bq. A ganged
- * amplifier sends its left chain to both channels; the right chain stays in
- * memory so un-ganging brings the old tuning back.
+ * Design and write the current chip's whole biquad chain from s_bq.
  * Assumes REG_LOCK is held, s_cur is set and the chip is in PLAY.
  */
 static esp_err_t bq_program_chain(void) {
@@ -2748,13 +2808,10 @@ static esp_err_t bq_program_chain(void) {
     bq_chain_defaults();
   }
 
-  const bool ganged = s_bq_ganged[dev];
-  const double fs = bq_design_fs(dev);
   for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
     uint8_t left[EQ_COEFF_BYTES], right[EQ_COEFF_BYTES];
-    tas58xx_bq_design_packed(&s_bq[dev][0][i], fs, left);
-    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i], fs,
-                             right);
+    bq_design_slot(dev, 0, i, left);
+    bq_design_slot(dev, 1, i, right);
     esp_err_t err = program_biquad_pair(i, left, right);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
@@ -2968,6 +3025,47 @@ bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
   }
   memcpy(out, s_bq[dev][ch], sizeof(s_bq[dev][ch]));
   return true;
+}
+
+esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  if (!s_bq_ready) {
+    bq_chain_defaults();
+  }
+  s_cur = &s_devs[dev];
+  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
+  const eq_bq_addr_t *addr =
+      is_5805 ? (ch ? tas5805m_eq_right_addr : tas5805m_eq_left_addr)
+              : (ch ? tas5825m_eq_right_addr : tas5825m_eq_left_addr);
+  out->design_rate_hz = (uint32_t)bq_design_fs(dev);
+
+  esp_err_t err = select_default_page();
+  if (err == ESP_OK) {
+    err = tas58xx_read_reg(REG_DEVICE_CTRL2, &out->ctrl2);
+  }
+  if (err == ESP_OK) {
+    err = read_eq_bypassed(&out->eq_bypassed);
+  }
+  if (err == ESP_OK) {
+    err = select_book_page(BQ_COEFF_BOOK, 0x00);
+  }
+  for (int i = 0; i < TAS58XX_BQ_SLOTS && err == ESP_OK; i++) {
+    bq_design_slot(dev, ch, i, out->expected[i]);
+    err = read_biquad_raw(addr[i].page, addr[i].sub_addr, out->actual[i]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
 }
 
 esp_err_t dac_tas58xx_bq_set(int dev, int ch,

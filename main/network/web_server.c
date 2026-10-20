@@ -2994,6 +2994,82 @@ static esp_err_t bq_revert_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#ifdef CONFIG_DAC_TAS58XX
+static void add_block_hex(cJSON *arr,
+                          const uint8_t block[TAS58XX_BQ_COEFF_BYTES]) {
+  char hex[TAS58XX_BQ_COEFF_BYTES * 2 + 1];
+  for (int i = 0; i < TAS58XX_BQ_COEFF_BYTES; i++) {
+    snprintf(&hex[i * 2], 3, "%02x", block[i]);
+  }
+  cJSON_AddItemToArray(arr, cJSON_CreateString(hex));
+}
+
+/* Each section as designed next to what the part's coefficient RAM holds, so
+ * a chain can be checked end to end. A mismatch only means something while
+ * the amplifier is playing, which is when the chain is written. */
+static esp_err_t bq_readback_handler(httpd_req_t *req) {
+  static const char *const states[] = {"deep sleep", "sleep", "hi-z", "play"};
+  tas58xx_bq_readback_t *rb = malloc(sizeof(*rb));
+  if (!rb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  int total = 0;
+  bool ok = true;
+  cJSON *amps = cJSON_AddArrayToObject(json, "amps");
+  for (int d = 0; d < eqb_devices() && ok; d++) {
+    cJSON *amp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(amp, "index", d);
+    cJSON *chans = cJSON_AddArrayToObject(amp, "channels");
+    for (int c = 0; c < EQB_CHANNELS && ok; c++) {
+      if (dac_tas58xx_bq_readback(d, c, rb) != ESP_OK) {
+        ok = false;
+        break;
+      }
+      if (c == 0) {
+        cJSON_AddStringToObject(amp, "state", states[rb->ctrl2 & 0x03]);
+        cJSON_AddBoolToObject(amp, "muted", (rb->ctrl2 & 0x08) != 0);
+        cJSON_AddBoolToObject(amp, "eq_bypassed", rb->eq_bypassed);
+        cJSON_AddNumberToObject(amp, "rate", rb->design_rate_hz);
+      }
+      cJSON *ch = cJSON_CreateObject();
+      cJSON *mismatched = cJSON_AddArrayToObject(ch, "mismatched");
+      cJSON *expected = cJSON_AddArrayToObject(ch, "expected");
+      cJSON *actual = cJSON_AddArrayToObject(ch, "actual");
+      for (int i = 0; i < EQB_SLOTS; i++) {
+        add_block_hex(expected, rb->expected[i]);
+        add_block_hex(actual, rb->actual[i]);
+        if (memcmp(rb->expected[i], rb->actual[i], TAS58XX_BQ_COEFF_BYTES)) {
+          cJSON_AddItemToArray(mismatched, cJSON_CreateNumber(i));
+          total++;
+        }
+      }
+      cJSON_AddItemToArray(chans, ch);
+    }
+    cJSON_AddItemToArray(amps, amp);
+  }
+  free(rb);
+  cJSON_AddBoolToObject(json, "success", ok);
+  cJSON_AddNumberToObject(json, "mismatches", total);
+
+  char *json_str = cJSON_PrintUnformatted(json);
+  cJSON_Delete(json);
+  if (!json_str) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  if (!ok) {
+    httpd_resp_set_status(req, HTTPD_500);
+  }
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  return ESP_OK;
+}
+#endif
+
 #endif /* HAS_BQ_API */
 
 esp_err_t web_server_start(uint16_t port) {
@@ -3029,8 +3105,9 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // per-channel level get/post
 #endif
 #ifdef CONFIG_DAC_TAS58XX
-  // primary + dual DAC wiring and digital gain, get/post each
-  config.max_uri_handlers += 6;
+  // primary + dual DAC wiring and digital gain, get/post each, and the
+  // biquad readback
+  config.max_uri_handlers += 7;
 #endif
 #ifdef HAS_BQ_API
   config.max_uri_handlers += 5; // biquad page + get/post/commit/revert
@@ -3328,6 +3405,13 @@ esp_err_t web_server_start(uint16_t port) {
                                .method = HTTP_POST,
                                .handler = bq_revert_handler};
   register_uri(&bq_revert_uri);
+
+#ifdef CONFIG_DAC_TAS58XX
+  httpd_uri_t bq_readback_uri = {.uri = "/api/bq/readback",
+                                 .method = HTTP_GET,
+                                 .handler = bq_readback_handler};
+  register_uri(&bq_readback_uri);
+#endif
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
