@@ -2545,6 +2545,18 @@ static esp_err_t eqb_set_chain(int dev, int ch,
                                const tas58xx_bq_t in[EQB_SLOTS]) {
   return dac_tas58xx_bq_set(dev, ch, in);
 }
+/* The chip's coefficient words stop at 16, so a boost steep enough to need
+ * more is turned away here, with a reason the page can show. */
+static bool eqb_check(const tas58xx_bq_t *bq, const char **why) {
+  if (!tas58xx_bq_validate(bq, why)) {
+    return false;
+  }
+  if (!tas58xx_bq_fits(bq)) {
+    *why = "too much boost for the amplifier's DSP";
+    return false;
+  }
+  return true;
+}
 static esp_err_t eqb_commit(void) {
   return dac_tas58xx_bq_commit();
 }
@@ -2647,6 +2659,9 @@ static esp_err_t eqb_set_chain(int dev, int ch,
                                const tas58xx_bq_t in[EQB_SLOTS]) {
   (void)dev;
   return audio_eq_set_chain(ch, in);
+}
+static bool eqb_check(const tas58xx_bq_t *bq, const char **why) {
+  return tas58xx_bq_validate(bq, why);
 }
 static esp_err_t eqb_commit(void) {
   return audio_eq_commit();
@@ -2948,6 +2963,18 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
       if (!bq_from_json(cJSON_GetArrayItem(filters, i), &chain[i])) {
         cJSON_Delete(json);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad filter entry");
+        return ESP_FAIL;
+      }
+    }
+
+    for (int i = 0; i < EQB_SLOTS; i++) {
+      const char *why = NULL;
+      if (!eqb_check(&chain[i], &why)) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Filter %d: %s", i + 1,
+                 why ? why : "rejected");
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
         return ESP_FAIL;
       }
     }

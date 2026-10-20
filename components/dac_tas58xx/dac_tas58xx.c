@@ -3080,6 +3080,14 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
       ESP_LOGW(TAG, "BQ: dev %d ch %d slot %d rejected: %s", dev, ch, i, why);
       return ESP_ERR_INVALID_ARG;
     }
+    /* Played anyway it would only be a pass-through, which is not what was
+     * asked for either. */
+    if (!tas58xx_bq_fits(&in[i])) {
+      ESP_LOGW(TAG,
+               "BQ: dev %d ch %d slot %d rejected: too much boost for 5.27",
+               dev, ch, i);
+      return ESP_ERR_INVALID_ARG;
+    }
   }
 
   if (s_reg_mutex == NULL) {
@@ -3293,7 +3301,7 @@ static float eq_boost_locked(float *at_hz) {
         continue;
       }
       for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
-        tas58xx_bq_design(&s_bq[dev][ch][i], fs, coeff[i]);
+        tas58xx_bq_design_chip(&s_bq[dev][ch][i], fs, coeff[i]);
       }
       float hz = 0.0f;
       const float peak = tas58xx_bq_chain_peak_db((const double (*)[5])coeff,
