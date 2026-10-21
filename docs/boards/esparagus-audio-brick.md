@@ -146,12 +146,15 @@ reboot. **Revert** goes back to what is in flash. For plain tone shaping, **Load
 band from 20 Hz to 16 kHz — leaving only the gains to set. It fills in the form and
 nothing more, so the amplifier hears it only once applied.
 
-A boost has to fit above the digital gain set on the settings page. Nothing turns the
-signal down to make room, so when the curves boost further than the supply leaves room
-for, the response graph says by how much and what to set the digital gain to instead.
-On a board that cannot report its supply, the page assumes 5 V, the least any USB-C
-supply gives, unless the digital gain is set higher than the 5 V level, in which case it
-takes the gain to be matched to the supply.
+A boost has to fit above the digital gain, which sits in the Output card on the same
+page. A board that can read its supply keeps the gain at the loudest level that stays
+clean on it, less the highest boost of the filters playing. Set by hand under **Manual
+override**, as it is on a board that cannot read its supply, nothing turns the signal
+down to make room, so when the curves boost further than the supply leaves room for, the
+response graph says by how much and what to set the digital gain to instead. On a board
+that cannot report its supply, the page assumes 5 V, the least any USB-C supply gives,
+unless the digital gain is set higher than the 5 V level, in which case it takes the gain
+to be matched to the supply.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
 a high pass on one amplifier and a low pass on the other. **Build crossover** does that
@@ -226,11 +229,74 @@ there means the branches are fighting, so one of them needs **Inv**. The trace k
 only the filters, never the drivers, their spacing or the room, so it shows what the
 crossover is aiming at rather than what a microphone would hear.
 
-Levels are set in the Volume section. Master is the AirPlay volume and moves
-everything together. Below it each output has its own level and mute, applied in the
+Levels are set in the Output card. The volume at the top of the page is the AirPlay
+volume and moves everything together; each output has its own level and mute, applied in the
 DSP input mixer ahead of the filters — so they only ever attenuate and cost no filter
 headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
 effect immediately and are stored in NVS, independently of the filter commit.
+
+### Saving a tuning to a file
+
+**Export to file** downloads the tuning as a small JSON file: the filters on every
+output of every amplifier, with the ganging, input routing and output levels they were
+tuned with. Mutes and the master volume are left out, since they describe the room
+rather than the tuning. Filter types are written by name, and each filter carries only
+the fields its type uses, so the file can be read and edited by hand.
+
+**Import from file…** loads one back, on this board or on another, including one
+running the [software EQ](../features/software-eq.md). The whole file is checked before
+anything changes. What it holds is then staged like any other edit: nothing is heard
+until **Apply**, which sends the routing and levels along with the filters, and nothing
+survives a reboot until committed. Filters are redesigned for the board's own sample
+rate, so a tuning moves between rates intact. The exception is a custom section that
+matches no filter shape: it stays as raw coefficients, which depend on the rate, and the
+page says so. A file with more amplifiers than the board fills the ones it has. A
+TAS5805M, having no routing to choose, saves none and keeps its own when a file has one.
+
+### Loading filters from REW
+
+**Import from file…** also reads the filter settings text file that REW saves from its EQ window, the one
+headed "Filter Settings file" whose lines read
+`Filter  1: ON  PK  Fc 1990 Hz  Gain -8.00 dB  Q 1.5`, and the same lines as Equalizer
+APO takes them. The filters replace the chain of the output on screen, or of both
+outputs while they are ganged, and are staged like any other edit. A `Preamp:` line sets
+that output's level.
+
+REW states each peaking filter's Q the way the equaliser it was fitted for defines it,
+and the page converts it into this firmware's own. The two describe the same family of
+filter, so the conversion is exact rather than a close fit: what plays is what REW
+showed. Most equalisers, including Generic and ADA PEQ, use RBJ's definition; those REW
+documents as using the sqrt(gain) one, such as rePhase and Hypex, are recognised by
+name. Low and high pass filters, with or without a Q, carry over as Butterworth or
+variable-Q sections.
+
+REW's low and high shelves (`LS`, `HS`) are RBJ's cookbook shelves with a Q of 0.707,
+which is exactly the shape of the part's bass and treble shelves. The two only measure
+the frequency differently: REW gives the midpoint of the slope, while past 6 dB of gain
+the part's shelf is set 3 dB short of the shelf itself. So a shelf's frequency on the
+page can differ from REW's (a +9.9 dB shelf at 197.5 Hz loads at about 157 Hz), but the
+response is the same. A shelf with any other Q (`LS Q`, `HSC`) loads with 0.707, and the
+page says so.
+
+The conversion is made for the rate the page shows, and a peaking filter near the top
+of the band can need a narrower section than the part can make: past Q 20 it is held
+there, and the page names the filter. REW's other filter types, such as the fixed-slope
+`LS 6dB` and `LS 12dB`, are refused rather than guessed; set those by hand.
+
+### Locking filters
+
+The **Lock** box at the end of a row keeps that filter through an import, so a
+crossover or a correction set by hand can stay while a REW fit or a saved tuning is
+loaded around it. REW's filters fill the unlocked rows in order. A saved tuning keeps
+its own row numbers, except that a filter it has in a locked row moves to the first
+unlocked row it leaves empty. A file that does not fit around the locked rows is
+refused, and nothing changes. Ganged outputs share output A's locks. Importing a
+ganged tuning onto outputs whose locked filters differ leaves them split, since a
+ganged pair can only have one chain.
+
+Locks only steer imports: the other buttons on the page still change locked rows, and
+the row itself can still be edited. They are kept in the browser, not on the board, so
+another browser starts with none.
 
 ## Full PPC3 tuning
 

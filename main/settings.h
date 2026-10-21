@@ -326,3 +326,20 @@ esp_err_t settings_get_usb_pd_volts(int *volts);
  * Save the voltage to ask a USB-PD charger for.
  */
 esp_err_t settings_set_usb_pd_volts(int volts);
+
+/**
+ * Whether the board asks the charger for the highest voltage it offers
+ * rather than the one saved with settings_set_usb_pd_volts(). On until
+ * turned off, unless a voltage was saved before this choice existed.
+ */
+bool settings_get_usb_pd_auto(void);
+esp_err_t settings_set_usb_pd_auto(bool on);
+
+/**
+ * Whether the digital gain is kept at the loudest level that stays clean on
+ * the supply with the EQ playing, rather than the one saved with
+ * settings_set_full_volume_db(). On until turned off, unless a gain was
+ * saved before this choice existed; it needs a supply the board can read.
+ */
+bool settings_get_gain_auto(void);
+esp_err_t settings_set_gain_auto(bool on);

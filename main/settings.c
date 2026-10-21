@@ -31,6 +31,8 @@ static const char *TAG = "settings";
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_USB_PD_VOLTS   "pd_volts"
 #define NVS_KEY_FULL_VOLUME    "full_vol"
+#define NVS_KEY_USB_PD_AUTO    "pd_auto"
+#define NVS_KEY_GAIN_AUTO      "gain_auto"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
 #define NVS_KEY_SENDSPIN       "ss_en"
@@ -896,6 +898,63 @@ esp_err_t settings_set_usb_pd_volts(int volts) {
     ESP_LOGE(TAG, "Failed to save USB-PD voltage: %s", esp_err_to_name(err));
   }
   return err;
+}
+
+/* Both automatic choices default to on: a board that has never been told
+ * otherwise picks its own supply and gain. One that saved a value by hand
+ * before the choice existed keeps it. */
+static bool get_auto(const char *key, const char *manual_key) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    return true;
+  }
+  uint8_t stored;
+  bool on;
+  if (nvs_get_u8(nvs, key, &stored) == ESP_OK) {
+    on = stored != 0;
+  } else {
+    on = nvs_find_key(nvs, manual_key, NULL) != ESP_OK;
+  }
+  nvs_close(nvs);
+  return on;
+}
+
+static esp_err_t set_auto(const char *key, const char *what, bool on) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, key, on ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved %s: %s", what, on ? "automatic" : "set by hand");
+  } else {
+    ESP_LOGE(TAG, "Failed to save %s: %s", what, esp_err_to_name(err));
+  }
+  return err;
+}
+
+bool settings_get_usb_pd_auto(void) {
+  return get_auto(NVS_KEY_USB_PD_AUTO, NVS_KEY_USB_PD_VOLTS);
+}
+
+esp_err_t settings_set_usb_pd_auto(bool on) {
+  return set_auto(NVS_KEY_USB_PD_AUTO, "USB-PD voltage", on);
+}
+
+bool settings_get_gain_auto(void) {
+  return get_auto(NVS_KEY_GAIN_AUTO, NVS_KEY_FULL_VOLUME);
+}
+
+esp_err_t settings_set_gain_auto(bool on) {
+  return set_auto(NVS_KEY_GAIN_AUTO, "digital gain", on);
 }
 
 /* ================================================================== */

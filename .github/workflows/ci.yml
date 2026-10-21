@@ -74,6 +74,9 @@ jobs:
       - name: Test the USB-PD trigger against a simulated charger
         run: python3 tests/husb238a/run.py
 
+      - name: Test how far a TAS58xx filter chain lifts full scale
+        run: python3 tests/tas58xx_peak/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

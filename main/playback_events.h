@@ -130,6 +130,14 @@ bool playback_events_any_playing(void);
  */
 playback_source_t playback_events_active_source(void);
 
+/**
+ * Copy the now-playing of the active input, as built up from its metadata
+ * events (an event's empty fields keep the previous values; a new title
+ * starts afresh). Returns false, with *out zeroed, when the active input has
+ * sent none, or nothing is active.
+ */
+bool playback_events_get_metadata(playback_metadata_t *out);
+
 /** True if that specific input is connected, playing or paused. */
 bool playback_events_source_active(playback_source_t source);
 

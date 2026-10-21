@@ -105,5 +105,19 @@ void tas58xx_bq_unpack(const uint8_t in[TAS58XX_BQ_COEFF_BYTES],
 void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
                               uint8_t out[TAS58XX_BQ_COEFF_BYTES]);
 
+/**
+ * Highest point of a chain's magnitude response, in dB, between 10 Hz and the
+ * lower of 20 kHz and 0.45 of @p sample_rate_hz: how far the chain lifts a
+ * full-scale tone above full scale. @p coeff holds @p count sections already
+ * designed with tas58xx_bq_design() at that rate. @p at_hz, if given,
+ * receives where the peak is. An empty chain is flat, 0 dB.
+ *
+ * Evaluated in single precision, which is cheap enough to run on every edit:
+ * each section's terms are formed in double and only then rounded, so the
+ * low corners that need double precision to design lose nothing here.
+ */
+float tas58xx_bq_chain_peak_db(const double (*coeff)[5], int count,
+                               double sample_rate_hz, float *at_hz);
+
 /** True when @p bq is structurally valid; @p why is optional. */
 bool tas58xx_bq_validate(const tas58xx_bq_t *bq, const char **why);

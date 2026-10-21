@@ -19,14 +19,16 @@ menu "USB-PD trigger (HUSB238A)"
             55 mm Louder-ESP32-Mini.
 
     config HUSB238A_DEFAULT_VOLTS
-        int "Voltage to ask for until one is chosen on the settings page"
+        int "Voltage to ask for when set by hand and none is saved"
         depends on HUSB238A
         range 5 20
         default 5
         help
             One of the fixed USB-PD offers: 5, 9, 12, 15 or 20 V. Anything
             else falls to the highest of those below it, and so does a
-            voltage the charger does not offer.
+            voltage the charger does not offer. Until the voltage is set by
+            hand on the EQ page, the board asks for the highest the charger
+            offers, up to HUSB238A_MAX_VOLTS.
 
     config HUSB238A_MAX_VOLTS
         int "Highest voltage the board's supply rail is rated for"

@@ -155,6 +155,15 @@ menu "Airplay ESP Configuration"
             receiver stick to 5 GHz even at weak signal.
     endmenu
 
+    # Not user-visible: the log viewer's WebSocket turns other sites away
+    # before its handshake, which needs this hook. A select, unlike a line in
+    # sdkconfig.defaults, also reaches an existing sdkconfig.
+    config WEB_WS_ORIGIN_CHECK
+        bool
+        default y
+        depends on HTTPD_WS_SUPPORT
+        select HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+
     menu "Audio Output"
     choice AUDIO_OUTPUT_TYPE
         prompt "Audio output type"

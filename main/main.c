@@ -393,6 +393,9 @@ void app_main(void) {
     // USB-C powered, and a USB-PD trigger starts every port at 5 V.
     dac_tas58xx_set_full_volume_db(dac_tas58xx_clean_db(5000));
   }
+  // Unless set by hand, the gain then follows the supply the trigger reports
+  // and the EQ; the level above stands while the supply cannot be read.
+  dac_tas58xx_set_auto_gain(settings_get_gain_auto());
 #endif
   // Amplifier wiring must be known before the DAC is initialised.
   bool first_pbtl;

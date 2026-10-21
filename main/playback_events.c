@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #define MAX_LISTENERS 4
 
@@ -32,6 +33,12 @@ static int listener_count = 0;
 
 static src_state_t s_state[PLAYBACK_SOURCE_COUNT];
 static playback_source_t s_active = PLAYBACK_SOURCE_NONE;
+
+// The last now-playing forwarded, kept for pollers such as the web UI, which
+// cannot take a listener slot. Built up the way the display builds its own:
+// an event's empty strings leave the field as it was.
+static playback_metadata_t s_meta;
+static playback_source_t s_meta_source = PLAYBACK_SOURCE_NONE;
 
 // A spinlock, not a mutex: these calls arrive from the RTSP task, the httpd
 // task, the Bluetooth callback context and the USB writer, and the first of
@@ -122,6 +129,9 @@ static size_t transition(playback_source_t source, src_state_t next,
   aggregate(&was_connected, &was_playing);
 
   s_state[source] = next;
+  if (next == SRC_IDLE && source == s_meta_source) {
+    s_meta_source = PLAYBACK_SOURCE_NONE; // its session is over
+  }
 
   if (next == SRC_PLAYING) {
     s_active = source;
@@ -163,6 +173,35 @@ static size_t transition(playback_source_t source, src_state_t next,
   return n;
 }
 
+static void keep_text(char *dst, const char *src) {
+  if (src[0]) {
+    memcpy(dst, src, METADATA_STRING_MAX);
+    dst[METADATA_STRING_MAX - 1] = '\0';
+  }
+}
+
+// Runs under s_mux.
+static void keep_metadata(playback_source_t source,
+                          const playback_metadata_t *m) {
+  // Another input's track, or a new one on this input: start afresh, so a
+  // field the new track lacks does not show the old track's.
+  if (source != s_meta_source ||
+      (m->title[0] &&
+       strncmp(m->title, s_meta.title, METADATA_STRING_MAX) != 0)) {
+    memset(&s_meta, 0, sizeof(s_meta));
+    s_meta_source = source;
+  }
+  keep_text(s_meta.title, m->title);
+  keep_text(s_meta.artist, m->artist);
+  keep_text(s_meta.album, m->album);
+  keep_text(s_meta.genre, m->genre);
+  if (m->duration_secs) {
+    s_meta.duration_secs = m->duration_secs;
+  }
+  s_meta.position_secs = m->position_secs;
+  s_meta.has_artwork = m->has_artwork;
+}
+
 void playback_events_emit(playback_source_t source, playback_event_t event,
                           const playback_event_data_t *data) {
   if (source <= PLAYBACK_SOURCE_NONE || source >= PLAYBACK_SOURCE_COUNT) {
@@ -174,6 +213,9 @@ void playback_events_emit(playback_source_t source, playback_event_t event,
     // this the two streams alternate now-playing lines every few seconds.
     taskENTER_CRITICAL(&s_mux);
     const bool mine = (s_active == source || s_active == PLAYBACK_SOURCE_NONE);
+    if (mine && data) {
+      keep_metadata(source, &data->metadata);
+    }
     taskEXIT_CRITICAL(&s_mux);
     if (mine) {
       notify(source, PLAYBACK_EVENT_METADATA, data);
@@ -246,6 +288,20 @@ playback_source_t playback_events_active_source(void) {
   const playback_source_t active = s_active;
   taskEXIT_CRITICAL(&s_mux);
   return active;
+}
+
+bool playback_events_get_metadata(playback_metadata_t *out) {
+  bool have = false;
+  taskENTER_CRITICAL(&s_mux);
+  if (s_meta_source != PLAYBACK_SOURCE_NONE && s_meta_source == s_active) {
+    *out = s_meta;
+    have = true;
+  }
+  taskEXIT_CRITICAL(&s_mux);
+  if (!have) {
+    memset(out, 0, sizeof(*out));
+  }
+  return have;
 }
 
 bool playback_events_source_active(playback_source_t source) {

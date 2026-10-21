@@ -21,11 +21,14 @@ It is mounted at `/spiffs` on boot.
 ```text
 data/
 ├── www/               # Web interface pages
-│   ├── index.html     # Setup and control panel
-│   ├── logs.html      # Live log viewer
+│   ├── index.html     # Overview: now playing, volume, output, firmware, LED, restart
+│   ├── config.html    # Configuration: name, AirPlay, Sendspin, channel, amp wiring
+│   ├── network.html   # Network: status, Wi-Fi setup, speed test
+│   ├── logs.html      # Live log viewer, full screen
 │   ├── bq.html        # Parametric biquad chains (TAS58xx, or the software EQ)
 │   ├── hf.html        # Hybrid flow tuning (SqueezeAMP)
-│   └── speedtest.html # Network throughput test
+│   ├── app.css        # Styles the Overview, Configuration and Network pages share
+│   └── shell.js       # Navigation, status strip, restart banner, log drawer
 ├── hf/                # DSP programs loaded at boot
 │   ├── base-hf1-44100.bin  # Hybrid flow 1 base image (SqueezeAMP)
 │   ├── base-hf3-44100.bin  # Hybrid flow 3 base image (SqueezeAMP)
@@ -42,7 +45,7 @@ alongside the web UI on a 4 MB board.
 ## Compression
 
 `data/` is not flashed verbatim. `scripts/gen_spiffs_image.py` stages it first and gzips
-every `.html`, so the image holds `index.html.gz` rather than `index.html`. That takes the
+every `.html`, `.css` and `.js`, so the image holds `index.html.gz` rather than `index.html`. That takes the
 payload from 256 KB to 101 KB, which matters because the smallest layout gives SPIFFS only
 188 KB — the pages alone overflow it uncompressed. Pages also load noticeably faster over
 WiFi.

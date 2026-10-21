@@ -21,7 +21,7 @@ In practice:
 | **Bluetooth** | Works | Works fully via AVRCP passthrough |
 
 To get full button control over AirPlay, switch the receiver to v1 mode in the web
-interface: **Device Settings → AirPlay Mode → Legacy (v1)**, then restart the
+interface: **Configuration → AirPlay → Mode → Legacy (v1)**, then restart the
 device.
 
 !!! warning "Trade-off"

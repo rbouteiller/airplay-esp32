@@ -1,0 +1,165 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Network - AirPlay Receiver</title>
+<link rel='stylesheet' href='/app.css'>
+</head><body>
+<script src='/shell.js'></script>
+<main class='page'>
+<h1>Network</h1>
+<div class='grid'>
+<div class='card'><h2>Status</h2>
+<div class='kv'>
+<div><label>Connection</label><span id='n-link'>-</span></div>
+<div><label>IP address</label><span id='n-ip'>-</span></div>
+<div><label>MAC address</label><span id='n-mac'>-</span></div>
+<div id='n-eth-box' hidden><label>Ethernet</label><span id='n-eth'>-</span></div>
+</div>
+<div class='kv' id='n-wifi' style='margin-top:10px' hidden>
+<div><label>Wi-Fi network</label><span id='n-ssid'>-</span></div>
+<div><label>Signal</label><span id='n-rssi'>-</span></div>
+<div><label>Channel</label><span id='n-chan'>-</span></div>
+<div><label>PHY</label><span id='n-phy'>-</span></div>
+<div class='full'><label>Access point (BSSID)</label><span id='n-bssid'>-</span></div>
+</div></div>
+<div class='card'><h2>Wi-Fi</h2>
+<button class='btn btn-secondary' onclick='scanWiFi()' id='scan-btn'>Scan for networks</button>
+<p class='hint'>Scanning interrupts playback for a moment.</p>
+<div id='wifi-list' class='wifi-list'></div>
+<div class='form-group' style='margin-top:14px'><label for='wifi-ssid'>Network name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select a network' autocomplete='off'></div>
+<div class='form-group'><label for='wifi-pass'>Password</label><input type='password' id='wifi-pass' placeholder='Password'></div>
+<button class='btn btn-primary' onclick='saveWiFi()'>Save and restart</button>
+<div id='wifi-msg' class='msg'></div></div>
+<div class='card' id='speed'><h2>Speed test</h2>
+<p class='hint' style='margin:0 0 12px'>Latency and throughput between this browser and the device.</p>
+<div class='speed'>
+<div><label>Ping</label><b id='p-avg'>&ndash;</b><small id='p-sub'>ms</small></div>
+<div><label>Download</label><b id='dl-mbps'>&ndash;</b><small>Mbit/s</small></div>
+<div><label>Upload</label><b id='ul-mbps'>&ndash;</b><small>Mbit/s</small></div>
+</div>
+<div class='row'>
+<select id='st-size' style='flex:0 1 auto;min-width:0;width:auto'>
+<option value='262144'>256 KB</option>
+<option value='1048576' selected>1 MB</option>
+<option value='4194304'>4 MB</option>
+</select>
+<button class='btn btn-secondary' id='b-ping' onclick='runPing()'>Ping</button>
+<button class='btn btn-secondary' id='b-dl' onclick='runDownload()'>Download</button>
+<button class='btn btn-secondary' id='b-ul' onclick='runUpload()'>Upload</button>
+</div>
+<div class='progress' id='st-bar' hidden><div></div></div>
+<div class='log' id='st-log'></div></div>
+</div></main>
+<script>
+var $=function(id){return document.getElementById(id);};
+function signal(r){if(r==null)return '-';
+  return r+' dBm ('+(r>=-55?'excellent':r>=-65?'good':r>=-75?'fair':'poor')+')';}
+function msg(id,txt,type){var e=$(id);e.className='msg '+type;e.textContent=txt;}
+
+function showInfo(i){
+  $('n-link').textContent=i.eth_connected?'Ethernet':i.wifi_connected?'Wi-Fi':'Not connected';
+  $('n-ip').textContent=i.ip||'-';
+  $('n-mac').textContent=i.mac||'-';
+  $('n-eth-box').hidden=!i.eth_supported;
+  $('n-eth').textContent=i.eth_connected?'Connected':'No cable, or no address';
+  $('n-wifi').hidden=!i.wifi_connected;
+  $('n-ssid').textContent=i.wifi_ssid||'-';
+  $('n-rssi').textContent=signal(i.wifi_rssi);
+  $('n-chan').textContent=i.wifi_channel||'-';
+  $('n-phy').textContent=i.wifi_phy||'-';
+  $('n-bssid').textContent=i.wifi_bssid||'-';
+  if(i.wifi_ssid)$('wifi-ssid').placeholder=i.wifi_ssid;
+}
+Shell.info().then(showInfo).catch(function(){});
+setInterval(function(){
+  if(document.hidden)return;
+  Shell.get('/api/system/info').then(function(d){showInfo(d.info);}).catch(function(){});
+},15000);
+
+/* Only on a click: a scan takes the radio off its channel. */
+async function scanWiFi(){
+  var l=$('wifi-list'),b=$('scan-btn');
+  b.disabled=true;l.textContent='';
+  l.appendChild(Shell.el('div','msg info','Scanning…'));
+  try{var d=await Shell.get('/api/wifi/scan');l.textContent='';
+    if(!d.success||!d.networks.length){l.appendChild(Shell.el('div','msg info','No networks found'));return;}
+    d.networks.forEach(function(n){
+      /* An SSID is whatever a nearby network chose to call itself, so it is
+         text, never markup. */
+      var i=Shell.el('div','wifi-item');
+      i.appendChild(Shell.el('span','ssid',n.ssid));
+      i.appendChild(Shell.el('span','rssi',n.rssi+' dBm'));
+      i.onclick=function(){
+        l.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});
+        i.classList.add('sel');$('wifi-ssid').value=n.ssid;$('wifi-pass').focus();};
+      l.appendChild(i);});}
+  catch(e){l.textContent='';l.appendChild(Shell.el('div','msg err','Scan failed'));}
+  finally{b.disabled=false;}
+}
+async function saveWiFi(){
+  var s=$('wifi-ssid').value.trim(),p=$('wifi-pass').value;
+  if(!s){msg('wifi-msg','Enter a network name.','err');return;}
+  if(!confirm('Join "'+s+'" and restart?\n\nIf it cannot join, the device '+
+    'opens its setup network again.'))return;
+  try{var d=await Shell.post('/api/wifi/config',{ssid:s,password:p});
+    if(!d.success)throw new Error(d.error);
+    msg('wifi-msg','Saved. The device restarts and joins "'+s+
+      '"; find it there by its name or new address.','ok');
+    Shell.waitForRestart('Restarting to join '+s+'…');}
+  catch(e){msg('wifi-msg',e.message||'Could not save','err');}
+}
+
+/* ---- speed test ---- */
+function log(s){var l=$('st-log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
+function fmtBytes(n){if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B';}
+function bar(f){var b=$('st-bar');b.hidden=f==null;if(f!=null)b.firstChild.style.width=(100*f).toFixed(1)+'%';}
+function busy(on){['b-ping','b-dl','b-ul'].forEach(function(id){$(id).disabled=on;});}
+/* These go straight to fetch rather than through the shell's queue: they
+   time the requests, and must not wait behind its polling. */
+async function runPing(){
+  busy(true);var N=20,s=[];
+  for(var i=0;i<N;i++){
+    var t0=performance.now();
+    try{await fetch('/api/speedtest/ping?'+Math.random(),{cache:'no-store'});
+      s.push(performance.now()-t0);bar(s.length/N);}
+    catch(e){log('ping failed: '+e);break;}
+    await new Promise(function(r){setTimeout(r,50);});}
+  if(s.length){
+    var mn=Math.min.apply(null,s),mx=Math.max.apply(null,s);
+    var avg=s.reduce(function(a,b){return a+b;},0)/s.length;
+    var sd=Math.sqrt(s.reduce(function(a,b){return a+(b-avg)*(b-avg);},0)/s.length);
+    $('p-avg').textContent=avg.toFixed(1);
+    $('p-sub').textContent='ms, ±'+sd.toFixed(1);
+    log('ping n='+s.length+' min='+mn.toFixed(2)+' avg='+avg.toFixed(2)+' max='+mx.toFixed(2)+' sd='+sd.toFixed(2)+' ms');}
+  bar(null);busy(false);
+}
+async function runDownload(){
+  busy(true);var bytes=Number($('st-size').value),t0=performance.now();
+  try{var r=await fetch('/api/speedtest/download?bytes='+bytes+'&_='+Math.random(),{cache:'no-store'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var rd=r.body.getReader(),got=0;
+    for(;;){var x=await rd.read();if(x.done)break;got+=x.value.length;bar(got/bytes);
+      var dt=(performance.now()-t0)/1000;if(dt>0)$('dl-mbps').textContent=(got*8/1e6/dt).toFixed(2);}
+    dt=(performance.now()-t0)/1000;
+    $('dl-mbps').textContent=(got*8/1e6/dt).toFixed(2);
+    log('download '+fmtBytes(got)+' in '+(dt*1000).toFixed(0)+' ms = '+(got*8/1e6/dt).toFixed(2)+' Mbit/s');}
+  catch(e){log('download failed: '+e.message);}
+  bar(null);busy(false);
+}
+async function runUpload(){
+  busy(true);var bytes=Number($('st-size').value);
+  var payload=new Uint8Array(bytes);
+  for(var i=0;i<bytes;i+=4)payload[i]=(i*73)&0xff;
+  var t0=performance.now();bar(0);
+  try{var r=await fetch('/api/speedtest/upload',{method:'POST',body:payload,headers:{'Content-Type':'application/octet-stream'}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var dt=(performance.now()-t0)/1000,txt=await r.text();
+    $('ul-mbps').textContent=(bytes*8/1e6/dt).toFixed(2);
+    log('upload '+fmtBytes(bytes)+' in '+(dt*1000).toFixed(0)+' ms = '+(bytes*8/1e6/dt).toFixed(2)+' Mbit/s (device: '+txt.trim()+')');}
+  catch(e){log('upload failed: '+e.message);}
+  bar(null);busy(false);
+}
+
+// The speed test used to be a page of its own; its old link lands on it.
+if(location.pathname.replace(/\/+$/,'')==='/speedtest')$('speed').scrollIntoView();
+</script></body></html>

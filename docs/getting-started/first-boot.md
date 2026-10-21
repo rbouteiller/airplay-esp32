@@ -25,9 +25,16 @@ its IP address in your router's list of connected clients, or via the serial mon
 
 | Page | Purpose |
 | --- | --- |
-| `/` | Setup and control panel — device name, WiFi, volume |
-| `/logs` | Live log viewer |
+| `/` | Overview — now playing, volume, output, digital gain and USB-C supply; firmware update, LED brightness, restart |
+| `/config` | Configuration — speaker name, AirPlay mode, Sendspin; output channel, amplifier wiring |
+| `/network` | Network — connection status, Wi-Fi setup, a speed test |
 | `/bq` | Per-section biquad EQ and crossovers, on TAS58xx boards or with the [software EQ](../features/software-eq.md) |
+| `/logs` | Live log viewer, full screen |
+
+Every page has the same frame: a tab for each page along the top, a strip under them with
+the connection, what is playing and the volume, and a **Logs** tab that opens a drawer
+over any page. Settings that only take effect on the next boot are
+collected in one banner with a **Restart now** button.
 
 The same interface is used for [OTA firmware updates](../reference/ota.md), so USB is only
 needed for the very first flash.

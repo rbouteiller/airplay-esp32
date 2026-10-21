@@ -9,8 +9,6 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .header{text-align:center;padding:20px 0}
 .header h1{font-size:24px;font-weight:600;margin-bottom:4px}
 .header p{color:#888;font-size:13px}
-.nav{text-align:center;margin-bottom:16px}
-.nav a{color:#e94560;text-decoration:none;font-size:13px}
 .levels{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;justify-content:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:10px 14px;margin-bottom:8px}
 .lev{display:flex;align-items:center;gap:8px}
 .lev span.nm{font-size:11px;color:#888;white-space:nowrap;min-width:64px}
@@ -85,13 +83,13 @@ input:disabled{opacity:0.3}
 .rowhead{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;margin-bottom:6px;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px}
 .row3{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;align-items:center;margin-bottom:6px}
 .row3 .n{font-size:11px;color:#888}
-.bar{position:sticky;bottom:0;background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px}
+.bar{position:sticky;bottom:var(--sh-bottom,0px);background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
 .dot.dirty{background:#e94560}
 </style></head><body>
+<script src='/shell.js'></script>
 <div class='wrap'>
 <div class='header'><h1>HybridFlow Tuning</h1><p id='sub'>TAS57xx on-chip DSP</p></div>
-<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
 
 <div class='levels' id='levels' style='display:none'>
 <div class='lev'><span class='nm' id='lv0-nm'>Channel A</span>

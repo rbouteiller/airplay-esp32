@@ -1,404 +1,398 @@
 <!DOCTYPE html><html><head>
 <meta charset='UTF-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>AirPlay Receiver</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
-.wrap{max-width:480px;margin:0 auto}
-.header{text-align:center;padding:30px 0}
-.header h1{font-size:28px;font-weight:600;margin-bottom:8px}
-.header p{color:#888;font-size:14px}
-.status-bar{background:#0f3460;border-radius:12px;padding:16px;margin-bottom:20px;text-align:center}
-.status-bar.ok{background:#1b4332}
-.status-bar.err{background:#5c1a1a}
-.card{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
-.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
-.form-group{margin-bottom:14px}
-.form-group label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
-input[type=text],input[type=password]{width:100%;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
-input:focus{outline:none;border-color:#e94560}
-.btn{display:inline-block;padding:12px 20px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s}
-.btn-primary{background:#e94560;color:#fff}
-.btn-primary:hover{background:#d63850}
-.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
-.btn-secondary:hover{background:rgba(255,255,255,0.2)}
-.btn-danger{background:#dc3545;color:#fff}
-.btn-danger:hover{background:#c82333}
-.btn-block{width:100%;margin-top:10px}
-.btn:disabled{opacity:0.5;cursor:not-allowed}
-.wifi-list{max-height:180px;overflow-y:auto;margin:12px 0;border-radius:8px}
-.wifi-item{padding:12px;background:rgba(0,0,0,0.2);margin-bottom:4px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
-.wifi-item:hover{background:rgba(233,69,96,0.2)}
-.wifi-item.sel{background:rgba(233,69,96,0.3);border:1px solid #e94560}
-.wifi-item .ssid{font-weight:500}
-.wifi-item .rssi{font-size:12px;color:#888}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.info-item{background:rgba(0,0,0,0.2);padding:12px;border-radius:8px}
-.info-item label{font-size:11px;color:#888;display:block;margin-bottom:4px}
-.info-item span{font-size:14px;font-weight:500}
-.msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px}
-.msg.ok{background:rgba(27,67,50,0.5)}
-.msg.err{background:rgba(92,26,26,0.5)}
-.msg.info{background:rgba(15,52,96,0.5)}
-.file-row{display:flex;gap:10px;align-items:center}
-.file-name{flex:1;font-size:13px;color:#888}
-.actions{display:flex;gap:10px;margin-top:10px}
-.slider-row{display:flex;align-items:center;gap:12px}
-.slider-row input[type=range]{flex:1;accent-color:#e94560}
-.slider-row span{font-size:13px;color:#888;min-width:32px;text-align:right}
-</style></head><body>
-<div class='wrap'>
-<div class='header'><h1>AirPlay Receiver</h1><p>ESP32 Configuration Panel</p></div>
-<div id='status-bar' class='status-bar'>Loading...</div>
-<div class='card'><h2>WiFi Network</h2>
-<button class='btn btn-secondary' onclick='scanWiFi()'>Scan Networks</button>
-<div id='wifi-list' class='wifi-list'></div>
-<div class='form-group'><label>Network Name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select network'></div>
-<div class='form-group'><label>Password</label><input type='password' id='wifi-pass' placeholder='Enter password'></div>
-<button class='btn btn-primary btn-block' onclick='saveWiFi()'>Connect to WiFi</button>
-<div id='wifi-msg'></div></div>
-<div class='card'><h2>Device Settings</h2>
-<div class='form-group'><label>AirPlay Device Name</label><input type='text' id='dev-name' placeholder='My Speaker'></div>
-<button class='btn btn-primary' onclick='saveName()'>Save Name</button>
-<div id='name-msg'></div>
-<div class='form-group' style='margin-top:18px'><label for='airplay-mode'>AirPlay Mode</label>
-<select id='airplay-mode' onchange='saveAirplayMode()'>
+<title>Speaker - AirPlay Receiver</title>
+<link rel='stylesheet' href='/app.css'>
+</head><body>
+<script src='/shell.js'></script>
+<main class='page'>
+<h1>Speaker</h1>
+<div class='cols'>
+<div class='card wide' id='setup-card' hidden><h2>Set up the network</h2>
+<p class='hint' style='margin:0 0 14px'>This speaker is not on a network yet. Join it to your Wi-Fi to play to it.</p>
+<a class='btn btn-primary' href='/network'>Set up Wi-Fi</a></div>
+<div class='card' id='playback'><h2>Playback</h2>
+<div class='form-group'><label for='dev-name'>Speaker name</label>
+<div class='row'><input type='text' id='dev-name' maxlength='64' placeholder='My Speaker'>
+<button class='btn btn-primary' id='name-btn' onclick='saveName()'>Save</button></div>
+<p class='hint'>What AirPlay, Bluetooth and Sendspin show. It changes on the network after a restart.</p></div>
+<div class='form-group'><label for='airplay-mode'>AirPlay</label>
+<div class='row'><select id='airplay-mode' onchange='saveAirplayMode()'>
 <option value='0'>Multi-room (v2)</option>
 <option value='1'>Legacy (v1)</option>
 </select></div>
-<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Some software only works with AirPlay v1.<br>Apple devices still work in that mode, but without v2 features, such as multi-speaker sync.<br>Volume / track seek hardware buttons require version 1.</div>
-<div id='airplay-msg'></div>
-<div id='sendspin-group' style='display:none'>
-<div class='form-group' style='margin-top:18px'><label for='sendspin-enable'>Native SendSpin Client Support</label>
-<select id='sendspin-enable' onchange='saveSendspin()'>
+<p class='hint'>Some software only works with AirPlay v1. Apple devices still work in that mode, but without v2 features such as multi-speaker sync. The volume and track buttons on the speaker need v1. Takes effect after a restart.</p></div>
+<div id='sendspin-box' hidden>
+<div class='form-group'><label for='sendspin-enable'>Sendspin</label>
+<div class='row'><select id='sendspin-enable' onchange='saveSendspin()'>
 <option value='0'>Disabled</option>
 <option value='1'>Enabled</option>
 </select></div>
-<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Experimental. Lets a SendSpin server such as Music Assistant play to this device.<br>Takes effect after a restart.<br><span id='sendspin-pin'></span></div>
-<div style='font-size:12px;line-height:1.45;margin-bottom:6px;opacity:0.7'>AirPlay and Bluetooth take priority: starting a session there pauses the SendSpin server's queue and takes the output, and ending it hands the output back and resumes.</div>
-<div id='sendspin-msg'></div></div>
-<div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
-<div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>
-<span id='led-pct'>50%</span></div></div>
-<button class='btn btn-secondary' onclick='saveBrightness()'>Save Brightness</button>
-<div id='brightness-msg'></div>
-<div id='chan-group'>
-<div class='form-group' style='margin-top:18px'><label for='chan-mode' id='chan-label'>Output Channel</label>
-<select id='chan-mode' onchange='saveChannel()'>
+<p class='hint'>Experimental. Lets a Sendspin server such as Music Assistant play to this speaker. Takes effect after a restart.</p>
+<p class='hint'>AirPlay and Bluetooth take priority: starting a session there pauses the Sendspin server's queue and takes the output, and ending it hands the output back and resumes.</p></div>
+<div id='pair-box' hidden>
+<div class='kv'>
+<div><label>Pairing PIN</label><span id='ss-pin'>-</span></div>
+<div><label>Paired servers</label><span id='ss-paired'>-</span></div>
+</div>
+<div class='actions'>
+<button class='btn btn-secondary' onclick='unpair()'>Forget paired servers</button>
+<button class='btn btn-secondary' onclick='resetIdentity()'>New identity</button>
+</div>
+<div id='ss-msg' class='msg'></div></div>
+</div>
+</div>
+<div class='card' id='audio'><h2>Audio</h2>
+<div class='form-group' id='chan-group'><label for='chan-mode' id='chan-label'>Output channel</label>
+<div class='row'><select id='chan-mode' onchange='saveChannel()'>
 <option value='0'>Stereo</option>
 <option value='1'>Left only</option>
 <option value='2'>Right only</option>
 <option value='3'>Mono (L+R)</option>
 </select></div>
-<div id='chan-msg'></div></div>
-<div id='pbtl-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='pbtl-mode'>Primary Amplifier</label>
-<select id='pbtl-mode' onchange='savePbtl()'>
+<p class='hint' id='chan-hint'>Which channel this speaker plays. Two speakers can make a stereo pair, one playing left and one right.</p></div>
+<p class='hint' id='chan-fixed' hidden>The amplifier wiring fixes which channel each output plays; the Equaliser routes them.</p>
+<div class='form-group' id='amp-box' hidden>
+<div class='form-group' id='pbtl-group' hidden><label for='pbtl-mode' id='pbtl-label'>Amplifier wiring</label>
+<div class='row'><select id='pbtl-mode' onchange='saveWiring("pbtl")'>
 <option value='0'>Stereo (BTL)</option>
 <option value='1'>Bridged mono (PBTL)</option>
 </select></div>
-<div id='pbtl-msg'></div></div>
-<div id='dual-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='dual-mode'>Second Amplifier</label>
-<select id='dual-mode' onchange='saveDual()'>
+<p class='hint' id='pbtl-hint' hidden>Fixed by this board's configuration.</p></div>
+<div class='form-group' id='dual-group' hidden><label for='dual-mode'>Second amplifier wiring</label>
+<div class='row'><select id='dual-mode' onchange='saveWiring("dual")'>
 <option value='1'>Bridged mono (PBTL)</option>
 <option value='0'>Stereo (BTL)</option>
-</select></div>
-<div id='dual-msg'></div></div>
-<div id='pd-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='pd-volts'>USB-C Power</label>
-<select id='pd-volts' onchange='savePd()'></select></div>
-<div id='pd-now' style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'></div>
-<div style='font-size:12px;opacity:0.7;margin-bottom:6px'>A higher voltage lets the speaker play louder before it distorts, once the digital gain below is raised to match: at full volume about 3, 9, 15, 22 or 39 W into 4&nbsp;&Omega; at 5, 9, 12, 15 or 20 V, and half that into 8&nbsp;&Omega;. 20 V needs a 65 W charger. Choose what your speaker can take.</div>
-<div id='pd-msg'></div></div>
-<div id='fv-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='fv-db'>Digital gain</label>
-<select id='fv-db' onchange='saveFv(Number(this.value))'></select></div>
-<div style='font-size:12px;opacity:0.7;margin-bottom:6px'>How loud the amplifier plays at full volume. Match it to the supply: the recommended level is the loudest that stays clean on it. Louder than that clips the loudest passages, and so does an EQ boost, which the EQ page warns of.</div>
-<div id='fv-msg'></div></div>
-<div id='eq-link' style='display:none;margin-top:18px'>
-<a href='/bq' class='btn btn-secondary'>Biquad EQ</a></div>
-<div id='hf1-link' style='display:none;margin-top:18px'>
-<a href='/hf' class='btn btn-secondary'>HybridFlow Tuning</a></div>
+</select></div></div>
+<p class='hint' id='wiring-hint'>Must match how the speakers are wired. A change asks before it is saved and takes effect after a restart; rewire with the power off.</p>
 </div>
-<div class='card'><h2>Firmware Update</h2>
-<div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
-<button class='btn btn-secondary' onclick='document.getElementById("fw-file").click()'>Choose File</button>
+<div class='form-group' id='pd-group' hidden><label for='pd-volts'>USB-C supply</label>
+<div class='row'><select id='pd-volts' onchange='saveVolts()'></select></div>
+<p class='hint'>Lower it if the speaker cannot take the power: about 3, 9, 15, 22 or 39&nbsp;W into 4&nbsp;&Omega; at 5 to 20&nbsp;V.</p></div>
+<div class='form-group' id='gain-group' hidden><label for='gain-db'>Digital gain</label>
+<div class='row'><select id='gain-db' onchange='saveGain()'></select></div>
+<p class='hint' id='gain-hint'></p></div>
+<div class='actions' id='eq-links'></div>
+</div>
+<div class='card'><h2>Firmware</h2>
+<div class='kv' style='margin-bottom:14px'>
+<div class='full'><label>Running</label><span id='i-fw'>-</span></div>
+</div>
+<div class='file-row'><input type='file' id='fw-file' accept='.bin' hidden>
+<button class='btn btn-secondary' onclick='$("fw-file").click()'>Choose file</button>
 <span class='file-name' id='fw-name'>No file selected</span></div>
-<button class='btn btn-primary btn-block' id='ota-btn' onclick='startOTA()' disabled>Upload Firmware</button>
-<div id='ota-msg'></div></div>
-<div class='card'><h2>System</h2>
-<div class='info-grid'>
-<div class='info-item'><label>IP Address</label><span id='info-ip'>-</span></div>
-<div class='info-item'><label>MAC Address</label><span id='info-mac'>-</span></div>
-<div class='info-item'><label>Device Name</label><span id='info-name'>-</span></div>
-<div class='info-item'><label>Free Memory</label><span id='info-heap'>-</span></div>
-<div class='info-item'><label>Firmware</label><span id='info-fw'>-</span></div>
-<div class='info-item'><label>Uptime</label><span id='info-uptime'>-</span></div>
-<div class='info-item'><label>Last reset</label><span id='info-reset'>-</span></div>
-<div class='info-item'><label>WiFi SSID</label><span id='info-ssid'>-</span></div>
-<div class='info-item'><label>WiFi RSSI</label><span id='info-rssi'>-</span></div>
-<div class='info-item'><label>WiFi Channel</label><span id='info-chan'>-</span></div>
-<div class='info-item'><label>WiFi PHY</label><span id='info-phy'>-</span></div>
-<div class='info-item' style='grid-column:1/-1'><label>WiFi BSSID</label><span id='info-bssid'>-</span></div>
+<div class='actions'><button class='btn btn-primary' id='ota-btn' onclick='startOTA()' disabled>Install and restart</button></div>
+<div class='progress' id='ota-bar' hidden><div></div></div>
+<div id='ota-msg' class='msg'></div>
+<p class='hint'>The app image (<code>.bin</code>) only. The web pages live in a separate partition that this does not update.</p>
 </div>
-<div class='actions'><button class='btn btn-danger' onclick='restart()'>Restart Device</button></div>
+<div class='card'><h2>Device</h2>
+<div class='kv'>
+<div><label>Uptime</label><span id='i-up'>-</span></div>
+<div><label>Free memory</label><span id='i-heap'>-</span></div>
+<div><label>Last reset</label><span id='i-reset'>-</span></div>
 </div>
-<div class='card'><h2>System Logs</h2>
-<p style='color:#888;font-size:13px;margin-bottom:12px'>Live ESP log output via WebSocket</p>
-<a href='/logs' class='btn btn-primary'>Open Log Viewer</a></div>
-<div class='card'><h2>WiFi Speedtest</h2>
-<p style='color:#888;font-size:13px;margin-bottom:12px'>Measure latency and throughput to this device</p>
-<a href='/speedtest' class='btn btn-primary'>Open Speedtest</a></div>
+<div class='actions'><button class='btn btn-danger' onclick='Shell.restart()'>Restart</button></div>
 </div>
+<div class='card'><h2>LED</h2>
+<div class='form-group'><label for='led'>Brightness</label>
+<div class='slider-row'><input type='range' id='led' min='0' max='255' value='128'><span id='led-pct'>50%</span></div></div>
+</div>
+</div></main>
 <script>
-function msg(id,txt,type){var e=document.getElementById(id);if(e){e.innerHTML='<div class="msg '+type+'">'+txt+'</div>';setTimeout(function(){e.innerHTML='';},4000);}}
-async function scanWiFi(){
-  var l=document.getElementById('wifi-list');l.innerHTML='<div class="msg info">Scanning...</div>';
-  try{var r=await fetch('/api/wifi/scan');var d=await r.json();
-    if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach(function(n){
-      var i=document.createElement('div');i.className='wifi-item';
-      i.innerHTML='<span class="ssid">'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span>';
-      i.onclick=function(){document.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});i.classList.add('sel');document.getElementById('wifi-ssid').value=n.ssid;};
-      l.appendChild(i);});}
-    else{l.innerHTML='<div class="msg info">No networks found</div>';}}
-  catch(e){l.innerHTML='<div class="msg err">Scan failed</div>';}}
-async function saveWiFi(){
-  var s=document.getElementById('wifi-ssid').value.trim();var p=document.getElementById('wifi-pass').value;
-  if(!s){msg('wifi-msg','Enter network name','err');return;}
-  try{var r=await fetch('/api/wifi/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,password:p})});
-    var d=await r.json();if(d.success){msg('wifi-msg','Saved! Restarting...','ok');}else{msg('wifi-msg',d.error,'err');}}
-  catch(e){msg('wifi-msg','Error','err');}}
-async function loadBrightness(){
-  try{var r=await fetch('/api/led/brightness');var d=await r.json();
-    if(d.success){var s=document.getElementById('led-brightness');s.value=d.brightness;
-      document.getElementById('led-pct').textContent=Math.round(d.brightness/255*100)+'%';}}
-  catch(e){console.warn('Could not load LED brightness',e);}}
-async function saveBrightness(){
-  var v=Number.parseInt(document.getElementById('led-brightness').value,10);
-  try{var r=await fetch('/api/led/brightness',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brightness:v})});
-    var d=await r.json();if(d.success){msg('brightness-msg','Saved!','ok');}else{msg('brightness-msg',d.error,'err');}}
-  catch(e){msg('brightness-msg','Error','err');console.error('saveBrightness failed',e);}}
-async function loadChannel(){
-  try{var r=await fetch('/api/audio/channel');var d=await r.json();
-    if(d.success){document.getElementById('chan-mode').value=String(d.mode);
-      chanLocked=!!d.locked;chanDsp=!!d.dsp;}}
-  catch(e){console.warn('Could not load channel mode',e);}
-  applyChanLabels();
-  applyAmpLayout();}
-var primaryPbtl=false;
-var pbtlLoaded=false;
-var dualDevices=1;
-var dualPbtl=true;
-var dualLoaded=false;
-var pdLoaded=false;
-var fvLoaded=false,fvState=null;
-var pdVolts=0;
-var airplayV1=false;
-var sendspinEnabled=false;
-var sendspinLoaded=false;
-var chanLocked=false;
-var chanDsp=false;
-/* When the DSP crosses the two outputs over into one speaker there is no
-   stereo to pass through, so the choice is which input channel to feed it. */
-function applyChanLabels(){
-  document.getElementById('chan-label').textContent=
-    chanDsp?'Input Channel':'Output Channel';
-  var o=document.getElementById('chan-mode').options;
-  o[0].text=chanDsp?'Both (L+R)/2':'Stereo';
-  o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
-}
-var PBTL_WARN={
-  1:'Bridge the primary amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nPower off and rewire.',
-  0:'Unbridge the primary amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+var $=function(id){return document.getElementById(id);};
+function msg(id,txt,type){var e=$(id);e.className='msg '+type;e.textContent=txt;}
+
+/* ---- audio ---- */
+var chanLocked=false,dualDevices=1;
+var wiring={pbtl:false,dual:true};
+var WARN={
+  pbtl:{1:'Bridge the primary amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nPower off and rewire.',
+        0:'Unbridge the primary amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'},
+  dual:{1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nPower off and rewire.',
+        0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'}
 };
-var DUAL_WARN={
-  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\Power off and rewire.',
-  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST un-bridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
-};
-/* With two amps the DAC configuration already fixes the routing, so per-output
+
+/* With two amps the DAC configuration fixes the routing, so per-output
    channel selection has no meaning. */
-function applyAmpLayout(){
-  document.getElementById('chan-group').style.display=
-    (chanLocked||dualDevices>1)?'none':'';
+function applyChan(){
+  var fixed=chanLocked||dualDevices>1;
+  $('chan-group').hidden=fixed;
+  $('chan-fixed').hidden=!fixed;
+}
+async function loadChannel(){
+  try{var d=await Shell.get('/api/audio/channel');
+    $('chan-mode').value=String(d.mode);chanLocked=!!d.locked;
+    /* When the DSP crosses the two outputs over into one speaker there is
+       no stereo to pass through, so the choice is which input feeds it. */
+    if(d.dsp){var o=$('chan-mode').options;
+      $('chan-label').textContent='Input channel';
+      o[0].text='Both (L+R)/2';o[3].text='Both (L+R)/2';
+      $('chan-hint').textContent='Which input channel feeds the speaker.';}}
+  catch(e){console.warn('Could not load the channel mode',e);}
+  applyChan();
 }
 async function saveChannel(){
-  var v=Number.parseInt(document.getElementById('chan-mode').value,10);
-  try{var r=await fetch('/api/audio/channel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:v})});
-    var d=await r.json();if(d.success){msg('chan-msg','Saved!','ok');
-      /* The firmware may keep stereo regardless of what was asked for. */
-      if(typeof d.mode==='number'){document.getElementById('chan-mode').value=String(d.mode);}
-      chanLocked=!!d.locked;applyAmpLayout();}
-    else{msg('chan-msg',d.error,'err');}}
-  catch(e){msg('chan-msg','Error','err');console.error('saveChannel failed',e);}}
-async function loadPbtl(){
-  try{var r=await fetch('/api/audio/pbtl');if(!r.ok)return;var d=await r.json();
-    if(d.success){primaryPbtl=!!d.pbtl;
-      document.getElementById('pbtl-mode').value=d.pbtl?'1':'0';
-      document.getElementById('pbtl-group').style.display='';
-      if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
-      else if(d.restart_required){msg('pbtl-msg','Restart to apply the new wiring.','err');}}
-    else if(d.forced){msg('pbtl-msg','PBTL mode is forced by configuration and cannot be changed.','info');}}
-  catch(e){console.warn('Could not load primary amplifier wiring',e);}}
-async function savePbtl(){
-  var sel=document.getElementById('pbtl-mode');
-  var v=Number.parseInt(sel.value,10);
-  var pbtl=v===1;
-  if(pbtl!==primaryPbtl&&!confirm(PBTL_WARN[v])){sel.value=primaryPbtl?'1':'0';return;}
-  try{var r=await fetch('/api/audio/pbtl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
-    var d=await r.json();
-    if(d.success){primaryPbtl=pbtl;msg('pbtl-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
-    else{sel.value=primaryPbtl?'1':'0';msg('pbtl-msg',d.error,'err');}}
-  catch(e){sel.value=primaryPbtl?'1':'0';msg('pbtl-msg','Error','err');console.error('savePbtl failed',e);}}
-async function loadDual(){
-  try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
-    if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
-      document.getElementById('dual-mode').value=d.pbtl?'1':'0';
-      document.getElementById('dual-group').style.display='';
-      if(d.forced){msg('dual-msg','PBTL mode is forced by configuration and cannot be changed.','info');}
-      else if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
-  catch(e){console.warn('Could not load second amplifier wiring',e);}
-  applyAmpLayout();}
-async function saveDual(){
-  var sel=document.getElementById('dual-mode');
-  var v=Number.parseInt(sel.value,10);
-  var pbtl=v===1;
-  if(pbtl!==dualPbtl&&!confirm(DUAL_WARN[v])){sel.value=dualPbtl?'1':'0';return;}
-  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
-    var d=await r.json();
-    if(d.success){dualPbtl=pbtl;msg('dual-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
-    else{sel.value=dualPbtl?'1':'0';msg('dual-msg',d.error,'err');}}
-  catch(e){sel.value=dualPbtl?'1':'0';msg('dual-msg','Error','err');console.error('saveDual failed',e);}}
-function showPd(d){
-  var sel=document.getElementById('pd-volts');
-  var offered={};
-  (d.offers||[]).forEach(function(o){offered[o.volts]=o.ma;});
-  sel.innerHTML='';
-  (d.choices||[]).slice().reverse().forEach(function(v){var o=document.createElement('option');
-    o.value=String(v);o.textContent=v+' V'+(d.pd&&!offered[v]?' (not offered)':'');
-    sel.appendChild(o);});
-  sel.value=String(d.volts);pdVolts=d.volts;
-  var now=d.supply_mv>0?'Running at '+d.supply_mv/1000+' V':'Supply unknown';
-  if(d.pd){now+='. The charger offers '+d.offers.map(function(o){
-    return o.volts+' V at '+(o.ma/1000).toFixed(1)+' A';}).join(', ')+'.';}
-  else if(d.attached){now+='. The charger does not speak USB-PD, so the board stays at 5 V.';}
-  document.getElementById('pd-now').textContent=now;}
-async function loadPd(){
-  try{var r=await fetch('/api/power/usb-pd');if(!r.ok)return;var d=await r.json();
-    document.getElementById('pd-group').style.display='';showPd(d);}
-  catch(e){console.warn('Could not load the USB-C power',e);}}
-async function savePd(){
-  var sel=document.getElementById('pd-volts');
-  var v=Number.parseInt(sel.value,10);
+  var sel=$('chan-mode');
+  try{var d=await Shell.post('/api/audio/channel',{mode:Number(sel.value)});
+    if(!d.success)throw new Error(d.error);
+    /* The firmware may keep stereo whatever was asked for. */
+    if(typeof d.mode==='number')sel.value=String(d.mode);
+    chanLocked=!!d.locked;applyChan();
+    Shell.tick(sel,true);}
+  catch(e){Shell.tick(sel,false,e.message);}
+}
+
+/* The supply and the digital gain. Each is the board's to choose until
+   set by hand; the gain follows the supply and the EQ. */
+function hz(f){return f>=1000?(f/1000).toFixed(1)+' kHz':Math.round(f)+' Hz';}
+function signed(v){return (v>0?'+':'')+Shell.db(v);}
+function showGain(g){
+  var rec={},h='',v,auto=g.auto&&g.auto_available,hint;
+  (g.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
+  if(g.auto_available)h+="<option value='auto'>Automatic"+
+    (auto?' ('+Shell.db(g.db)+')':'')+'</option>';
+  for(v=0;v>=g.min_db;v-=0.5)
+    h+="<option value='"+v+"'>"+Shell.db(v)+
+       (rec[v]?' (clean on '+rec[v]+' V)':'')+'</option>';
+  $('gain-db').innerHTML=h;
+  $('gain-db').value=auto?'auto':String(g.db);
+  if(auto){
+    hint='Automatic: '+Shell.db(g.clean_db)+' is clean on '+g.supply_mv/1000+' V';
+    if(g.boost_db>0.05)hint+=', less the EQ’s '+signed(g.boost_db)+
+                             ' boost at '+hz(g.boost_hz);
+    hint+='.';
+  }else if(g.auto&&g.auto_available===false)
+    hint='The board cannot read its supply, so the gain cannot follow it.';
+  else hint='The level full volume reaches.'+
+    (g.auto_available?' Automatic keeps it at the loudest that stays clean'+
+     ' on the supply with the EQ playing.':'');
+  $('gain-hint').textContent=hint;
+  $('gain-group').hidden=false;
+}
+/* What the board is getting and what the charger offers go in the choices
+   themselves. */
+function showSupply(p){
+  var offered={},h='',now=p.supply_mv>0?p.supply_mv/1000:0,auto;
+  (p.offers||[]).forEach(function(o){offered[o.volts]=o.ma;});
+  /* Firmware from before the automatic choice does not report one. */
+  if(p.auto!==undefined){
+    auto=now?' ('+now+' V'+(p.attached&&!p.pd?', no USB-PD':'')+')':
+         ' (supply unknown)';
+    h+="<option value='auto'>Automatic"+(p.auto?auto:'')+'</option>';
+  }
+  (p.choices||[]).slice().reverse().forEach(function(c){
+    var t=c+' V';
+    if(p.pd)t+=offered[c]?' — '+(offered[c]/1000).toFixed(1)+' A':' (not offered)';
+    /* A charger that cannot give the voltage asked for gives less. */
+    if(!p.auto&&c===p.volts&&now&&now!==c)t+=', getting '+now+' V';
+    h+="<option value='"+c+"'>"+t+'</option>';
+  });
+  $('pd-volts').innerHTML=h;
+  $('pd-volts').value=p.auto?'auto':String(p.volts);
+  $('pd-group').hidden=false;
+}
+async function loadPower(pd){
+  try{showGain(await Shell.get('/api/audio/digital-gain'));}
+  catch(e){console.warn('Could not load the digital gain',e);}
+  if(!pd)return;
+  try{showSupply(await Shell.get('/api/power/usb-pd'));}
+  catch(e){
+    /* A board whose trigger is not answering still reports its choices. */
+    if(e.data&&e.data.choices)showSupply(e.data);
+    else console.warn('Could not load the USB-C supply',e);}
+}
+async function saveGain(){
+  var sel=$('gain-db'),v=sel.value;
+  try{showGain(await Shell.post('/api/audio/digital-gain',
+                                v==='auto'?{auto:true}:{db:Number(v)}));
+    Shell.tick(sel,true);}
+  catch(e){Shell.tick(sel,false,e.message);loadPower(false);}
+}
+async function saveVolts(){
+  var sel=$('pd-volts'),v=sel.value;
   sel.disabled=true;
-  msg('pd-msg','Asking the charger for '+v+' V...','ok');
-  try{var r=await fetch('/api/power/usb-pd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({volts:v})});
-    if(!r.ok){sel.value=String(pdVolts);msg('pd-msg',await r.text(),'err');return;}
-    var d=await r.json();showPd(d);
-    if(d.supply_mv===v*1000){msg('pd-msg','Saved. The board now runs at '+v+' V.','ok');}
-    else if(d.supply_mv>0){msg('pd-msg','Saved, but this charger gave '+d.supply_mv/1000+' V. One that offers '+v+' V will get it.','err');}
-    else{msg('pd-msg','Saved, but the supply could not be read.','err');}}
-  catch(e){sel.value=String(pdVolts);msg('pd-msg','Error','err');console.error('savePd failed',e);}
-  finally{sel.disabled=false;}}
-function fvDb(v){return (v<0?'\u2212':'')+Math.abs(v).toFixed(1)+' dB';}
-function showFv(d){
-  fvState=d;var rec={},sel=document.getElementById('fv-db');
-  (d.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
-  sel.innerHTML='';
-  for(var v=0;v>=d.min_db;v-=0.5){var o=document.createElement('option');o.value=String(v);
-    o.textContent=fvDb(v)+(rec[v]?' (recommended for '+rec[v]+' V)':'');
-    sel.appendChild(o);}
-  sel.value=String(d.db);}
-async function loadFv(){
-  try{var r=await fetch('/api/audio/digital-gain');if(!r.ok)return;var d=await r.json();
-    document.getElementById('fv-group').style.display='';showFv(d);}
-  catch(e){console.warn('Could not load the digital gain',e);}}
-async function saveFv(db){
-  try{var r=await fetch('/api/audio/digital-gain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({db:db})});
-    if(!r.ok){if(fvState)showFv(fvState);msg('fv-msg',await r.text(),'err');return;}
-    showFv(await r.json());msg('fv-msg','Saved.','ok');}
-  catch(e){if(fvState)showFv(fvState);msg('fv-msg','Error','err');console.error('saveFv failed',e);}}
-async function loadAirplayMode(){
-  try{var r=await fetch('/api/airplay/mode');if(!r.ok)return;var d=await r.json();
-    if(d.success){airplayV1=!!d.v1;
-      document.getElementById('airplay-mode').value=d.v1?'1':'0';
-      if(d.restart_required){msg('airplay-msg','Restart to apply the new mode.','err');}}}
-  catch(e){console.warn('Could not load AirPlay mode',e);}}
-async function saveAirplayMode(){
-  var sel=document.getElementById('airplay-mode');
-  var v1=sel.value==='1';
-  try{var r=await fetch('/api/airplay/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v1:v1})});
-    var d=await r.json();
-    if(d.success){airplayV1=v1;msg('airplay-msg',d.restart_required?'Saved! Restart to apply.':'Saved!','ok');}
-    else{sel.value=airplayV1?'1':'0';msg('airplay-msg',d.error,'err');}}
-  catch(e){sel.value=airplayV1?'1':'0';msg('airplay-msg','Error','err');console.error('saveAirplayMode failed',e);}}
-async function loadSendspin(){
-  try{var r=await fetch('/api/sendspin/mode');if(!r.ok)return;var d=await r.json();
-    if(d.success){sendspinEnabled=!!d.enabled;
-      document.getElementById('sendspin-enable').value=d.enabled?'1':'0';
-      if(d.restart_required){msg('sendspin-msg','Restart to apply.','err');}}}
-  catch(e){console.warn('Could not load Sendspin setting',e);}}
-async function saveSendspin(){
-  var sel=document.getElementById('sendspin-enable');
-  var en=sel.value==='1';
-  try{var r=await fetch('/api/sendspin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:en})});
-    var d=await r.json();
-    if(d.success){sendspinEnabled=en;msg('sendspin-msg',d.restart_required?'Saved! Restart to apply.':'Saved!','ok');}
-    else{sel.value=sendspinEnabled?'1':'0';msg('sendspin-msg',d.error,'err');}}
-  catch(e){sel.value=sendspinEnabled?'1':'0';msg('sendspin-msg','Error','err');console.error('saveSendspin failed',e);}}
+  try{showSupply(await Shell.post('/api/power/usb-pd',
+                                  v==='auto'?{auto:true}:{volts:Number(v)}));
+    Shell.tick(sel,true);}
+  catch(e){Shell.tick(sel,false,e.message);}
+  sel.disabled=false;
+  /* An automatic gain follows the new supply. */
+  loadPower(false);
+}
+
+async function loadWiring(){
+  try{var p=await Shell.get('/api/audio/pbtl');
+    wiring.pbtl=!!p.pbtl;$('pbtl-mode').value=p.pbtl?'1':'0';
+    $('pbtl-mode').disabled=!!p.forced;$('pbtl-hint').hidden=!p.forced;
+    $('pbtl-group').hidden=false;$('amp-box').hidden=false;}
+  catch(e){console.warn('Could not load the primary amplifier wiring',e);}
+  try{var d=await Shell.get('/api/audio/dual');
+    if(d.success&&d.devices>1){dualDevices=d.devices;wiring.dual=!!d.pbtl;
+      $('dual-mode').value=d.pbtl?'1':'0';
+      $('dual-group').hidden=false;$('amp-box').hidden=false;
+      $('pbtl-label').textContent='Primary amplifier wiring';}}
+  catch(e){console.warn('Could not load the second amplifier wiring',e);}
+  /* Nothing to rewire when the board fixes the only amplifier. */
+  $('wiring-hint').hidden=$('pbtl-mode').disabled&&$('dual-group').hidden;
+  applyChan();
+}
+async function saveWiring(which){
+  var sel=$(which+'-mode'),v=Number(sel.value),pbtl=v===1;
+  var undo=function(){sel.value=wiring[which]?'1':'0';};
+  if(pbtl===wiring[which])return;
+  if(!confirm(WARN[which][v])){undo();return;}
+  try{var d=await Shell.post('/api/audio/'+which,{pbtl:pbtl});
+    if(!d.success)throw new Error(d.error);
+    wiring[which]=pbtl;Shell.tick(sel,true,'Saved; rewire, then restart');
+    Shell.refresh();}
+  catch(e){undo();Shell.tick(sel,false,e.message);}
+}
+
+Shell.info().then(async function(i){
+  await loadChannel();
+  /* Only a TAS58xx build registers the wiring; asking anyway logs a
+     warning on the device for every page load. */
+  if(i.dual_supported)await loadWiring();
+  loadLinks(i);
+  /* Only a TAS58xx build has a digital gain, and only a USB-C board a
+     supply. */
+  if(i.dual_supported)await loadPower(i.usb_pd_supported);
+}).catch(function(){});
+
+/* ---- playback ---- */
+var airplayV1=false,sendspinOn=false;
+
 async function saveName(){
-  var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
-  try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
-    var d=await r.json();if(d.success){msg('name-msg','Saved! Restart to apply.','ok');loadInfo();}else{msg('name-msg',d.error,'err');}}
-  catch(e){msg('name-msg','Error','err');}}
-async function startOTA(){
-  var f=document.getElementById('fw-file').files[0];if(!f){msg('ota-msg','Select a file','err');return;}
-  document.getElementById('ota-btn').disabled=true;msg('ota-msg','Uploading...','info');
-  try{await fetch('/api/ota/update',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});msg('ota-msg','Done! Rebooting...','ok');}
-  catch(e){msg('ota-msg','Rebooting...','ok');}}
-async function restart(){
-  if(!confirm('Restart the device?'))return;
-  try{await fetch('/api/system/restart',{method:'POST'});msg('','Restarting...','info');}catch(e){}}
-async function loadInfo(){
-  try{var r=await fetch('/api/system/info');var d=await r.json();
-    if(d.success){var i=d.info;var b=document.getElementById('status-bar');
-      if(i.eth_connected){b.className='status-bar ok';b.innerHTML='Ethernet: '+i.ip;}
-      else if(i.wifi_connected){b.className='status-bar ok';b.innerHTML='WiFi: '+i.ip;}
-      else{b.className='status-bar err';b.innerHTML='Not connected - Configure WiFi below';}
-      document.getElementById('info-ip').textContent=i.ip||'-';
-      document.getElementById('info-mac').textContent=i.mac||'-';
-      document.getElementById('info-name').textContent=i.device_name||'-';
-      document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
-      document.getElementById('info-fw').textContent=i.firmware_version||'-';
-      function fmtUptime(s){if(s==null)return '-';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
-        return (d?d+'d ':'')+(d||h?h+'h ':'')+m+'m '+(s%60)+'s';}
-      document.getElementById('info-uptime').textContent=fmtUptime(i.uptime_s);
-      document.getElementById('info-reset').textContent=i.reset_reason||'-';
-      function rssiLabel(r){if(r==null)return '-';var q='';if(r>=-55)q=' (excellent)';else if(r>=-65)q=' (good)';else if(r>=-75)q=' (fair)';else q=' (poor)';return r+' dBm'+q;}
-      document.getElementById('info-ssid').textContent=i.wifi_ssid||'-';
-      document.getElementById('info-rssi').textContent=rssiLabel(i.wifi_rssi);
-      document.getElementById('info-chan').textContent=i.wifi_channel||'-';
-      document.getElementById('info-phy').textContent=i.wifi_phy||'-';
-      document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
-      if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
-      if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
-      /* Only a TAS58xx build registers /api/audio/pbtl and /api/audio/dual;
-         asking anyway logs a warning on the device for every page load. */
-      if(i.dual_supported){if(!pbtlLoaded){pbtlLoaded=true;loadPbtl();}
-        if(!dualLoaded){dualLoaded=true;loadDual();}}
-      /* /api/audio/digital-gain is a TAS58xx one too. */
-      if(i.dual_supported&&!fvLoaded){fvLoaded=true;loadFv();}
-      /* Only a board whose USB-PD trigger answered serves the USB-C power. */
-      if(i.usb_pd_supported&&!pdLoaded){pdLoaded=true;loadPd();}
-      /* Only a Sendspin build registers /api/sendspin/mode. */
-      if(i.sendspin_supported){document.getElementById('sendspin-group').style.display='';
-        if(!sendspinLoaded){sendspinLoaded=true;loadSendspin();}
-        document.getElementById('sendspin-pin').textContent=i.sendspin_active?('Pairing PIN '+i.sendspin_pairing_pin+', '+i.sendspin_paired+' server(s) paired.'):'';}
-      document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
-window.onload=function(){
-  document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
-    document.getElementById('fw-name').textContent=f?f.name:'No file selected';
-    document.getElementById('ota-btn').disabled=!f;};
-  loadInfo();loadBrightness();loadChannel();loadAirplayMode();setInterval(loadInfo,30000);};
+  var inp=$('dev-name'),n=inp.value.trim(),b=$('name-btn');
+  if(!n){Shell.tick(b,false,'Enter a name');return;}
+  try{var d=await Shell.post('/api/device/name',{name:n});
+    if(!d.success)throw new Error(d.error);
+    inp.value='';inp.placeholder=n;Shell.tick(b,true);Shell.refresh();}
+  catch(e){Shell.tick(b,false,e.message);}
+}
+$('dev-name').addEventListener('keydown',function(e){if(e.key==='Enter')saveName();});
+
+async function saveAirplayMode(){
+  var sel=$('airplay-mode'),v1=sel.value==='1';
+  try{var d=await Shell.post('/api/airplay/mode',{v1:v1});
+    if(!d.success)throw new Error(d.error);
+    airplayV1=v1;Shell.tick(sel,true);Shell.refresh();}
+  catch(e){sel.value=airplayV1?'1':'0';Shell.tick(sel,false,e.message);}
+}
+async function saveSendspin(){
+  var sel=$('sendspin-enable'),en=sel.value==='1';
+  try{var d=await Shell.post('/api/sendspin/mode',{enabled:en});
+    if(!d.success)throw new Error(d.error);
+    sendspinOn=en;Shell.tick(sel,true);Shell.refresh();}
+  catch(e){sel.value=sendspinOn?'1':'0';Shell.tick(sel,false,e.message);}
+}
+function showPairing(i){
+  $('pair-box').hidden=!i.sendspin_active;
+  $('ss-pin').textContent=i.sendspin_pairing_pin||'-';
+  $('ss-paired').textContent=i.sendspin_paired!=null?i.sendspin_paired:'-';
+}
+async function reloadPairing(){
+  try{var d=await Shell.get('/api/system/info');showPairing(d.info);}catch(e){}
+}
+async function unpair(){
+  if(!confirm('Forget every paired Sendspin server?\n\nEach has to pair again with the PIN.'))return;
+  try{await Shell.post('/api/sendspin/unpair');msg('ss-msg','Paired servers forgotten.','ok');}
+  catch(e){
+    /* A connected server still holds its side; unpairing there clears both. */
+    if(e.status===409&&e.data&&/connected/.test(e.data.error)&&
+       confirm('A server is connected. Unpair it from the server instead, so '+
+               'both sides forget.\n\nForget it here only anyway?')){
+      try{await Shell.post('/api/sendspin/unpair?force=1');msg('ss-msg','Paired servers forgotten.','ok');}
+      catch(e2){msg('ss-msg',e2.message,'err');}}
+    else msg('ss-msg',e.message,'err');}
+  reloadPairing();
+}
+async function resetIdentity(){
+  if(!confirm('Give this speaker a new Sendspin identity?\n\nServers see it as a '+
+              'new device and every pairing is lost.'))return;
+  try{await Shell.post('/api/sendspin/reset-identity');msg('ss-msg','New identity made.','ok');}
+  catch(e){msg('ss-msg',e.message,'err');}
+  reloadPairing();
+}
+
+Shell.info().then(async function(i){
+  $('dev-name').placeholder=i.device_name||'';
+  try{var d=await Shell.get('/api/airplay/mode');
+    airplayV1=!!d.v1;$('airplay-mode').value=d.v1?'1':'0';}
+  catch(e){console.warn('Could not load the AirPlay mode',e);}
+  /* Only a Sendspin build registers /api/sendspin/mode. */
+  if(i.sendspin_supported){
+    $('sendspin-box').hidden=false;showPairing(i);
+    try{var s=await Shell.get('/api/sendspin/mode');
+      sendspinOn=!!s.enabled;$('sendspin-enable').value=s.enabled?'1':'0';}
+    catch(e){console.warn('Could not load the Sendspin setting',e);}}
+}).catch(function(){});
+
+
+/* ---- device ---- */
+function uptime(s){if(s==null)return '-';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return (d?d+'d ':'')+(d||h?h+'h ':'')+m+'m';}
+function a(href,text){var e=Shell.el('a','btn btn-secondary',text);e.href=href;return e;}
+
+function showInfo(i){
+  $('setup-card').hidden=!!(i.wifi_connected||i.eth_connected);
+  $('i-fw').textContent=i.firmware_version||'-';
+  $('i-up').textContent=uptime(i.uptime_s);
+  $('i-heap').textContent=Math.round(i.free_heap/1024)+' KB';
+  $('i-reset').textContent=i.reset_reason||'-';
+}
+
+function loadLinks(i){
+  var links=$('eq-links');links.textContent='';
+  if(i.eq_supported||i.sub_supported)links.appendChild(a('/bq','Equaliser'));
+  if(i.hf1_supported||i.hf3_supported)links.appendChild(a('/hf','HybridFlow tuning'));
+}
+
+Shell.info().then(showInfo).catch(function(){});
+setInterval(function(){
+  if(document.hidden)return;
+  Shell.get('/api/system/info').then(function(d){showInfo(d.info);}).catch(function(){});
+},30000);
+
+/* ---- system ---- */
+
+$('fw-file').onchange=function(){var f=this.files[0];
+  $('fw-name').textContent=f?f.name+' ('+Math.round(f.size/1024)+' KB)':'No file selected';
+  $('ota-btn').disabled=!f;};
+/* XMLHttpRequest rather than fetch, for the upload progress. */
+function startOTA(){
+  var f=$('fw-file').files[0];if(!f)return;
+  if(!confirm('Install '+f.name+' and restart?\n\nPlayback stops while it installs.'))return;
+  $('ota-btn').disabled=true;
+  var bar=$('ota-bar');bar.hidden=false;
+  msg('ota-msg','Uploading…','info');
+  var x=new XMLHttpRequest();
+  x.open('POST','/api/ota/update');
+  x.setRequestHeader('Content-Type','application/octet-stream');
+  x.upload.onprogress=function(e){
+    if(e.lengthComputable)bar.firstChild.style.width=(100*e.loaded/e.total).toFixed(1)+'%';};
+  x.onload=function(){
+    if(x.status===200){msg('ota-msg','Installed. Restarting…','ok');
+      Shell.waitForRestart('Installed; restarting… the page reloads when the device is back.');}
+    else{msg('ota-msg','Not installed: '+(x.responseText||('HTTP '+x.status)),'err');
+      $('ota-btn').disabled=false;}};
+  /* The device restarts as soon as it has answered, which can cut the
+     connection before the answer arrives. */
+  x.onerror=function(){msg('ota-msg','The connection closed; the device may be restarting.','info');
+    Shell.waitForRestart();};
+  x.send(f);
+}
+
+var led=$('led');
+function ledPct(){$('led-pct').textContent=Math.round(led.value/255*100)+'%';}
+led.oninput=ledPct;
+led.onchange=async function(){
+  try{var d=await Shell.post('/api/led/brightness',{brightness:Number(led.value)});
+    if(!d.success)throw new Error(d.error);Shell.tick($('led-pct'),true);}
+  catch(e){Shell.tick($('led-pct'),false,e.message);}
+};
+Shell.get('/api/led/brightness').then(function(d){
+  if(d.success){led.value=d.brightness;ledPct();}}).catch(function(){});
+
 </script></body></html>

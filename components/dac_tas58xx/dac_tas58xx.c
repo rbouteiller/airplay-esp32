@@ -298,6 +298,11 @@ static float s_last_airplay_db = -15.0f;
  */
 static float s_max_volume_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
 
+/* The amplifier's supply, 0 while unknown, and whether the digital gain
+ * follows it and the chains (dac_tas58xx_set_auto_gain). */
+static int s_supply_mv;
+static bool s_auto_gain;
+
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
 static bool s_ch_mute[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -358,6 +363,7 @@ static bool bq_load_config(void);
 static bool bq_chain_is_flat(int dev);
 static bool bq_chain_is_from_dump(int dev);
 static bool tas58xx_seed_bq_from_hf(int idx);
+static void auto_gain_update(void);
 
 /* ---------- Detect ---------- */
 
@@ -1369,6 +1375,8 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   }
 #endif
 
+  /* The chains and the amplifiers are known now. */
+  auto_gain_update();
   return ESP_OK;
 }
 
@@ -1699,18 +1707,48 @@ float dac_tas58xx_clean_db(int supply_mv) {
   return fminf(floorf(clean_db * 2.0f) / 2.0f, 0.0f);
 }
 
-void dac_tas58xx_set_full_volume_db(float db) {
+/* Hold and apply a digital gain. REG_LOCK is held once the driver is up.
+ * Returns whether it changed. */
+static bool full_volume_store_locked(float db) {
   db = roundf(fminf(fmaxf(db, TAS58XX_FULL_VOLUME_MIN_DB), 0.0f) * 2.0f) / 2.0f;
   if (db == s_max_volume_db) {
-    return;
+    return false;
   }
   s_max_volume_db = db;
   ESP_LOGI(TAG, "Digital gain at full volume: %.1f dB", db);
   if (s_reg_mutex != NULL) {
-    REG_LOCK();
     tas58xx_apply_volume_locked();
+  }
+  return true;
+}
+
+void dac_tas58xx_set_full_volume_db(float db) {
+  s_auto_gain = false;
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+  }
+  full_volume_store_locked(db);
+  if (s_reg_mutex != NULL) {
     REG_UNLOCK();
   }
+}
+
+void dac_tas58xx_set_supply_mv(int supply_mv) {
+  s_supply_mv = supply_mv > 0 ? supply_mv : 0;
+  auto_gain_update();
+}
+
+int dac_tas58xx_get_supply_mv(void) {
+  return s_supply_mv;
+}
+
+void dac_tas58xx_set_auto_gain(bool on) {
+  s_auto_gain = on;
+  auto_gain_update();
+}
+
+bool dac_tas58xx_get_auto_gain(void) {
+  return s_auto_gain;
 }
 
 float dac_tas58xx_get_full_volume_db(void) {
@@ -1758,7 +1796,9 @@ esp_err_t dac_tas58xx_set_gain_db(int dev, int ch, float gain_db) {
   }
   s_ch_gain_db[dev][ch] = gain_db;
   ESP_LOGI(TAG, "Amp %d output %c level: %+.1f dB", dev, 'A' + ch, gain_db);
-  return tas58xx_refresh_mix(dev);
+  const esp_err_t err = tas58xx_refresh_mix(dev);
+  auto_gain_update();
+  return err;
 }
 
 float dac_tas58xx_get_gain_db(int dev, int ch) {
@@ -1777,7 +1817,9 @@ esp_err_t dac_tas58xx_set_ch_mute(int dev, int ch, bool mute) {
   s_ch_mute[dev][ch] = mute;
   ESP_LOGI(TAG, "Amp %d output %c %s", dev, 'A' + ch,
            mute ? "muted" : "unmuted");
-  return tas58xx_refresh_mix(dev);
+  const esp_err_t err = tas58xx_refresh_mix(dev);
+  auto_gain_update();
+  return err;
 }
 
 bool dac_tas58xx_get_ch_mute(int dev, int ch) {
@@ -2939,6 +2981,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     s_cur = NULL;
   }
   REG_UNLOCK();
+  auto_gain_update();
   return err;
 }
 
@@ -2954,6 +2997,7 @@ void dac_tas58xx_bq_set_ganged(int dev, bool ganged) {
   }
   s_bq_ganged[dev] = ganged;
   bq_reprogram_all();
+  auto_gain_update();
 }
 
 bool dac_tas58xx_bq_get_ganged(int dev) {
@@ -2968,7 +3012,9 @@ bool dac_tas58xx_bq_get_ganged(int dev) {
 
 esp_err_t dac_tas58xx_bq_reset(void) {
   bq_chain_defaults();
-  return bq_reprogram_all();
+  const esp_err_t err = bq_reprogram_all();
+  auto_gain_update();
+  return err;
 }
 
 esp_err_t dac_tas58xx_bq_commit(void) {
@@ -3087,7 +3133,95 @@ esp_err_t dac_tas58xx_bq_revert(void) {
   if (!bq_load_config()) {
     bq_chain_defaults();
   }
-  return bq_reprogram_all();
+  const esp_err_t err = bq_reprogram_all();
+  auto_gain_update();
+  return err;
+}
+
+/* ==================  Automatic digital gain  ================== */
+
+/*
+ * The highest point any chain that is playing lifts full scale to, with its
+ * output's trim. A muted output plays nothing, and a chain shared by both
+ * outputs counts at the louder of the two. 0 dB when nothing plays. Assumes
+ * REG_LOCK is held once the driver is up.
+ */
+static float eq_boost_locked(float *at_hz) {
+  static double coeff[TAS58XX_BQ_SLOTS][5];
+  float top = -INFINITY, top_hz = 0.0f;
+  if (!s_bq_ready) {
+    bq_chain_defaults();
+  }
+  for (int dev = 0; dev < s_dev_count; dev++) {
+    const bool pbtl = dac_tas58xx_is_pbtl(dev);
+    const bool ganged = pbtl || s_bq_ganged[dev];
+    const double fs = s_bq_fs;
+    for (int ch = 0; ch < (ganged ? 1 : TAS58XX_BQ_CHANNELS); ch++) {
+      /* Bridged, the chip drives one output from path A. */
+      float trim = -INFINITY;
+      for (int out = 0; out < TAS58XX_BQ_CHANNELS; out++) {
+        const bool carries = ganged ? (out == 0 || !pbtl) : out == ch;
+        if (carries && !s_ch_mute[dev][out]) {
+          trim = fmaxf(trim, s_ch_gain_db[dev][out]);
+        }
+      }
+      if (trim == -INFINITY) {
+        continue;
+      }
+      for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
+        tas58xx_bq_design(&s_bq[dev][ch][i], fs, coeff[i]);
+      }
+      float hz = 0.0f;
+      const float peak = tas58xx_bq_chain_peak_db((const double (*)[5])coeff,
+                                                  TAS58XX_BQ_SLOTS, fs, &hz) +
+                         trim;
+      if (peak > top) {
+        top = peak;
+        top_hz = hz;
+      }
+    }
+  }
+  if (at_hz) {
+    *at_hz = top_hz;
+  }
+  return top == -INFINITY ? 0.0f : top;
+}
+
+float dac_tas58xx_eq_boost_db(float *at_hz) {
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+  }
+  const float boost = eq_boost_locked(at_hz);
+  if (s_reg_mutex != NULL) {
+    REG_UNLOCK();
+  }
+  return boost;
+}
+
+/*
+ * Set the digital gain to the loudest that stays clean: the level clean on
+ * the supply, less the boost. A chain that only cuts leaves room above the
+ * supply's level, up to 0 dB. Called after anything that moves either.
+ */
+static void auto_gain_update(void) {
+  if (!s_auto_gain || s_supply_mv <= 0) {
+    return;
+  }
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+  }
+  float at_hz = 0.0f;
+  const float boost = eq_boost_locked(&at_hz);
+  const float clean = dac_tas58xx_clean_db(s_supply_mv);
+  if (full_volume_store_locked(floorf((clean - boost) * 2.0f) / 2.0f)) {
+    ESP_LOGI(TAG,
+             "Digital gain follows %.1f dB clean on %.1f V less %+.2f dB of "
+             "EQ at %.0f Hz",
+             clean, (float)s_supply_mv / 1000.0f, boost, at_hz);
+  }
+  if (s_reg_mutex != NULL) {
+    REG_UNLOCK();
+  }
 }
 
 /*
@@ -3200,4 +3334,5 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   }
   s_cur = NULL;
   REG_UNLOCK();
+  auto_gain_update();
 }

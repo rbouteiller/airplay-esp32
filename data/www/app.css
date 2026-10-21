@@ -1,0 +1,78 @@
+/* Shared by the settings pages. The frame around them (navigation, status
+   strip, log drawer) styles itself from shell.js, so the Equaliser and
+   HybridFlow pages can keep their own styles. */
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);background-attachment:fixed;min-height:100vh;padding:20px;color:#fff}
+.page{max-width:1400px}
+.page>h1{font-size:24px;font-weight:600;margin:4px 0 16px}
+/* Cards fill as many columns as fit, one on a phone. */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:16px;align-items:start}
+.card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;border:1px solid rgba(255,255,255,0.1);min-width:0}
+.card.wide{grid-column:1/-1}
+/* Cards of very different heights pack into columns instead of rows. */
+.cols{columns:3 380px;column-gap:16px}
+.cols>.card{break-inside:avoid;margin-bottom:16px}
+.cols>.card.wide{column-span:all}
+/* Old links such as /config#audio land on a card. */
+.card[id]{scroll-margin-top:16px}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.card h2 a{float:right;font-size:12px;font-weight:400;color:#888;text-decoration:none}
+.card h2 a:hover{color:#fff}
+.form-group{margin-bottom:16px}
+.form-group:last-child{margin-bottom:0}
+.form-group>label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+.row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+input[type=text],input[type=password],select{width:100%;padding:11px 12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
+.row select,.row input[type=text]{flex:1;width:auto;min-width:160px}
+select option{background:#16213e}
+select:disabled,input:disabled{opacity:0.5;cursor:not-allowed}
+input:focus,select:focus{outline:none;border-color:#e94560}
+.hint{font-size:12px;color:#999;line-height:1.5;margin-top:6px}
+.hint a,.msg a{color:inherit}
+.btn{display:inline-block;padding:11px 18px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:background 0.2s;text-decoration:none;color:#fff;text-align:center}
+.btn-primary{background:#e94560}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1)}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn-danger{background:#dc3545}
+.btn-danger:hover{background:#c82333}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+.msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px;line-height:1.45}
+.msg:empty{display:none}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+.slider-row{display:flex;align-items:center;gap:12px}
+.slider-row input[type=range]{flex:1;accent-color:#e94560}
+.slider-row span{font-size:13px;color:#ccc;min-width:58px;text-align:right}
+/* Label and value pairs. */
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.kv>div{background:rgba(0,0,0,0.2);padding:10px 12px;border-radius:8px;min-width:0}
+.kv>div.full{grid-column:1/-1}
+.kv label{font-size:11px;color:#888;display:block;margin-bottom:4px}
+.kv span{font-size:14px;font-weight:500;overflow-wrap:anywhere}
+.wifi-list{max-height:220px;overflow-y:auto;margin:12px 0;border-radius:8px}
+.wifi-list:empty{display:none}
+.wifi-item{padding:12px;background:rgba(0,0,0,0.2);margin-bottom:4px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.wifi-item:hover{background:rgba(233,69,96,0.2)}
+.wifi-item.sel{background:rgba(233,69,96,0.3);outline:1px solid #e94560}
+.wifi-item .ssid{font-weight:500;overflow-wrap:anywhere}
+.wifi-item .rssi{font-size:12px;color:#888;white-space:nowrap}
+.file-row{display:flex;gap:10px;align-items:center}
+.file-name{flex:1;font-size:13px;color:#888;overflow-wrap:anywhere}
+.progress{height:6px;background:rgba(0,0,0,0.3);border-radius:3px;overflow:hidden;margin-top:12px}
+.progress[hidden]{display:none}
+.progress>div{height:100%;background:#e94560;width:0%}
+/* Speed test read-outs. */
+.speed{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.speed>div{background:rgba(0,0,0,0.2);padding:10px 12px;border-radius:8px;text-align:center}
+.speed label{font-size:11px;color:#888;display:block;margin-bottom:6px}
+.speed b{font-size:22px;font-weight:700;color:#e94560}
+.speed small{display:block;font-size:11px;color:#888;margin-top:4px}
+.log{font-family:ui-monospace,monospace;font-size:11px;color:#888;max-height:120px;overflow-y:auto;padding:8px;background:rgba(0,0,0,0.3);border-radius:6px;white-space:pre-wrap;margin-top:12px}
+.log:empty{display:none}
+@media (max-width:759px){
+  body{padding:12px}
+  .card{padding:16px}
+}

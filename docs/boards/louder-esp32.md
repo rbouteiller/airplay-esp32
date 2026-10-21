@@ -49,18 +49,18 @@ configurations for the 42 mm and 55 mm boards share the pins and the output wiri
 Its amplifier is **bridged (PBTL)**: the board ties each channel's two half-bridges
 together, so all four drive the one speaker. That is wiring, not a setting, so the board
 has a build of its own. `louder-esp32-s3-mini` sets `CONFIG_TAS58XX_FORCE_PBTL`, which
-brings the amplifier up bridged before its outputs ever switch, and locks the settings
-page's Primary Amplifier choice to bridged.
+brings the amplifier up bridged before its outputs ever switch, and locks the Configuration
+page's Primary amplifier choice to bridged.
 
 !!! danger "Only flash the Mini's own build"
 
     Every other Louder build starts the amplifier as a stereo pair, which drives the tied
-    half-bridges against each other, and lets the settings page choose stereo.
+    half-bridges against each other, and lets the Speaker page choose stereo.
 
 A bridged TAS5805M plays the left I2S channel, and the TAS5805M has no input mixer to sum
 the pair into it here. So the board starts with the output channel set to **Mono (L+R)**.
 For a stereo pair of speakers, set one board to Left and the other to Right on the
-settings page.
+Speaker page.
 
 ### USB-C power on the 55 mm board
 
@@ -70,16 +70,17 @@ firmware tells it to, and it forgets on every power loss, so the board asks agai
 boot, before the amplifier comes up. The 42 mm board has no trigger; the same build runs
 both.
 
-Choose the voltage under **USB-C Power** on the settings page. It starts at 5 V, so no
-speaker gets more than it was set up for, and the choice is kept across restarts. Choose
-what your speaker can take. 20 V needs a 65 W charger; a 30 W one manages 15 V. A charger
-that does not offer the voltage you chose gets the highest one below it, and a supply
-without USB-PD, such as a computer's port, stays at 5 V.
+Left to itself, the board asks the charger for the highest voltage it offers, up to
+20 V. To give the speaker less, choose a **USB-C supply** voltage in the Audio card of
+the Speaker page; the choice is kept across restarts. Choose what your speaker can take. 20 V needs
+a 65 W charger; a 30 W one manages 15 V. A charger that does not offer the voltage you
+chose gets the highest one below it, and a supply without USB-PD, such as a computer's
+port, stays at 5 V.
 
 The amplifier's gain does not change with its supply, only how far it can swing before it
-clips. So after changing the voltage, set **Digital gain** to match. That is the level full
-volume plays at, and the page marks the recommended level for each supply, the loudest
-that stays clean on it:
+clips, so the **Digital gain**, the level full volume plays at, has to match the supply.
+Left to itself, the board keeps it at the loudest level that stays clean on the supply it
+got:
 
 | Supply | Digital gain | Most it delivers, 4 Ω / 8 Ω |
 | --- | --- | --- |
@@ -89,16 +90,16 @@ that stays clean on it:
 | 15 V | −7 dB | about 22 / 11 W |
 | 20 V | −4.5 dB | about 39 / 19 W |
 
-The digital gain starts at −16.5 dB, the 5 V level, which is right for the 42 mm board.
-It is set by hand rather than following the supply, so it also suits a board that cannot
-read its supply, such as a 55 mm one whose trigger has been strapped to a fixed voltage in
-hardware. A louder setting clips the loudest passages; at low frequencies that is often
-hard to hear.
+An EQ boost needs room above that level too, so the board takes the highest boost of the
+filters playing off the gain: with a +9 dB bass shelf on 20 V it plays at −13.5 dB. It
+follows every change to the filters and output levels as they are applied.
 
-An EQ boost needs room above that level too: the recommended gain leaves none, so a
-+9 dB boost clips at full volume unless the digital gain comes down by 9 dB. The EQ page
-says when the filters boost past what the supply carries, and what to set the digital
-gain to.
+A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
+has been strapped to a fixed voltage in hardware, keeps a gain set by hand, starting at
+−16.5 dB, the 5 V level. The gain can also be set by hand on any board, on the Speaker
+page or in the Output card on the EQ page; the EQ page then says when the filters boost past what the supply carries, and
+what to set it to. A louder setting clips the loudest passages; at low frequencies that
+is often hard to hear.
 
 !!! note "Never more than 20 V"
 

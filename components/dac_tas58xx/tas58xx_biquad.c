@@ -487,6 +487,103 @@ void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
   tas58xx_bq_pack(coeff, out);
 }
 
+/*
+ * |b0 + b1 z^-1 + b2 z^-2|^2 on the unit circle, written in phi =
+ * 4 sin^2(w/2): s^2 + (c0 c2 phi - (c1 (c0 + c2) + 4 c0 c2)) phi, with
+ * s = c0 + c1 + c2. Unlike the cos w form it does not cancel at low
+ * frequencies, where a corner near DC leaves s tiny.
+ */
+typedef struct {
+  float s2, k1, k2;
+} bq_poly_t;
+
+static bq_poly_t bq_poly(double c0, double c1, double c2) {
+  const double s = c0 + c1 + c2;
+  return (bq_poly_t){.s2 = (float)(s * s),
+                     .k1 = (float)(-(c1 * (c0 + c2) + 4.0 * c0 * c2)),
+                     .k2 = (float)(c0 * c2)};
+}
+
+static float bq_poly_at(const bq_poly_t *p, float phi) {
+  return p->s2 + (p->k2 * phi + p->k1) * phi;
+}
+
+/* |H|^2 of the whole chain at one frequency. */
+static float chain_power(const bq_poly_t (*polys)[2], int count, float fs,
+                         float f) {
+  const float s = sinf((float)M_PI * f / fs);
+  const float phi = 4.0f * s * s;
+  float power = 1.0f;
+  for (int i = 0; i < count; i++) {
+    const float den = bq_poly_at(&polys[i][1], phi);
+    if (!(den > 1e-30f)) {
+      return 0.0f;
+    }
+    power *= bq_poly_at(&polys[i][0], phi) / den;
+  }
+  return power;
+}
+
+float tas58xx_bq_chain_peak_db(const double (*coeff)[5], int count,
+                               double sample_rate_hz, float *at_hz) {
+  bq_poly_t polys[TAS58XX_BQ_SLOTS][2];
+  if (count > TAS58XX_BQ_SLOTS) {
+    count = TAS58XX_BQ_SLOTS;
+  }
+  for (int i = 0; i < count; i++) {
+    polys[i][0] = bq_poly(coeff[i][0], coeff[i][1], coeff[i][2]);
+    /* a1 and a2 are stored negated: the denominator is 1 - a1 - a2. */
+    polys[i][1] = bq_poly(1.0, -coeff[i][3], -coeff[i][4]);
+  }
+
+  /* A 1/48-octave sweep finds every peak, and a golden-section search
+   * between each local maximum's neighbours finds its top: a Q 20 peak is
+   * only about three steps wide. */
+  const float fs = (float)sample_rate_hz;
+  const float top = fminf(20000.0f, fs * 0.45f);
+  const float step = powf(2.0f, 1.0f / 48.0f);
+  const float golden = 0.618034f;
+  float best = 0.0f, best_f = 10.0f;
+  float prev = 0.0f, cur = chain_power(polys, count, fs, 10.0f);
+  for (float f = 10.0f; f <= top; f *= step) {
+    const float next =
+        f * step <= top ? chain_power(polys, count, fs, f * step) : 0.0f;
+    if (cur > best) {
+      best = cur;
+      best_f = f;
+    }
+    if (cur > prev && cur >= next) {
+      float lo = f / step, hi = fminf(f * step, top);
+      for (int it = 0; it < 24; it++) {
+        const float m1 = hi - golden * (hi - lo);
+        const float m2 = lo + golden * (hi - lo);
+        const float p1 = chain_power(polys, count, fs, m1);
+        const float p2 = chain_power(polys, count, fs, m2);
+        if (p1 > best) {
+          best = p1;
+          best_f = m1;
+        }
+        if (p2 > best) {
+          best = p2;
+          best_f = m2;
+        }
+        if (p1 > p2) {
+          hi = m2;
+        } else {
+          lo = m1;
+        }
+      }
+    }
+    prev = cur;
+    cur = next;
+  }
+
+  if (at_hz) {
+    *at_hz = best_f;
+  }
+  return best > 0.0f ? 10.0f * log10f(best) : -120.0f;
+}
+
 bool tas58xx_bq_validate(const tas58xx_bq_t *bq, const char **why) {
   const char *err = NULL;
 

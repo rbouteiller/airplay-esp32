@@ -61,7 +61,7 @@ two reasons to do this:
   walks away.
 
 The mode lives in NVS, so no rebuild is needed. Open the web interface and pick
-**Device Settings → AirPlay Mode**, then restart the device. The mDNS records and the RTSP
+**Configuration → AirPlay → Mode**, then restart the device. The mDNS records and the RTSP
 listening port are both built at startup, so the change only takes effect on the next boot.
 
 In v1 mode the receiver mirrors a classic RAOP advertisement: no `_airplay._tcp`

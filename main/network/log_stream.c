@@ -11,6 +11,7 @@
 
 #include "log_stream.h"
 #include "spiram_task.h"
+#include "web_server.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -251,6 +252,14 @@ esp_err_t log_stream_init(void) {
   return ESP_OK;
 }
 
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+/* A browser lets any site open a WebSocket to any address, so the handshake
+ * is where another site is turned away; afterwards the stream is just sent. */
+static esp_err_t ws_log_allowed(httpd_req_t *req) {
+  return web_request_trusted(req) ? ESP_OK : ESP_FAIL;
+}
+#endif
+
 esp_err_t log_stream_register(httpd_handle_t server) {
   s_server = server;
 
@@ -259,6 +268,9 @@ esp_err_t log_stream_register(httpd_handle_t server) {
       .method = HTTP_GET,
       .handler = ws_log_handler,
       .is_websocket = true,
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+      .ws_pre_handshake_cb = ws_log_allowed,
+#endif
 #ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
       .ws_post_handshake_cb = ws_log_connected,
 #endif

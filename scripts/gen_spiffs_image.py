@@ -17,7 +17,7 @@ import gzip
 import os
 import shutil
 
-COMPRESS_SUFFIXES = (".html",)
+COMPRESS_SUFFIXES = (".html", ".css", ".js")
 
 
 def stage(src, dst, exclude=()):

@@ -102,6 +102,31 @@ void dac_tas58xx_set_full_volume_db(float db);
 float dac_tas58xx_get_full_volume_db(void);
 
 /**
+ * Tell the driver the amplifier's supply in mV, or 0 if it is not known.
+ * Safe before dac_init(), and from the USB-PD trigger's supply callback.
+ */
+void dac_tas58xx_set_supply_mv(int supply_mv);
+int dac_tas58xx_get_supply_mv(void);
+
+/**
+ * Keep the digital gain at the loudest level that stays clean: the level
+ * clean on the supply (dac_tas58xx_clean_db()) less the highest boost of the
+ * chains playing, trims included, held to TAS58XX_FULL_VOLUME_MIN_DB..0. It
+ * follows every change to the chains, trims, mutes, sample rate and supply,
+ * and does nothing while the supply is unknown. Setting a gain with
+ * dac_tas58xx_set_full_volume_db() turns it off. Safe before dac_init().
+ */
+void dac_tas58xx_set_auto_gain(bool on);
+bool dac_tas58xx_get_auto_gain(void);
+
+/**
+ * How far above full scale the chains playing lift a full-scale tone, trims
+ * included: the highest point across every unmuted output. 0 dB when nothing
+ * plays. @p at_hz, if given, receives where.
+ */
+float dac_tas58xx_eq_boost_db(float *at_hz);
+
+/**
  * Whether an amplifier can route its inputs at all. Routing is a process-flow
  * change, which only a TAS5825M has: a TAS5805M plays the pair as it comes.
  */
