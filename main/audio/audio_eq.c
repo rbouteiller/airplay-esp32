@@ -25,9 +25,9 @@
 #define CFG_VERSION 1u
 
 /* Log-spaced points at which each channel's response is evaluated to find
- * its peak, for the anti-clipping preamp. A narrow peak can fall between
- * them, so each section's resonance is probed as well, and the highest point
- * found is then refined PEAK_REFINE steps to either side. */
+ * its peak, for the preamp that audio_eq_init_blank() asks for. A narrow peak
+ * can fall between them, so each section's resonance is probed as well, and the
+ * highest point found is then refined PEAK_REFINE steps to either side. */
 #define PEAK_GRID_POINTS 256
 #define PEAK_REFINE      8
 /* Floor for that preamp, reached only by custom coefficients whose response
@@ -133,8 +133,11 @@ static float s_trim_db[AUDIO_EQ_CHANNELS];
 static bool s_mute[AUDIO_EQ_CHANNELS];
 static uint32_t s_rate = CONFIG_OUTPUT_SAMPLE_RATE_HZ;
 static float s_preamp_db;
-/* The preamp is rounded down to a multiple of this, 0 to leave it exact
- * (audio_eq_init_blank). */
+/* Set by audio_eq_init_blank(), for an amplifier whose volume gives the cut
+ * back. A plain DAC has no such volume, so its boosts play at full level and
+ * a track that clips is turned down by the listener. */
+static bool s_cut_boosts;
+/* The preamp is rounded down to a multiple of this, 0 to leave it exact. */
 static float s_preamp_step_db;
 static int s_tb_back = 0;
 
@@ -273,8 +276,12 @@ static float chain_peak(const mag_poly_t *mag, int stages, float fs,
 /* Overlapping boosts add up, so a channel's peak can exceed any single
  * section's gain. Find the louder channel's peak, trim included, and return
  * the attenuation (dB, <= 0) that pulls it down to 0 dBFS. Pulling both
- * channels down by the same amount keeps the balance. */
+ * channels down by the same amount keeps the balance. 0 unless the boosts
+ * are to be cut. */
 static float preamp_for(const eq_config_t *cfg, uint32_t rate) {
+  if (!s_cut_boosts) {
+    return 0.0f;
+  }
   const float fs = (float)rate;
   const float f_hi = fs / 2.0f < 20000.0f ? fs / 2.0f * 0.99f : 20000.0f;
   float peak_db = -INFINITY;
@@ -523,6 +530,7 @@ esp_err_t audio_eq_init_blank(float preamp_step_db) {
     return err;
   }
   xSemaphoreTake(s_mutex, portMAX_DELAY);
+  s_cut_boosts = true;
   s_preamp_step_db = preamp_step_db;
   chains_default();
   redesign();

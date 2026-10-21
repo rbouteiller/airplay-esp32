@@ -31,15 +31,20 @@
 #define AUDIO_EQ_TRIM_MIN_DB (-40.0f)
 #define AUDIO_EQ_TRIM_MAX_DB 0.0f
 
-/** Load the committed tuning. Call once SPIFFS and settings are up. */
+/**
+ * Load the committed tuning. Call once SPIFFS and settings are up. Boosts
+ * play at full level: the output stage applies the volume before it rounds,
+ * so a track that clips is cured by turning down.
+ */
 esp_err_t audio_eq_init(void);
 
 /**
  * Instead of audio_eq_init(), for an amplifier whose own DSP keeps the
  * tuning and lends its chains here to be compared against
- * (CONFIG_SOFTWARE_EQ_AB): start flat, load nothing, and round the preamp
- * down to a multiple of @p preamp_step_db, so the amplifier's volume, which
- * moves in such steps, can give it back exactly. The amplifier keeps its
+ * (CONFIG_SOFTWARE_EQ_AB): start flat, load nothing, and turn the signal
+ * down ahead of the filters by as much as the curves boost, rounded down to
+ * a multiple of @p preamp_step_db, so the amplifier's volume, which moves in
+ * such steps, can give it back exactly. The amplifier keeps its
  * own trims and mutes, so audio_eq_set_trim_db(), audio_eq_set_mute() and
  * audio_eq_commit(), which save, are not for such a board.
  */
@@ -63,9 +68,10 @@ uint32_t audio_eq_get_rate(void);
 void audio_eq_process(int16_t *buf, size_t frames);
 
 /**
- * The same filtering, for output wider than 16 bits: @p in is filtered into
- * @p out on the int16 scale (32768.0 is full scale), neither rounded nor
- * clipped, so a gain applied afterwards loses nothing. Returns false, with
+ * The same filtering, handed over before rounding, which is how the output
+ * stage takes it: @p in is filtered into @p out on the int16 scale (32768.0
+ * is full scale), neither rounded nor clipped, so the volume applied
+ * afterwards loses nothing and decides what clips. Returns false, with
  * @p out untouched, wherever audio_eq_process() would leave its buffer as it
  * was: @p in is then the output as it stands.
  */
@@ -100,6 +106,7 @@ bool audio_eq_get_mute(int ch);
 
 /**
  * Attenuation (dB, <= 0) applied ahead of the filters so the loudest point of
- * the current curves, trims included, cannot clip. Reported by /api/bq.
+ * the current curves, trims included, cannot clip. Always 0 after
+ * audio_eq_init(), whose boosts play at full level. Reported by /api/bq.
  */
 float audio_eq_get_preamp_db(void);

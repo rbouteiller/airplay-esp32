@@ -205,8 +205,10 @@ menu "Airplay ESP Configuration"
             The filters run in single-precision floating point on the audio
             task, so this needs a chip with an FPU (not the ESP32-S2 or
             ESP32-C5), and the CPU it takes grows with the number of active
-            sections. Its tables live in PSRAM, so it needs that too. Boosts are paid for by turning the signal down ahead
-            of the filters, so they cannot clip.
+            sections. Its tables live in PSRAM, so it needs that too.
+            Boosts play at full level, so a loud track can clip; the volume
+            is applied before the output is rounded, so turning it down
+            cures that.
 
     config SOFTWARE_EQ_AB
         bool "Software EQ A/B switch on a TAS58xx amplifier"

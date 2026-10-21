@@ -1513,21 +1513,24 @@ function plotAll(){
 }
 
 /* ---- server ---- */
-/* Only the software EQ reports a preamp: it has no DSP headroom, so it turns
-   the signal down ahead of the filters by as much as the curves boost. */
+/* Only a plain DAC's software EQ reports a preamp, and it is always 0: there
+   is no DSP headroom to borrow, so boosts play at full level. */
 function softwareEq(){return !!data&&data.preamp_db!==undefined;}
 function showPreamp(){
   var e=$('preamp');
   if(!softwareEq()){e.style.display='none';return;}
   $('trim-hint').textContent='The volume at the top of the page is the'+
-    ' AirPlay volume. The levels below trim each output against it to match'+
-    ' drivers. The software EQ'+
-    ' turns the signal down by as much as the curves boost, so nothing'+
-    ' clips; trimming an output gives some of that back.';
-  e.textContent=data.preamp_db<-0.05
-    ?'Turned down '+(-data.preamp_db).toFixed(1)+
-     ' dB for the current boosts.'
-    :'Nothing is turned down: the current curves do not boost past 0 dB.';
+    ' AirPlay volume. The levels below trim each output against it to match drivers.';
+  var chains=activeChains(),pk={db:-Infinity,f:0},k,r;
+  for(k=0;k<chains.length;k++){
+    r=chainPeak(sectionsOf(chains[k].c,chains[k].rate),chains[k].rate,
+                chains[k].g);
+    if(r.db>pk.db)pk=r;
+  }
+  e.textContent=pk.db>0.05
+    ?'Boosts reach '+dbText(pk.db)+' and play at full level, so a loud'+
+     ' track can clip: if it distorts, turn the volume down.'
+    :'The current curves do not boost past 0 dB.';
   e.style.display='';
 }
 function post(body,okText){
@@ -2312,7 +2315,7 @@ function aeqRun(){
       r.before.toFixed(1)+' dB RMS before and '+r.after.toFixed(1)+
       ' dB after. Summed EQ '+r.peak.toFixed(1)+' dB at its highest'+
       (r.peak<=0.05?', so it costs no headroom.'
-       :softwareEq()?', which is taken off ahead of the filters once applied.'
+       :softwareEq()?', which plays at full level: turn the volume down if a loud track distorts.'
        :', so take that much off this output to keep the headroom.');
     show($('msg'),'Filters fitted. Apply to hear them.','info');
   },30);

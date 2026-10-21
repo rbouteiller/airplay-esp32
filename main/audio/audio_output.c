@@ -226,6 +226,32 @@ static void apply_volume(int16_t *buf, size_t frames, int32_t target) {
   (void)target;
 #endif
 }
+
+#ifdef CONFIG_AUDIO_EQ
+static inline int16_t to_pcm16(float v) {
+  if (v >= 32767.0f) {
+    return 32767;
+  }
+  if (v <= -32768.0f) {
+    return -32768;
+  }
+  /* Round to nearest: offset into positive range, where truncation is
+   * floor. */
+  return (int16_t)((int32_t)(v + 32768.5f) - 32768);
+}
+
+// The EQ's output may run past full scale, as it does for a boost on a
+// loud track. Rounding only after the volume means it clips only where the
+// volume leaves it past full scale, so turning down cures it.
+static void eq_volume_to_pcm16(const float *eq, size_t frames, int32_t target,
+                               int16_t *pcm) {
+  for (size_t i = 0; i < frames * 2; i += 2) {
+    const float gain = (float)volume_step(target) * (1.0f / 32768.0f);
+    pcm[i] = to_pcm16(eq[i] * gain);
+    pcm[i + 1] = to_pcm16(eq[i + 1] * gain);
+  }
+}
+#endif
 #else
 // A 16-bit sample times a Q15 volume is a 31-bit product, which a 32-bit
 // word holds exactly: without the EQ, the volume costs no precision at all.
@@ -265,9 +291,9 @@ static void eq_volume_to_words(const float *eq, size_t frames, int32_t target,
 #endif
 #endif
 
-// Where process_pcm() leaves its output. 16-bit words need neither buffer;
-// 32-bit words need one of their own, and the EQ one to hand its unrounded
-// output over in.
+// Where process_pcm() leaves its output. 32-bit words need a buffer of their
+// own, and the EQ one to hand its unrounded output over in, at either word
+// size.
 typedef struct {
   int32_t *words;
   float *eq;
@@ -281,6 +307,7 @@ static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
   if (bufs->words == NULL) {
     return false;
   }
+#endif
 #ifdef CONFIG_AUDIO_EQ
   bufs->eq = malloc(frames * 2 * sizeof(float));
   if (bufs->eq == NULL) {
@@ -289,7 +316,7 @@ static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
     return false;
   }
 #endif
-#else
+#if !defined(CONFIG_I2S_32BIT_OUTPUT) && !defined(CONFIG_AUDIO_EQ)
   (void)frames;
 #endif
   return true;
@@ -347,9 +374,13 @@ static const void *process_pcm(int16_t *buf, size_t frames, int32_t volume_q15,
   volume_to_words(buf, frames, volume_q15, bufs->words);
   return bufs->words;
 #else
-  (void)bufs;
 #ifdef CONFIG_AUDIO_EQ
-  audio_eq_process(buf, frames);
+  if (audio_eq_process_float(buf, bufs->eq, frames)) {
+    eq_volume_to_pcm16(bufs->eq, frames, volume_q15, buf);
+    return buf;
+  }
+#else
+  (void)bufs;
 #endif
   apply_volume(buf, frames, volume_q15);
   return buf;

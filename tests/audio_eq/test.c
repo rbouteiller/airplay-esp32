@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 /* Host tests for main/audio/audio_eq.c: the audio path against a
- * double-precision direct-form reference built from the same designer, the
- * anti-clipping preamp against a dense search, and edits that must not
- * restart the filters or step the level. */
+ * double-precision direct-form reference built from the same designer,
+ * boosts at full level on a plain DAC, the A/B switch's anti-clipping preamp
+ * against a dense search, and edits that must not restart the filters or
+ * step the level. Run once per way the EQ can start: plain, and with "blank"
+ * as audio_eq_init_blank(). */
 
 #include "audio_eq.h"
 
@@ -436,6 +438,41 @@ static void test_preamp_covers_peak(void) {
         audio_eq_get_preamp_db());
 }
 
+/* A plain DAC's EQ turns nothing down: a +6 dB peak lifts a -3 dBFS sine at
+ * its centre to +3 dBFS, past full scale, for the volume to deal with. */
+static void test_boosts_at_full_level(void) {
+  printf("boosts play at full level\n");
+  static float outf[MAX_FRAMES * 2];
+  const uint32_t rate = 48000;
+  const size_t frames = SECONDS(rate, 1);
+  tas58xx_bq_t chain[AUDIO_EQ_SLOTS];
+  chain_flat(chain);
+  chain[0] = peak(1000.0f, 1.0f, 6.0f);
+  reset(rate);
+  CHECK(audio_eq_set_chain(0, chain) == ESP_OK, "peak rejected");
+  CHECK(audio_eq_get_preamp_db() == 0.0f, "preamp %.2f dB",
+        audio_eq_get_preamp_db());
+
+  const double amp = 32767.0 * pow(10.0, -3.0 / 20.0);
+  for (size_t i = 0; i < frames; i++) {
+    int16_t x = (int16_t)lrint(amp * sin(2 * M_PI * 1000 * (double)i / rate));
+    s_in[2 * i] = x;
+    s_in[2 * i + 1] = x;
+  }
+  for (size_t i = 0; i < frames; i += BLOCK) {
+    size_t n = frames - i < BLOCK ? frames - i : BLOCK;
+    CHECK(audio_eq_process_float(s_in + 2 * i, outf + 2 * i, n),
+          "float path declined the peak");
+  }
+  float pk = 0.0f;
+  for (size_t i = frames / 2; i < frames; i++) {
+    pk = fmaxf(pk, fabsf(outf[2 * i]));
+  }
+  double db = 20.0 * log10(pk / 32768.0);
+  printf("  -3 dBFS sine under a +6 dB peak: %+.2f dBFS\n", db);
+  CHECK(fabs(db - 3.0) < 0.1, "peak %+.2f dBFS, expected +3", db);
+}
+
 static void test_rate_follows_clock(void) {
   printf("design follows the clock, cached or not\n");
   tas58xx_bq_t chain[AUDIO_EQ_SLOTS];
@@ -706,13 +743,22 @@ static void test_ganged_and_rejects(void) {
         "unstable custom accepted");
 }
 
-int main(void) {
-  CHECK(audio_eq_init() == ESP_OK, "init failed");
+int main(int argc, char **argv) {
+  /* audio_eq starts once per process, so each way is a run of its own. */
+  const bool blank = argc > 1 && strcmp(argv[1], "blank") == 0;
+  printf("%s\n", blank ? "-- as the A/B switch starts it, boosts cut"
+                       : "-- as a plain DAC starts it, boosts at full level");
+  CHECK((blank ? audio_eq_init_blank(0.0f) : audio_eq_init()) == ESP_OK,
+        "init failed");
   test_flat_is_bit_exact();
   test_matches_reference();
   test_float_output();
-  test_preamp_covers_peak();
-  test_rate_follows_clock();
+  if (blank) {
+    test_preamp_covers_peak();
+    test_rate_follows_clock();
+  } else {
+    test_boosts_at_full_level();
+  }
   test_edits_keep_state();
   test_levels_glide();
   test_silence_rests();
