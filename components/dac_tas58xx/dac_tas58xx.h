@@ -253,6 +253,26 @@ typedef struct {
 esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out);
 
 /**
+ * A TAS5805M's automatic gain limiter and full-scale clipper as the chip
+ * holds them: raw words from book 0x8C, Process Flow 1 (TI SLOA263A,
+ * Table 5). The driver writes none of them, so they show the part's own
+ * state.
+ */
+typedef struct {
+  int32_t agl_release;   /**< 1.31 */
+  int32_t agl_attack;    /**< 1.31 */
+  int32_t agl_threshold; /**< 1.31, linear */
+  int32_t agl_enable;    /**< 1.31, non-zero = on */
+  int32_t agl_alpha;     /**< 1.31, energy time constant */
+  int32_t agl_omega;     /**< 1.31 */
+  int32_t thd_boost;     /**< 9.23, gain into the clip at full scale */
+  int32_t fine_vol[2];   /**< 2.30, left and right gain after it */
+} tas58xx_limit_readback_t;
+
+/** Read a TAS5805M's limiter and clipper; ESP_ERR_NOT_SUPPORTED on others. */
+esp_err_t dac_tas58xx_limit_readback(int dev, tas58xx_limit_readback_t *out);
+
+/**
  * Write every section as a pass-through while keeping the chains, so the
  * software EQ can play them instead and the two can be compared by ear. The
  * chains, their API and auto gain are unchanged; only what reaches the

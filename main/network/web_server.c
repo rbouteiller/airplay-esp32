@@ -3109,6 +3109,42 @@ static void add_block_hex(cJSON *arr,
   cJSON_AddItemToArray(arr, cJSON_CreateString(hex));
 }
 
+/* A DSP word as the chip holds it, and its value at @p frac_bits. */
+static void add_coeff(cJSON *obj, const char *name, int32_t raw,
+                      int frac_bits) {
+  cJSON *c = cJSON_AddObjectToObject(obj, name);
+  char hex[9];
+  snprintf(hex, sizeof(hex), "%08lx", (unsigned long)(uint32_t)raw);
+  cJSON_AddStringToObject(c, "raw", hex);
+  const double v = ldexp((double)raw, -frac_bits);
+  cJSON_AddNumberToObject(c, "value", v);
+  if (v > 0.0) {
+    cJSON_AddNumberToObject(c, "db", 20.0 * log10(v));
+  }
+}
+
+/* The amplifier's limiter and clipper, which the driver leaves as it finds
+ * them. Only the TAS5805M's map is known here. */
+static void add_limits(cJSON *amp, int dev) {
+  tas58xx_limit_readback_t lim;
+  if (dac_tas58xx_limit_readback(dev, &lim) != ESP_OK) {
+    return;
+  }
+  /* TI's note lists Enable as non-zero yet calls the AGL off by default, so
+   * the flag is shown as read rather than as on or off. */
+  cJSON *agl = cJSON_AddObjectToObject(amp, "agl");
+  add_coeff(agl, "enable", lim.agl_enable, 31);
+  add_coeff(agl, "threshold", lim.agl_threshold, 31);
+  add_coeff(agl, "attack", lim.agl_attack, 31);
+  add_coeff(agl, "release", lim.agl_release, 31);
+  add_coeff(agl, "alpha", lim.agl_alpha, 31);
+  add_coeff(agl, "omega", lim.agl_omega, 31);
+  cJSON *clip = cJSON_AddObjectToObject(amp, "clipper");
+  add_coeff(clip, "thd_boost", lim.thd_boost, 23);
+  add_coeff(clip, "fine_volume_l", lim.fine_vol[0], 30);
+  add_coeff(clip, "fine_volume_r", lim.fine_vol[1], 30);
+}
+
 /* Each section as designed next to what the part's coefficient RAM holds, so
  * a chain can be checked end to end. A mismatch only means something while
  * the amplifier is playing, which is when the chain is written. */
@@ -3138,6 +3174,7 @@ static esp_err_t bq_readback_handler(httpd_req_t *req) {
         cJSON_AddBoolToObject(amp, "muted", (rb->ctrl2 & 0x08) != 0);
         cJSON_AddBoolToObject(amp, "eq_bypassed", rb->eq_bypassed);
         cJSON_AddNumberToObject(amp, "rate", rb->design_rate_hz);
+        add_limits(amp, d);
       }
       cJSON *ch = cJSON_CreateObject();
       cJSON *mismatched = cJSON_AddArrayToObject(ch, "mismatched");

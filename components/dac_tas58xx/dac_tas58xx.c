@@ -3121,6 +3121,66 @@ esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out) {
   return err;
 }
 
+/* One big-endian word of DSP memory. The caller has selected the book. */
+static esp_err_t read_coeff32(uint8_t page, uint8_t sub_addr, int32_t *out) {
+  uint8_t b[4] = {0};
+  esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, sub_addr, b, sizeof(b));
+  }
+  *out = (int32_t)(((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                   ((uint32_t)b[2] << 8) | b[3]);
+  return err;
+}
+
+esp_err_t dac_tas58xx_limit_readback(int dev, tas58xx_limit_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (s_devs[dev].model != TAS58XX_MODEL_TAS5805M) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  s_cur = &s_devs[dev];
+  esp_err_t err = select_book_page(MIX_BOOK, 0x2C);
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x5C, &out->agl_release);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x60, &out->agl_attack);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x64, &out->agl_threshold);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x68, &out->agl_enable);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x6C, &out->agl_alpha);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2D, 0x18, &out->agl_omega);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x18, &out->thd_boost);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x1C, &out->fine_vol[0]);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x20, &out->fine_vol[1]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
+}
+
 esp_err_t dac_tas58xx_bq_set(int dev, int ch,
                              const tas58xx_bq_t in[TAS58XX_BQ_SLOTS]) {
   if (!in || dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
