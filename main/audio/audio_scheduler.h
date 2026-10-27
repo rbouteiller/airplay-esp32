@@ -59,6 +59,13 @@ typedef struct {
   uint32_t drift_servo_phase;
   uint32_t drift_servo_trims;
   uint32_t drift_servo_warmup;
+  /* Steps: an error far beyond what the servo trims away in good time, as
+   * from a stall, made up at once.  See audio_scheduler.c. */
+  uint32_t drift_step_confirm;
+  uint32_t drift_step_skip;
+  uint32_t drift_step_hold;
+  bool drift_step_fade_out;
+  uint32_t drift_steps;
   audio_scheduler_wait_reason_t wait_reason;
   uint64_t render_calls;
   uint64_t silent_render_calls;

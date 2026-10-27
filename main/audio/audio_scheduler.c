@@ -245,6 +245,105 @@ static void trim_resample(int16_t *out, size_t frames, uint8_t channels,
  * itself once the ring reaches steady occupancy.  ~2 s at any block size. */
 #define DRIFT_SERVO_WARMUP_RENDERS 250
 
+/* An error the rate limit would take far too long over is made up in one step
+ * instead.  A stall of the playback task -- a flash erase, say -- leaves
+ * playout tens of milliseconds late at once, and trimming 40 ms away at the
+ * limit took 70 s of trims at 25/s, a warble on any steady tone.  Normal
+ * operation stays within a fraction of a millisecond, so past
+ * DRIFT_STEP_MS for DRIFT_STEP_CONFIRM_RENDERS renders running (both raw and
+ * filtered, so one odd measurement cannot trigger it) the cursor skips
+ * forward, or holds back behind silence, by the whole error.  The audio fades
+ * out and back in over DRIFT_STEP_FADE frames, a short dip instead of a
+ * click. */
+#define DRIFT_STEP_MS              5U
+#define DRIFT_STEP_CONFIRM_RENDERS 4U
+#define DRIFT_STEP_FADE            64U
+
+static void step_reset(audio_scheduler_t *scheduler) {
+  scheduler->drift_step_confirm = 0;
+  scheduler->drift_step_skip = 0;
+  scheduler->drift_step_hold = 0;
+  scheduler->drift_step_fade_out = false;
+}
+
+/* Read `frames` from the cursor on, silence standing in for any it lacks. */
+static void step_read(audio_scheduler_t *scheduler, audio_timeline_t *timeline,
+                      int16_t *out, size_t frames, uint8_t channels,
+                      size_t *concealed_samples) {
+  if (frames == 0U) {
+    return;
+  }
+  size_t concealed = 0;
+  size_t produced =
+      audio_timeline_read(timeline, scheduler->epoch, scheduler->cursor_rtp,
+                          out, frames, channels, true, &concealed);
+  scheduler->cursor_rtp += (uint32_t)produced;
+  scheduler->rendered_samples += produced;
+  if (produced < frames) {
+    output_silence(&out[produced * channels], frames - produced, channels);
+  }
+  if (concealed_samples) {
+    *concealed_samples += concealed;
+  }
+}
+
+/* Scale `frames` frames by a straight ramp: up from silence (fade in) or down
+ * to it. */
+static void step_fade(int16_t *out, size_t frames, uint8_t channels,
+                      bool fade_in) {
+  for (size_t k = 0; k < frames; k++) {
+    const int32_t gain = (int32_t)(fade_in ? k + 1U : frames - k);
+    for (uint8_t ch = 0; ch < channels; ch++) {
+      out[k * channels + ch] = (int16_t)((int32_t)out[k * channels + ch] *
+                                         gain / (int32_t)(frames + 1U));
+    }
+  }
+}
+
+/* A block with a step in it: fade out, skip the cursor or hold it behind
+ * silence, which may run over several blocks, then fade back in. */
+static size_t step_render(audio_scheduler_t *scheduler,
+                          audio_timeline_t *timeline, int16_t *out,
+                          size_t samples, uint8_t channels,
+                          size_t *concealed_samples) {
+  const size_t fade =
+      samples / 2U < DRIFT_STEP_FADE ? samples / 2U : DRIFT_STEP_FADE;
+  size_t k = 0;
+  if (scheduler->drift_step_fade_out) {
+    step_read(scheduler, timeline, out, fade, channels, concealed_samples);
+    step_fade(out, fade, channels, false);
+    k = fade;
+    scheduler->cursor_rtp += scheduler->drift_step_skip;
+    audio_timeline_set_playback_floor(timeline, scheduler->epoch,
+                                      scheduler->cursor_rtp);
+    scheduler->drift_step_skip = 0;
+    scheduler->drift_step_fade_out = false;
+  }
+  const size_t hold = scheduler->drift_step_hold < samples - k
+                          ? scheduler->drift_step_hold
+                          : samples - k;
+  output_silence(&out[k * channels], hold, channels);
+  k += hold;
+  scheduler->drift_step_hold -= (uint32_t)hold;
+  if (scheduler->drift_step_hold == 0U) {
+    step_read(scheduler, timeline, &out[k * channels], samples - k, channels,
+              concealed_samples);
+    const size_t rest = samples - k < fade ? samples - k : fade;
+    step_fade(&out[k * channels], rest, channels, true);
+    /* Measure afresh from here. */
+    scheduler->error_filter_valid = false;
+    scheduler->raw_playout_error_samples = 0;
+    scheduler->playout_error_samples = 0;
+    scheduler->filtered_playout_error_q16 = 0;
+    scheduler->drift_reference_error_q16 = 0;
+    scheduler->drift_reference_network_ns = 0;
+    scheduler->drift_servo_accum = 0;
+    scheduler->drift_servo_phase = 0;
+    scheduler->drift_step_confirm = 0;
+  }
+  return samples;
+}
+
 void audio_scheduler_init(audio_scheduler_t *scheduler,
                           uint32_t preroll_samples, int64_t fallback_after_us) {
   if (!scheduler) {
@@ -281,6 +380,8 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->drift_servo_phase = 0;
   scheduler->drift_servo_warmup = 0;
   scheduler->drift_servo_trims = 0;
+  step_reset(scheduler);
+  scheduler->drift_steps = 0;
   scheduler->wait_reason = AUDIO_SCHED_WAIT_CLOCK_MAP;
   scheduler->render_calls = 0;
   scheduler->silent_render_calls = 0;
@@ -421,9 +522,29 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
      * somewhere to keep the frames waiting to be written back. */
     const bool trimmable =
         samples >= TRIM_MIN_FRAMES && channels <= AUDIO_V2_MAX_CHANNELS;
-    if (scheduler->drift_servo_warmup < DRIFT_SERVO_WARMUP_RENDERS) {
+    const int32_t step_samples =
+        (int32_t)(clock_map->sample_rate * DRIFT_STEP_MS / 1000U);
+    const int32_t abs_raw = raw_error < 0 ? -raw_error : raw_error;
+    const bool past_step = abs_raw >= step_samples && abs_error >= step_samples;
+    if (scheduler->drift_step_fade_out || scheduler->drift_step_hold > 0U) {
+      /* A step is under way, and measures afresh when it is done. */
+    } else if (scheduler->drift_servo_warmup < DRIFT_SERVO_WARMUP_RENDERS) {
       scheduler->drift_servo_warmup++;
+    } else if (past_step &&
+               ++scheduler->drift_step_confirm >= DRIFT_STEP_CONFIRM_RENDERS) {
+      /* Late: skip ahead.  Early: hold back behind silence. */
+      if (raw_error < 0) {
+        scheduler->drift_step_skip = (uint32_t)-raw_error;
+      } else {
+        scheduler->drift_step_hold = (uint32_t)raw_error;
+      }
+      scheduler->drift_step_fade_out = true;
+      scheduler->drift_steps++;
     } else {
+      /* Until a step is confirmed, the servo carries on. */
+      if (!past_step) {
+        scheduler->drift_step_confirm = 0;
+      }
       scheduler->drift_servo_accum +=
           (int64_t)scheduler->playout_error_samples * (int64_t)samples;
       if (scheduler->drift_servo_accum > DRIFT_SERVO_ACCUM_LIMIT) {
@@ -492,6 +613,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->drift_servo_accum = 0;
       scheduler->drift_servo_phase = 0;
       scheduler->drift_servo_warmup = 0;
+      step_reset(scheduler);
     } else {
       /* fallback_after_us is an elapsed-time timeout.  Both timestamps
        * must use the same monotonic local clock.  preroll_started_us is set
@@ -536,6 +658,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         scheduler->drift_servo_accum = 0;
         scheduler->drift_servo_phase = 0;
         scheduler->drift_servo_warmup = 0;
+        step_reset(scheduler);
       } else {
         scheduler->state = AUDIO_SCHED_PREROLL;
         scheduler->wait_reason = fallback_due ? AUDIO_SCHED_WAIT_FALLBACK_DATA
@@ -567,9 +690,15 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     scheduler->drift_servo_accum = 0;
     scheduler->drift_servo_phase = 0;
     scheduler->drift_servo_warmup = 0;
+    step_reset(scheduler);
     scheduler->silent_render_calls++;
     output_silence(out, samples, channels);
     return samples;
+  }
+
+  if (scheduler->drift_step_fade_out || scheduler->drift_step_hold > 0U) {
+    return step_render(scheduler, timeline, out, samples, channels,
+                       concealed_samples);
   }
 
   /* Stretch: read one sample fewer and resample it to the full block, so the

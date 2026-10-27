@@ -313,6 +313,59 @@ static void test_short_block(void) {
         "cursor moved %u", (unsigned)(scheduler.cursor_rtp - cursor));
 }
 
+/* Playout knocked `jump_ms` off at once, as by a stall of the playback task
+ * (late, positive) or the mirror (early, negative): one step makes it up,
+ * fading out and back in, where the servo would trim at its limit for over a
+ * minute.  The step must not click: a hard jump on the 1600 Hz tone makes a
+ * second difference of up to twice its amplitude. */
+static void test_step(double jump_ms) {
+  printf("step, playout %+.0f ms\n", jump_ms);
+  drift_ppm = 0.0;
+  audio_scheduler_t scheduler;
+  start(&scheduler);
+  const int64_t jump_ns = (int64_t)(jump_ms * 1e6);
+  const int64_t at = DRIFT_SERVO_WARMUP_RENDERS + 100;
+  double worst = 0.0;
+  int32_t last[2] = {0};
+  size_t frames = 0;
+  uint32_t trims_after_step = 0;
+  int16_t block[BLOCK * AUDIO_V2_MAX_CHANNELS];
+  for (int64_t i = 1; i <= at + 500; i++) {
+    const int64_t network_ns = (int64_t)clock_map.anchor_network_ns +
+                               i * BLOCK * 1000000000LL / RATE +
+                               (i >= at ? jump_ns : 0);
+    const uint32_t trims = scheduler.drift_servo_trims;
+    const size_t produced =
+        audio_scheduler_render(&scheduler, &timeline, &clock_map, network_ns,
+                               block, BLOCK, AUDIO_V2_MAX_CHANNELS, NULL);
+    CHECK(produced == BLOCK, "render %lld produced %zu", (long long)i,
+          produced);
+    if (scheduler.drift_steps > 0U) {
+      trims_after_step += scheduler.drift_servo_trims - trims;
+    }
+    for (size_t k = 0; k < produced; k++, frames++) {
+      const int32_t now = block[k * AUDIO_V2_MAX_CHANNELS];
+      const double d2 = fabs((double)now - 2.0 * last[1] + last[0]);
+      if (frames >= 2 && d2 > worst) {
+        worst = d2;
+      }
+      last[0] = last[1];
+      last[1] = now;
+    }
+  }
+  printf("  %u step(s), %u trims after, error %d samples, second difference "
+         "%.0f\n",
+         (unsigned)scheduler.drift_steps, (unsigned)trims_after_step,
+         (int)scheduler.playout_error_samples, worst);
+  CHECK(scheduler.drift_steps == 1U, "%u steps",
+        (unsigned)scheduler.drift_steps);
+  CHECK(abs(scheduler.playout_error_samples) <= 2, "playout %d samples off",
+        (int)scheduler.playout_error_samples);
+  CHECK(trims_after_step <= 2U, "%u trims after the step",
+        (unsigned)trims_after_step);
+  CHECK(worst < AMP / 4.0, "second difference %.0f: it clicks", worst);
+}
+
 int main(void) {
   test_kernel();
   test_block(-1);
@@ -321,6 +374,8 @@ int main(void) {
   test_render(-200.0);
   test_concealed_count();
   test_short_block();
+  test_step(40.0);
+  test_step(-40.0);
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;
