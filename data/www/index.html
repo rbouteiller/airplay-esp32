@@ -91,6 +91,7 @@
 <div><label>Uptime</label><span id='i-up'>-</span></div>
 <div><label>Free memory</label><span id='i-heap'>-</span></div>
 <div><label>Last reset</label><span id='i-reset'>-</span></div>
+<div id='i-supply-row' hidden><label>Supply</label><span id='i-supply'>-</span></div>
 </div>
 <div class='actions'><button class='btn btn-danger' onclick='Shell.restart()'>Restart</button></div>
 </div>
@@ -341,6 +342,9 @@ function showInfo(i){
   $('i-up').textContent=uptime(i.uptime_s);
   $('i-heap').textContent=Math.round(i.free_heap/1024)+' KB';
   $('i-reset').textContent=i.reset_reason||'-';
+  /* Only a TAS58xx board that can read its supply reports one. */
+  $('i-supply-row').hidden=!(i.supply_mv>0);
+  if(i.supply_mv>0)$('i-supply').textContent=(i.supply_mv/1000).toFixed(1)+' V';
 }
 
 function loadLinks(i){

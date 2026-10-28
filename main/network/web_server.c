@@ -1437,6 +1437,8 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 #endif
 #ifdef CONFIG_DAC_TAS58XX
   cJSON_AddBoolToObject(info, "dual_supported", true);
+  /* As a USB-PD trigger agreed it or a TAS5825M measures it; 0 if unknown. */
+  cJSON_AddNumberToObject(info, "supply_mv", dac_tas58xx_get_supply_mv());
 #else
   cJSON_AddBoolToObject(info, "dual_supported", false);
 #endif

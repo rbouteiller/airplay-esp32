@@ -826,6 +826,108 @@ static void tas58xx_fault_task(void *arg) {
 #endif /* CONFIG_SPKFAULT_GPIO < 0 */
 
 /*
+ * A TAS5825M measures its own supply (PVDD_ADC, V = code / 8.428), so a board
+ * whose USB-PD trigger is strapped out of the firmware's reach -- the
+ * Louder-ESP32-Pro's CH224K always asks for 20 V -- still tells the automatic
+ * gain what it plays on. The TAS5805M has no such register (0x5E reads 0).
+ */
+#define REG_PVDD_ADC      0x5E
+#define PVDD_ADC_PER_VOLT 8.428f
+#define PVDD_POLL_MS      2000
+/* Chargers step their voltages 3 V or more apart, while a loaded supply sags
+ * and the ADC resolves 0.12 V, so only a move this large is reported -- and,
+ * from an amplifier that is playing, only when read twice running. */
+#define PVDD_REPORT_STEP_MV 1000
+
+static TaskHandle_t s_pvdd_task = NULL;
+static volatile bool s_pvdd_task_stop = false;
+
+/* The ADC is off in DEEP_SLEEP, where the amplifier idles, and reads within
+ * 10 ms of SLEEP, which leaves the outputs alone and needs no I2S clocks. */
+#define PVDD_WAKE_TRIES 5
+#define PVDD_WAKE_MS    10
+
+/* Lift a deep-sleeping amplifier to SLEEP just long enough to measure, and
+ * put it back. Assumes REG_LOCK is held, s_cur == dev and ctrl2 is its
+ * DEVICE_CTRL2. Returns the code, 0 if there was none. */
+static uint8_t pvdd_read_asleep_locked(uint8_t ctrl2) {
+  uint8_t code = 0;
+  tas58xx_write_reg(REG_DEVICE_CTRL2,
+                    (uint8_t)((ctrl2 & ~CTRL2_STATE_MASK) | CTRL2_SLEEP));
+  for (int i = 0; i < PVDD_WAKE_TRIES && code == 0; i++) {
+    vTaskDelay(pdMS_TO_TICKS(PVDD_WAKE_MS));
+    if (tas58xx_read_reg(REG_PVDD_ADC, &code) != ESP_OK) {
+      code = 0;
+    }
+  }
+  tas58xx_write_reg(REG_DEVICE_CTRL2, ctrl2);
+  return code;
+}
+
+/* Polls between measurements of a sleeping amplifier once the supply is
+ * known, to notice a different charger: a minute. */
+#define PVDD_SLEEP_PROBE_POLLS 30
+
+static void tas58xx_pvdd_task(void *arg) {
+  tas58xx_dev_t *dev = arg;
+  int pending_mv = 0;
+  int since_probe = PVDD_SLEEP_PROBE_POLLS;
+
+  while (1) {
+    if (s_pvdd_task_stop) {
+      s_pvdd_task = NULL;
+      vTaskDelete(NULL);
+    }
+
+    uint8_t code = 0;
+    bool probed = false;
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    REG_LOCK();
+    if (dev->handle != NULL) {
+      s_cur = dev;
+      uint8_t ctrl2 = 0;
+      err = tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2);
+      if (err == ESP_OK && (ctrl2 & CTRL2_STATE_MASK) == CTRL2_DEEP_SLEEP) {
+        if (dac_tas58xx_get_supply_mv() <= 0 ||
+            ++since_probe >= PVDD_SLEEP_PROBE_POLLS) {
+          code = pvdd_read_asleep_locked(ctrl2);
+          probed = true;
+          since_probe = 0;
+        }
+      } else if (err == ESP_OK) {
+        err = tas58xx_read_reg(REG_PVDD_ADC, &code);
+      }
+      s_cur = NULL;
+    }
+    REG_UNLOCK();
+
+    /* To the nearest 0.1 V; 0 means the ADC has nothing to say yet. */
+    const int mv =
+        (err == ESP_OK && code > 0)
+            ? (int)lroundf((float)code / PVDD_ADC_PER_VOLT * 10.0f) * 100
+            : 0;
+    if (mv > 0 &&
+        abs(mv - dac_tas58xx_get_supply_mv()) >= PVDD_REPORT_STEP_MV) {
+      /* An idle amplifier draws nothing, so one reading of it will do; a
+       * playing one's supply sags with the music. */
+      if (probed ||
+          (pending_mv > 0 && abs(mv - pending_mv) < PVDD_REPORT_STEP_MV)) {
+        ESP_LOGI(TAG, "@0x%02X supply measured at %.1f V", dev->addr,
+                 (float)mv / 1000.0f);
+        dac_tas58xx_set_supply_mv(mv);
+        pending_mv = 0;
+      } else {
+        pending_mv = mv;
+      }
+    } else {
+      pending_mv = 0;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(PVDD_POLL_MS));
+  }
+}
+
+/*
  * Enable the PBTL (mono) output stage for a bridged sub. This is a
  * control-port setting (DEVICE_CTRL1 bit 2) and must be established while the
  * device is still in HiZ, before the output stage drives the paralleled load.
@@ -1442,6 +1544,22 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   }
 #endif
 
+  /* The first TAS5825M reports the supply; the amplifiers on a board share
+   * one. */
+  for (int i = 0; i < s_dev_count; i++) {
+    if (s_devs[i].model != TAS58XX_MODEL_TAS5825M) {
+      continue;
+    }
+    s_pvdd_task_stop = false;
+    if (s_pvdd_task == NULL &&
+        xTaskCreate(tas58xx_pvdd_task, "tas58xx_pvdd", 2560, &s_devs[i], 2,
+                    &s_pvdd_task) != pdPASS) {
+      ESP_LOGW(TAG, "Failed to start the supply monitor task");
+      s_pvdd_task = NULL;
+    }
+    break;
+  }
+
   /* The chains and the amplifiers are known now. */
   eq_changed();
   return ESP_OK;
@@ -1453,6 +1571,7 @@ static esp_err_t tas58xx_deinit(void) {
 #if CONFIG_SPKFAULT_GPIO < 0
   s_fault_task_stop = true;
 #endif
+  s_pvdd_task_stop = true;
 
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
