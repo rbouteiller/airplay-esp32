@@ -164,10 +164,15 @@ struct tas58xx_cmd_s {
  * later via dac_set_power_mode(DAC_POWER_ON) once I2S is active.
  */
 static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
-    {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
-    {REG_BOOK_SEL, 0x00},        // Select Book 0
-    {REG_PAGE_SEL, 0x00},        // Confirm Page 0
-    {REG_RESET_CTRL, RESET_REG}, // Reset control port registers
+    {REG_PAGE_SEL, 0x00},          // Select Book 0 Page 0
+    {REG_BOOK_SEL, 0x00},          // Select Book 0
+    {REG_PAGE_SEL, 0x00},          // Confirm Page 0
+    {REG_DEVICE_CTRL2, CTRL2_HIZ}, // Stop driving before the reset
+    // Reset the whole digital core as well as the control registers, as TI's
+    // own sequences do: the coefficient RAM survives an ESP32 restart with
+    // the amplifier powered, so without it whatever the last firmware wrote
+    // stays in any block this driver does not rewrite.
+    {REG_RESET_CTRL, RESET_DIG_CORE | RESET_REG},
     {REG_DEVICE_CTRL2, CTRL2_HIZ},
 
     // I2S format: standard I2S, 16-bit word length
@@ -217,10 +222,12 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
    - no process flow select register
    - DSP_MISC register to configure BQ coefficients per channel */
 static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
-    {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
-    {REG_BOOK_SEL, 0x00},        // Select Book 0
-    {REG_PAGE_SEL, 0x00},        // Confirm Page 0
-    {REG_RESET_CTRL, RESET_REG}, // Reset control port registers
+    {REG_PAGE_SEL, 0x00},          // Select Book 0 Page 0
+    {REG_BOOK_SEL, 0x00},          // Select Book 0
+    {REG_PAGE_SEL, 0x00},          // Confirm Page 0
+    {REG_DEVICE_CTRL2, CTRL2_HIZ}, // Stop driving before the reset
+    // Full digital core reset, as on the TAS5825M above
+    {REG_RESET_CTRL, RESET_DIG_CORE | RESET_REG},
     {REG_DEVICE_CTRL2, CTRL2_HIZ},
 
     // I2S format: standard I2S, 16-bit word length
