@@ -37,6 +37,7 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 .btn-danger{background:#dc3545}
 .btn-danger:hover{background:#c82333}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn[hidden]{display:none}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
 .msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px;line-height:1.45}
 .msg:empty{display:none}
