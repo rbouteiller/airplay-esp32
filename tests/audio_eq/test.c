@@ -103,6 +103,12 @@ static tas58xx_bq_t highpass(float f) {
   return bq;
 }
 
+static tas58xx_bq_t lowpass(float f) {
+  tas58xx_bq_t bq = highpass(f);
+  bq.type = TAS58XX_BQ_LOWPASS;
+  return bq;
+}
+
 /* Start from a clean slate: flat and unmuted, every section at rest (a flat
  * chain drops them all, so the next chain starts its sections from zero),
  * and any level glide run out. */
@@ -743,6 +749,61 @@ static void test_ganged_and_rejects(void) {
         "unstable custom accepted");
 }
 
+/* A crossover on a summed routing: the routing has to come first, as it does
+ * in the amplifier's DSP, or both outputs carry both bands. Each routing is
+ * checked against the same input routed by hand and filtered as a plain
+ * stereo pair, processed in place so a channel overwriting its half of the
+ * frame before the other has read it would show. */
+static void test_routing_ahead_of_filters(void) {
+  printf("a summed routing is applied ahead of per-channel filters\n");
+  static int16_t routed[MAX_FRAMES * 2];
+  tas58xx_bq_t lo[AUDIO_EQ_SLOTS], hi[AUDIO_EQ_SLOTS];
+  chain_flat(lo);
+  chain_flat(hi);
+  lo[0] = lo[1] = lowpass(2000.0f);
+  hi[0] = hi[1] = highpass(2000.0f);
+  const size_t n = SECONDS(48000, 0.5);
+  signal_mix(n, 48000, 5);
+  for (size_t i = 0; i < n; i++) {
+    /* A right channel unlike the left, both even so (L+R)/2 is exact. */
+    s_in[2 * i] = (int16_t)(s_in[2 * i] & ~1);
+    s_in[2 * i + 1] = (int16_t)((-s_in[2 * i] / 3) & ~1);
+  }
+  static const audio_eq_mix_t mixes[] = {AUDIO_EQ_MIX_MONO, AUDIO_EQ_MIX_LEFT,
+                                         AUDIO_EQ_MIX_RIGHT};
+  static const char *const names[] = {"mono", "left", "right"};
+  for (int m = 0; m < 3; m++) {
+    for (size_t i = 0; i < n; i++) {
+      const int l = s_in[2 * i], r = s_in[2 * i + 1];
+      const int16_t x = (int16_t)(mixes[m] == AUDIO_EQ_MIX_MONO   ? (l + r) / 2
+                                  : mixes[m] == AUDIO_EQ_MIX_LEFT ? l
+                                                                  : r);
+      s_out[2 * i] = s_out[2 * i + 1] = x;
+    }
+    reset(48000);
+    audio_eq_set_ganged(false);
+    audio_eq_set_chain(0, lo);
+    audio_eq_set_chain(1, hi);
+    process(s_out, n);
+
+    memcpy(routed, s_in, n * 2 * sizeof(int16_t));
+    reset(48000);
+    audio_eq_set_ganged(false);
+    audio_eq_set_chain(0, lo);
+    audio_eq_set_chain(1, hi);
+    audio_eq_set_mix(mixes[m]);
+    process(routed, n);
+    audio_eq_set_mix(AUDIO_EQ_MIX_STEREO);
+
+    size_t diff = 0;
+    for (size_t i = 0; i < 2 * n; i++) {
+      diff += routed[i] != s_out[i];
+    }
+    CHECK(diff == 0, "%s routing: %zu samples differ from routing by hand",
+          names[m], diff);
+  }
+}
+
 int main(int argc, char **argv) {
   /* audio_eq starts once per process, so each way is a run of its own. */
   const bool blank = argc > 1 && strcmp(argv[1], "blank") == 0;
@@ -764,6 +825,7 @@ int main(int argc, char **argv) {
   test_silence_rests();
   test_reset_after_stop();
   test_ganged_and_rejects();
+  test_routing_ahead_of_filters();
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;

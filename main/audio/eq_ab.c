@@ -51,13 +51,21 @@ static void mirror_locked(void) {
     for (int ch = 0; ch < AUDIO_EQ_CHANNELS; ch++) {
       dac_tas58xx_bq_get(0, ch, chain[ch]);
     }
-    /* The chip routes ahead of its EQ and the software EQ plays ahead of
-     * the chip, so two different chains on a summed routing differ. */
-    if (!ganged && dac_tas58xx_get_mix(0) != TAS58XX_MIX_STEREO) {
-      ESP_LOGW(TAG, "per-channel chains on a summed routing: software side "
-                    "filters before the mix, the DSP after it");
+    /* The chip routes ahead of its EQ, but the software EQ plays ahead of
+     * the chip, so it takes the routing over and applies it ahead of its
+     * filters; otherwise per-channel chains on a summed routing (a
+     * crossover) were summed after filtering, and both drivers got both
+     * bands. */
+    const bool routed = dac_tas58xx_set_soft_routing(0, true);
+    audio_eq_set_mix(routed ? (audio_eq_mix_t)dac_tas58xx_get_mix(0)
+                            : AUDIO_EQ_MIX_STEREO);
+    if (!routed && !ganged && dac_tas58xx_get_mix(0) != TAS58XX_MIX_STEREO) {
+      ESP_LOGW(TAG, "per-channel chains on a dump's summed routing: software "
+                    "side filters before the mix, the DSP after it");
     }
   } else {
+    audio_eq_set_mix(AUDIO_EQ_MIX_STEREO);
+    (void)dac_tas58xx_set_soft_routing(0, false);
     for (int ch = 0; ch < AUDIO_EQ_CHANNELS; ch++) {
       for (int i = 0; i < AUDIO_EQ_SLOTS; i++) {
         tas58xx_bq_init_bypass(&chain[ch][i]);

@@ -93,6 +93,16 @@ esp_err_t audio_eq_set_chain(int ch, const tas58xx_bq_t in[AUDIO_EQ_SLOTS]);
 void audio_eq_set_ganged(bool ganged);
 bool audio_eq_get_ganged(void);
 
+/** Input routing applied ahead of the filters, as an amplifier DSP routes
+ * ahead of its EQ. Values match tas58xx_mix_t. */
+typedef enum {
+  AUDIO_EQ_MIX_STEREO = 0, /**< L to A, R to B */
+  AUDIO_EQ_MIX_MONO,       /**< (L+R)/2 to both */
+  AUDIO_EQ_MIX_LEFT,       /**< L to both */
+  AUDIO_EQ_MIX_RIGHT,      /**< R to both */
+} audio_eq_mix_t;
+void audio_eq_set_mix(audio_eq_mix_t mix);
+
 /** Persist the current chains and ganging. */
 esp_err_t audio_eq_commit(void);
 /** Drop uncommitted chain edits. */

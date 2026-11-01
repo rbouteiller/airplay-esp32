@@ -161,6 +161,17 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix);
 /** Get one amplifier's input routing. */
 tas58xx_mix_t dac_tas58xx_get_mix(int dev);
 
+/**
+ * Hand one amplifier's input routing to the software EQ, which applies it
+ * ahead of its filters (as the DSP applies it ahead of its EQ), and pass the
+ * pair through the chip's mixer unrouted. The per-output levels and mutes
+ * stay in the chip. Refused, returning false, while a PPC3 dump's routing is
+ * in force, since that is part of the dump's tuning.
+ *
+ * @return whether the software EQ now owns the routing
+ */
+bool dac_tas58xx_set_soft_routing(int dev, bool on);
+
 /* ---------- Fault reporting ---------- */
 
 /**

@@ -129,6 +129,8 @@ static SemaphoreHandle_t s_mutex;
 static SemaphoreHandle_t s_save_mutex;
 static eq_model_t *s_model;
 static bool s_ganged = true;
+/* audio_eq_mix_t: the routing the writer applies ahead of the filters. */
+static _Atomic int s_mix = AUDIO_EQ_MIX_STEREO;
 static float s_trim_db[AUDIO_EQ_CHANNELS];
 static bool s_mute[AUDIO_EQ_CHANNELS];
 static uint32_t s_rate = CONFIG_OUTPUT_SAMPLE_RATE_HZ;
@@ -607,6 +609,49 @@ static bool is_silent(const int16_t *buf, size_t frames) {
   return true;
 }
 
+/* One sample through a channel's sections. */
+static inline __attribute__((always_inline)) float
+filter(const svf_t *f, float *ic1, float *ic2, int stages, float x) {
+  for (int s = 0; s < stages; s++) {
+    float v3 = x - ic2[s];
+    float v1 = f[s].a1 * ic1[s] + f[s].a2 * v3;
+    float v2 = ic2[s] + f[s].a2 * ic1[s] + f[s].a3 * v3;
+    ic1[s] = 2.0f * v1 - ic1[s];
+    ic2[s] = 2.0f * v2 - ic2[s];
+    x = f[s].m0 * x + f[s].m1 * v1 + f[s].m2 * v2;
+  }
+  return x;
+}
+
+static inline __attribute__((always_inline)) float glide(float gain,
+                                                         float target) {
+  if (gain != target) {
+    gain += (target - gain) * GAIN_GLIDE;
+    if (fabsf(target - gain) < GAIN_SNAP) {
+      gain = target;
+    }
+  }
+  return gain;
+}
+
+/* Decaying tails would otherwise sink into denormals, and in silence are
+ * cleared as soon as they stop mattering. Returns whether the channel is at
+ * rest. */
+static bool settle(int ch, bool silent) {
+  const float clear_below = silent ? REST_LEVEL : 1e-15f;
+  bool resting = true;
+  for (int s = 0; s < s_live.stages[ch]; s++) {
+    if (fabsf(s_ic1[ch][s]) < clear_below) {
+      s_ic1[ch][s] = 0.0f;
+    }
+    if (fabsf(s_ic2[ch][s]) < clear_below) {
+      s_ic2[ch][s] = 0.0f;
+    }
+    resting = resting && s_ic1[ch][s] == 0.0f && s_ic2[ch][s] == 0.0f;
+  }
+  return resting;
+}
+
 /* Both entry points: filter @p in into @p out16, rounded and clipped (it may
  * be @p in itself), or with @p as_float into @p outf as computed. Inlined
  * into each, so the choice is made at compile time rather than per sample.
@@ -625,17 +670,49 @@ run(const int16_t *in, int16_t *out16, float *outf, bool as_float,
     memset(s_ic2, 0, sizeof(s_ic2));
     s_resting = true;
   }
-  if (!s_live.active && s_gain[0] == 1.0f && s_gain[1] == 1.0f) {
+  const int mix = atomic_load_explicit(&s_mix, memory_order_relaxed);
+  /* A routing has to be applied even with nothing to filter. */
+  if (mix == AUDIO_EQ_MIX_STEREO && !s_live.active && s_gain[0] == 1.0f &&
+      s_gain[1] == 1.0f) {
     return false; /* flat, and done gliding: bit-exact passthrough */
   }
   /* Sources keep writing silence while idle; once the tails have died away
-   * there is nothing left to filter. */
+   * there is nothing left to filter. Silence routes to silence. */
   const bool silent = is_silent(in, frames);
   if (silent && s_resting && s_gain[0] == s_live.in_gain[0] &&
       s_gain[1] == s_live.in_gain[1]) {
     return false;
   }
   bool resting = silent;
+
+  if (mix != AUDIO_EQ_MIX_STEREO) {
+    /* Both outputs take the same routed input, so it is formed once per
+     * frame, before either output overwrites its half of the frame. */
+    const float wl = mix == AUDIO_EQ_MIX_MONO   ? 0.5f
+                     : mix == AUDIO_EQ_MIX_LEFT ? 1.0f
+                                                : 0.0f;
+    const float wr = mix == AUDIO_EQ_MIX_MONO    ? 0.5f
+                     : mix == AUDIO_EQ_MIX_RIGHT ? 1.0f
+                                                 : 0.0f;
+    for (size_t i = 0; i < frames; i++) {
+      const float src = (float)in[i * 2] * wl + (float)in[i * 2 + 1] * wr;
+      for (int ch = 0; ch < AUDIO_EQ_CHANNELS; ch++) {
+        s_gain[ch] = glide(s_gain[ch], s_live.in_gain[ch]);
+        const float x = filter(s_live.svf[ch], s_ic1[ch], s_ic2[ch],
+                               s_live.stages[ch], src * s_gain[ch]);
+        if (as_float) {
+          outf[i * 2 + ch] = x;
+        } else {
+          out16[i * 2 + ch] = to_int16(x);
+        }
+      }
+    }
+    for (int ch = 0; ch < AUDIO_EQ_CHANNELS; ch++) {
+      resting = settle(ch, silent) && resting;
+    }
+    s_resting = resting;
+    return true;
+  }
 
   for (int ch = 0; ch < AUDIO_EQ_CHANNELS; ch++) {
     const int stages = s_live.stages[ch];
@@ -646,21 +723,8 @@ run(const int16_t *in, int16_t *out16, float *outf, bool as_float,
     float gain = s_gain[ch];
 
     for (size_t i = 0; i < frames; i++) {
-      if (gain != target) {
-        gain += (target - gain) * GAIN_GLIDE;
-        if (fabsf(target - gain) < GAIN_SNAP) {
-          gain = target;
-        }
-      }
-      float x = (float)in[i * 2 + ch] * gain;
-      for (int s = 0; s < stages; s++) {
-        float v3 = x - ic2[s];
-        float v1 = f[s].a1 * ic1[s] + f[s].a2 * v3;
-        float v2 = ic2[s] + f[s].a2 * ic1[s] + f[s].a3 * v3;
-        ic1[s] = 2.0f * v1 - ic1[s];
-        ic2[s] = 2.0f * v2 - ic2[s];
-        x = f[s].m0 * x + f[s].m1 * v1 + f[s].m2 * v2;
-      }
+      gain = glide(gain, target);
+      const float x = filter(f, ic1, ic2, stages, (float)in[i * 2 + ch] * gain);
       if (as_float) {
         outf[i * 2 + ch] = x;
       } else {
@@ -668,19 +732,7 @@ run(const int16_t *in, int16_t *out16, float *outf, bool as_float,
       }
     }
     s_gain[ch] = gain;
-
-    /* Decaying tails would otherwise sink into denormals, and in silence
-     * are cleared as soon as they stop mattering. */
-    const float clear_below = silent ? REST_LEVEL : 1e-15f;
-    for (int s = 0; s < stages; s++) {
-      if (fabsf(ic1[s]) < clear_below) {
-        ic1[s] = 0.0f;
-      }
-      if (fabsf(ic2[s]) < clear_below) {
-        ic2[s] = 0.0f;
-      }
-      resting = resting && ic1[s] == 0.0f && ic2[s] == 0.0f;
-    }
+    resting = settle(ch, silent) && resting;
   }
   s_resting = resting;
   return true;
@@ -746,6 +798,13 @@ void audio_eq_set_ganged(bool ganged) {
     redesign();
   }
   xSemaphoreGive(s_mutex);
+}
+
+void audio_eq_set_mix(audio_eq_mix_t mix) {
+  if (mix < AUDIO_EQ_MIX_STEREO || mix > AUDIO_EQ_MIX_RIGHT) {
+    mix = AUDIO_EQ_MIX_STEREO;
+  }
+  atomic_store_explicit(&s_mix, (int)mix, memory_order_relaxed);
 }
 
 bool audio_eq_get_ganged(void) {

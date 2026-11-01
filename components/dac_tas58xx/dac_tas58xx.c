@@ -309,6 +309,9 @@ static bool s_auto_gain;
 static bool s_bq_flat;
 static float s_makeup_db;
 static void (*s_eq_listener)(void);
+static void eq_changed(void);
+/* The software EQ routes the input itself (dac_tas58xx_set_soft_routing()). */
+static bool s_soft_routing[TAS58XX_MAX_DEVICES];
 
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -1946,6 +1949,8 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
   REG_UNLOCK();
 
   ESP_LOGI(TAG, "Amp %d input routing: %d", dev, (int)mix);
+  /* A software EQ playing the chains routes ahead of them, so it follows. */
+  eq_changed();
   return err;
 }
 
@@ -1954,6 +1959,26 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
     return TAS58XX_MIX_STEREO;
   }
   return dev < s_dev_count ? s_devs[dev].mix : s_dev_mix[dev];
+}
+
+bool dac_tas58xx_set_soft_routing(int dev, bool on) {
+  if (dev < 0 || dev >= s_dev_count || s_reg_mutex == NULL) {
+    return false;
+  }
+  REG_LOCK();
+  /* A dump's routing is part of its tuning and stays with the chip. */
+  if (s_devs[dev].hf_mix_seen) {
+    on = false;
+  }
+  if (s_soft_routing[dev] != on) {
+    s_soft_routing[dev] = on;
+    s_cur = &s_devs[dev];
+    /* Only lands in PLAY; the PLAY transition re-applies it. */
+    (void)tas58xx_apply_input_mix();
+    s_cur = NULL;
+  }
+  REG_UNLOCK();
+  return on;
 }
 
 /* ---------- Public ops struct ---------- */
@@ -2862,7 +2887,8 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   /* Routing anything but the pair straight through is a process-flow change,
    * which is a TAS5825M feature. The level and mute folded in below are only
    * gains, so those still reach a TAS5805M. */
-  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO) {
+  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO &&
+      !s_soft_routing[s_cur - s_devs]) {
     ESP_LOGW(TAG,
              "@0x%02X input routing only implemented for TAS5825M; "
              "chip will play the left channel only",
@@ -2895,9 +2921,15 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   static const int32_t UNITY_9_23 = 0x00800000; /*  0 dB */
   static const int32_t HALF_9_23 = 0x00400000;  /* -6 dB */
 
+  /* While the software EQ plays the chains it does the routing too, ahead of
+   * its filters, as the DSP does ahead of its EQ; the chip then passes the
+   * pair straight through. */
+  const int dev = (int)(s_cur - s_devs);
+  const tas58xx_mix_t mix =
+      s_soft_routing[dev] ? TAS58XX_MIX_STEREO : s_cur->mix;
   int32_t l_to_l = 0, r_to_l = 0, l_to_r = 0, r_to_r = 0;
   const char *desc;
-  switch (s_cur->mix) {
+  switch (mix) {
   case TAS58XX_MIX_MONO:
     l_to_l = r_to_l = l_to_r = r_to_r = HALF_9_23;
     desc = "mono L+R -6 dB";
@@ -2914,7 +2946,7 @@ static esp_err_t tas58xx_apply_input_mix(void) {
     /* Written rather than skipped so switching back off a summed routing
      * restores the pair instead of leaving the old gains in place. */
     l_to_l = r_to_r = UNITY_9_23;
-    desc = "stereo";
+    desc = s_soft_routing[dev] ? "stereo, routed by the software EQ" : "stereo";
     break;
   }
 
@@ -2930,7 +2962,6 @@ static esp_err_t tas58xx_apply_input_mix(void) {
 
   /* The mixer is a gain matrix, so the per-output level and mute are the same
    * knob as the routing: scale whichever paths feed that output. */
-  const int dev = (int)(s_cur - s_devs);
   const float sa = tas58xx_ch_scale(dev, 0);
   const float sb = tas58xx_ch_scale(dev, 1);
   l_to_l = (int32_t)lrintf((float)l_to_l * sa);
