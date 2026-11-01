@@ -84,9 +84,9 @@ void dac_tas58xx_set_second_pbtl(bool pbtl);
 bool dac_tas58xx_is_pbtl(int dev);
 
 /**
- * The digital gain at which full volume is as loud as @p supply_mv lets the
- * output swing before it clips, in 0.5 dB steps. The gain does not change
- * with the supply, only the point where the output clips does.
+ * The analog gain at which digital full scale swings the output as far as
+ * @p supply_mv lets it before it clips, in 0.5 dB steps and at most 0 dB.
+ * Below about 5.2 V it is under TAS58XX_ANALOG_GAIN_MIN_DB.
  */
 float dac_tas58xx_clean_db(int supply_mv);
 
@@ -95,11 +95,32 @@ float dac_tas58xx_clean_db(int supply_mv);
 
 /**
  * Set the digital gain AirPlay's full volume maps to, in dB, rounded to
- * 0.5 dB and held to TAS58XX_FULL_VOLUME_MIN_DB..0. Until set it is
- * CONFIG_TAS58XX_MAX_VOLUME. Safe before dac_init().
+ * 0.5 dB and held to TAS58XX_FULL_VOLUME_MIN_DB..0. 0 dB until set. Safe
+ * before dac_init().
  */
 void dac_tas58xx_set_full_volume_db(float db);
 float dac_tas58xx_get_full_volume_db(void);
+
+/** Deepest analog gain dac_tas58xx_set_analog_gain_db() takes. */
+#define TAS58XX_ANALOG_GAIN_MIN_DB (-15.5f)
+
+/**
+ * Set the amplifier's analog gain by hand, in dB, rounded to 0.5 dB and held
+ * to TAS58XX_ANALOG_GAIN_MIN_DB..0, and stop it following the supply. The
+ * digital gain does not follow it. Safe before dac_init().
+ */
+void dac_tas58xx_set_analog_gain_db(float db);
+/** The analog gain playing, set by hand or following the supply. */
+float dac_tas58xx_get_analog_gain_db(void);
+
+/**
+ * Have the analog gain match the supply (dac_tas58xx_clean_db()), held to
+ * TAS58XX_ANALOG_GAIN_MIN_DB, or CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY
+ * while the supply is unknown; or go back to the one set by hand. On until
+ * turned off. Safe before dac_init().
+ */
+void dac_tas58xx_set_analog_auto(bool on);
+bool dac_tas58xx_get_analog_auto(void);
 
 /**
  * Tell the driver the amplifier's supply in mV, or 0 if it is not known.
@@ -107,24 +128,6 @@ float dac_tas58xx_get_full_volume_db(void);
  */
 void dac_tas58xx_set_supply_mv(int supply_mv);
 int dac_tas58xx_get_supply_mv(void);
-
-/**
- * Keep the digital gain at the loudest level that stays clean: the level
- * clean on the supply (dac_tas58xx_clean_db()) less the highest boost of the
- * chains playing, trims included, held to TAS58XX_FULL_VOLUME_MIN_DB..0. It
- * follows every change to the chains, trims, mutes, sample rate and supply,
- * and does nothing while the supply is unknown. Setting a gain with
- * dac_tas58xx_set_full_volume_db() turns it off. Safe before dac_init().
- */
-void dac_tas58xx_set_auto_gain(bool on);
-bool dac_tas58xx_get_auto_gain(void);
-
-/**
- * How far above full scale the chains playing lift a full-scale tone, trims
- * included: the highest point across every unmuted output. 0 dB when nothing
- * plays. @p at_hz, if given, receives where.
- */
-float dac_tas58xx_eq_boost_db(float *at_hz);
 
 /**
  * Whether an amplifier can route its inputs at all. Routing is a process-flow

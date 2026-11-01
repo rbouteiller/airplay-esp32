@@ -32,8 +32,9 @@ static const char *TAG = "settings";
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_USB_PD_VOLTS   "pd_volts"
 #define NVS_KEY_FULL_VOLUME    "full_vol"
+#define NVS_KEY_ANALOG_GAIN    "analog_gain"
 #define NVS_KEY_USB_PD_AUTO    "pd_auto"
-#define NVS_KEY_GAIN_AUTO      "gain_auto"
+#define NVS_KEY_ANALOG_AUTO    "again_auto"
 #define NVS_KEY_SOFTWARE_EQ_AB "sw_eq_ab"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
@@ -902,6 +903,14 @@ esp_err_t settings_set_full_volume_db(float db) {
   return set_half_db(NVS_KEY_FULL_VOLUME, "digital gain", db);
 }
 
+esp_err_t settings_get_analog_gain_db(float *db) {
+  return get_half_db(NVS_KEY_ANALOG_GAIN, db);
+}
+
+esp_err_t settings_set_analog_gain_db(float db) {
+  return set_half_db(NVS_KEY_ANALOG_GAIN, "analog gain", db);
+}
+
 esp_err_t settings_get_usb_pd_volts(int *volts) {
   if (!volts) {
     return ESP_ERR_INVALID_ARG;
@@ -997,12 +1006,12 @@ esp_err_t settings_set_usb_pd_auto(bool on) {
   return set_auto(NVS_KEY_USB_PD_AUTO, "USB-PD voltage", on);
 }
 
-bool settings_get_gain_auto(void) {
-  return get_auto(NVS_KEY_GAIN_AUTO, NVS_KEY_FULL_VOLUME);
+bool settings_get_analog_auto(void) {
+  return get_auto(NVS_KEY_ANALOG_AUTO, NVS_KEY_ANALOG_GAIN);
 }
 
-esp_err_t settings_set_gain_auto(bool on) {
-  return set_auto(NVS_KEY_GAIN_AUTO, "digital gain", on);
+esp_err_t settings_set_analog_auto(bool on) {
+  return set_auto(NVS_KEY_ANALOG_AUTO, "analog gain", on);
 }
 
 bool settings_get_software_eq_ab(void) {

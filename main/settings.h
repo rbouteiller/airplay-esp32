@@ -324,6 +324,15 @@ esp_err_t settings_get_full_volume_db(float *db);
 /** Save the digital gain in dB (-60..0, kept to 0.5 dB). */
 esp_err_t settings_set_full_volume_db(float db);
 
+/**
+ * Get the amplifier's analog gain in dB.
+ * @return ESP_OK if one is stored
+ */
+esp_err_t settings_get_analog_gain_db(float *db);
+
+/** Save the analog gain in dB (-15.5..0, kept to 0.5 dB). */
+esp_err_t settings_set_analog_gain_db(float db);
+
 // ---- USB-PD supply ----
 
 /**
@@ -347,13 +356,12 @@ bool settings_get_usb_pd_auto(void);
 esp_err_t settings_set_usb_pd_auto(bool on);
 
 /**
- * Whether the digital gain is kept at the loudest level that stays clean on
- * the supply with the EQ playing, rather than the one saved with
- * settings_set_full_volume_db(). On until turned off, unless a gain was
- * saved before this choice existed; it needs a supply the board can read.
+ * Whether the analog gain matches the supply rather than the one saved with
+ * settings_set_analog_gain_db(). On until turned off, unless a gain was
+ * saved before this choice existed.
  */
-bool settings_get_gain_auto(void);
-esp_err_t settings_set_gain_auto(bool on);
+bool settings_get_analog_auto(void);
+esp_err_t settings_set_analog_auto(bool on);
 
 /**
  * Whether a TAS58xx board plays its EQ on the ESP32 rather than the

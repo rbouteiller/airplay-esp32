@@ -17,6 +17,9 @@ CONFIG_TAS58XX_FORCE_PBTL=y
 # rated for 20 V.
 CONFIG_HUSB238A=y
 CONFIG_HUSB238A_MAX_VOLTS=20
+# Until the trigger agrees more, and always on the 42 mm board, the supply is
+# the 5 V every USB port gives, so the analog gain starts matched to that.
+CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY=-16
 
 # GPIO config
 CONFIG_I2S_SCK_IO=-1

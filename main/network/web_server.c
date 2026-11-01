@@ -1051,28 +1051,24 @@ static esp_err_t dual_mode_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-/* The digital gain AirPlay's full volume maps to, chosen to suit the supply.
- * The level that is clean on each fixed USB-PD voltage comes along as a
- * recommendation. Where the board can read its supply, the gain can instead
- * follow it and the EQ ("auto"), so it reports the supply and the boost the
- * chains playing give too. */
+/* The two gains. The digital gain, set by hand, is the level AirPlay's full
+ * volume maps to. The analog gain matches the supply where the board can read
+ * it ("analog_auto"), so the one that matches each fixed USB-PD voltage
+ * comes along. */
 static esp_err_t send_digital_gain(httpd_req_t *req) {
   static const int volts[] = {5, 9, 12, 15, 20};
-  float boost_hz = 0.0f;
-  const float boost_db = dac_tas58xx_eq_boost_db(&boost_hz);
   const int supply_mv = dac_tas58xx_get_supply_mv();
   cJSON *json = cJSON_CreateObject();
   cJSON_AddBoolToObject(json, "success", true);
   cJSON_AddNumberToObject(json, "db", dac_tas58xx_get_full_volume_db());
   cJSON_AddNumberToObject(json, "min_db", TAS58XX_FULL_VOLUME_MIN_DB);
-  cJSON_AddBoolToObject(json, "auto", dac_tas58xx_get_auto_gain());
-  cJSON_AddBoolToObject(json, "auto_available", supply_mv > 0);
+  cJSON_AddNumberToObject(json, "analog_db", dac_tas58xx_get_analog_gain_db());
+  cJSON_AddNumberToObject(json, "analog_min_db", TAS58XX_ANALOG_GAIN_MIN_DB);
+  cJSON_AddBoolToObject(json, "analog_auto", dac_tas58xx_get_analog_auto());
   cJSON_AddNumberToObject(json, "supply_mv", supply_mv);
   if (supply_mv > 0) {
     cJSON_AddNumberToObject(json, "clean_db", dac_tas58xx_clean_db(supply_mv));
   }
-  cJSON_AddNumberToObject(json, "boost_db", roundf(boost_db * 100.0f) / 100.0f);
-  cJSON_AddNumberToObject(json, "boost_hz", roundf(boost_hz));
   cJSON *rec = cJSON_AddArrayToObject(json, "recommended");
   for (size_t i = 0; i < sizeof volts / sizeof volts[0]; i++) {
     cJSON *r = cJSON_CreateObject();
@@ -1092,8 +1088,9 @@ static esp_err_t digital_gain_get_handler(httpd_req_t *req) {
   return send_digital_gain(req);
 }
 
-/* {"db": -11} sets the digital gain by hand. {"auto": true} has it follow
- * the supply and the EQ; {"auto": false} keeps the level it has reached. */
+/* {"db": -11} sets the digital gain. {"analog_db": -11} sets the analog gain
+ * by hand; {"analog_auto": true} has it match the supply, and
+ * {"analog_auto": false} keeps the one it has reached. */
 static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
   char *content = recv_body(req, 64);
   if (!content) {
@@ -1103,24 +1100,40 @@ static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
   cJSON *json = cJSON_Parse(content);
   free(content);
   const cJSON *db = json ? cJSON_GetObjectItem(json, "db") : NULL;
-  const cJSON *automatic = json ? cJSON_GetObjectItem(json, "auto") : NULL;
+  const cJSON *analog = json ? cJSON_GetObjectItem(json, "analog_db") : NULL;
+  const cJSON *automatic =
+      json ? cJSON_GetObjectItem(json, "analog_auto") : NULL;
   if (cJSON_IsBool(automatic)) {
     const bool on = cJSON_IsTrue(automatic);
     cJSON_Delete(json);
     if (on) {
-      dac_tas58xx_set_auto_gain(true);
+      dac_tas58xx_set_analog_auto(true);
     } else {
-      dac_tas58xx_set_full_volume_db(dac_tas58xx_get_full_volume_db());
-      settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+      dac_tas58xx_set_analog_gain_db(dac_tas58xx_get_analog_gain_db());
+      settings_set_analog_gain_db(dac_tas58xx_get_analog_gain_db());
     }
-    settings_set_gain_auto(on);
+    settings_set_analog_auto(on);
+    return send_digital_gain(req);
+  }
+  if (cJSON_IsNumber(analog)) {
+    const double analog_db = analog->valuedouble;
+    cJSON_Delete(json);
+    if (analog_db > 0.0 || analog_db < TAS58XX_ANALOG_GAIN_MIN_DB) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "Expected {\"analog_db\": -15.5..0}");
+      return ESP_FAIL;
+    }
+    dac_tas58xx_set_analog_gain_db((float)analog_db);
+    settings_set_analog_gain_db(dac_tas58xx_get_analog_gain_db());
+    settings_set_analog_auto(false);
     return send_digital_gain(req);
   }
   if (db == NULL || !cJSON_IsNumber(db) || db->valuedouble > 0.0 ||
       db->valuedouble < TAS58XX_FULL_VOLUME_MIN_DB) {
     cJSON_Delete(json);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "Expected {\"db\": -30..0} or {\"auto\": bool}");
+                        "Expected {\"db\": -30..0}, {\"analog_db\": "
+                        "-15.5..0} or {\"analog_auto\": bool}");
     return ESP_FAIL;
   }
   const float gain_db = (float)db->valuedouble;
@@ -1128,7 +1141,6 @@ static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
 
   dac_tas58xx_set_full_volume_db(gain_db);
   settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
-  settings_set_gain_auto(false);
   return send_digital_gain(req);
 }
 #endif /* CONFIG_DAC_TAS58XX */

@@ -45,10 +45,10 @@ void vTaskDelay(uint32_t ticks);
 #define BIT(n)            (1u << (n))
 
 void *heap_caps_calloc(size_t count, size_t size, int caps);
-#define MALLOC_CAP_SPIRAM            0
-#define MALLOC_CAP_8BIT              0
-#define CONFIG_TAS58XX_MAX_VOLUME    (-12)
-#define CONFIG_OUTPUT_SAMPLE_RATE_HZ 48000
-#define CONFIG_SPKFAULT_GPIO         1
-#define CONFIG_I2S_BCK_IO            1
-#define CONFIG_I2S_WS_IO             2
+#define MALLOC_CAP_SPIRAM                         0
+#define MALLOC_CAP_8BIT                           0
+#define CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY (-10)
+#define CONFIG_OUTPUT_SAMPLE_RATE_HZ              48000
+#define CONFIG_SPKFAULT_GPIO                      1
+#define CONFIG_I2S_BCK_IO                         1
+#define CONFIG_I2S_WS_IO                          2

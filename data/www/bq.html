@@ -173,7 +173,7 @@ spacing or the room.</p>
 </div>
 <div class='headroom' id='headroom' style='display:none'>
 <div><label>Max gain with boost</label><b id='hr-gain'>&mdash;</b></div>
-<div><label>Recommended supply</label><b id='hr-supply'>&mdash;</b></div>
+<div><label>Room before clipping</label><b id='hr-room'>&mdash;</b></div>
 </div>
 </div>
 
@@ -278,8 +278,7 @@ samples and saved at once.</p>
 <div id='power' style='display:none'>
 <div class='trim'><label for='pw-db'>Digital gain</label>
 <select id='pw-db' onchange='pickGain()' title='The level full volume
-reaches. Automatic keeps it at the loudest that stays clean on the supply with
-the EQ playing.'></select></div>
+reaches. Lower it by the boost to keep loud passages from clipping.'></select></div>
 </div>
 <div id='ab' style='display:none'>
 <div class='trim'><label for='ab-sel'>EQ runs on</label>
@@ -1371,10 +1370,11 @@ function plot(){
 }
 
 /* ---- headroom ----
-   The loudest level a supply carries cleanly leaves no room above it, so a
-   boost in the curves pushes full volume past it and the loud passages clip.
-   Shown under the response: the digital gain plus the highest boost of the
-   outputs playing, and the lowest supply that carries that level cleanly. */
+   Full volume reaches the digital gain plus the highest boost of the outputs
+   playing. The DSP clips past full scale, and the output past the supply
+   once the analog gain asks for more than it swings; the analog gain set to
+   match the supply leaves only the first. Shown under the response: that
+   level, and the room left below whichever clips first. */
 var gainInfo=null;
 /* Highest point of one chain, trim included: a 1/48-octave sweep finds every
    peak, and a golden-section search between each local maximum's neighbours
@@ -1413,38 +1413,31 @@ function showHeadroom(){
   /* Nothing playing counts as flat, as it does on the board. */
   if(pk.db===-Infinity)pk={db:0,f:0};
   var boost=Math.abs(pk.db)<0.05?0:pk.db;
-  /* Many boards cannot read their supply, so this is the gain set plus the
-     boost: the level full volume reaches. */
-  var reach=gainInfo.db+boost,rec=gainInfo.recommended||[],need=null,i;
+  var reach=gainInfo.db+boost,limit=0,room;
+  /* A board that cannot read its supply counts only the DSP's limit. */
+  if(gainInfo.clean_db!==undefined)
+    limit=Math.min(0,gainInfo.clean_db-gainInfo.analog_db);
+  room=limit-reach;
   $('hr-gain').textContent=dbText(reach).replace(/^\+0\.0/,'0.0');
-  for(i=0;i<rec.length;i++)
-    if(rec[i].db>=reach-0.05&&(need===null||rec[i].volts<need))need=rec[i].volts;
-  /* Past the voltages listed, the supply whose swing (93 % of it) reaches
-     the level, from full scale's 29.5 V peak as the firmware reckons it. */
-  if(need===null)need=Math.ceil(29.5*Math.pow(10,reach/20)/0.93);
-  $('hr-supply').textContent=need+' V';
+  $('hr-room').textContent=room<-0.05?'clips by '+dbText(-room).replace('+',''):
+    dbText(room).replace('+','');
 }
-function autoGain(){return !!(gainInfo&&gainInfo.auto&&gainInfo.auto_available);}
 
 /* ---- digital gain ----
-   The board's to choose until set by hand. The supply is set on the Speaker
-   page. */
+   Lowered by hand to make room for the boosts. The supply and the analog
+   gain are set on the Speaker page. */
 function drawPower(){
-  var g=gainInfo,h='',v,rec={},auto=autoGain();
+  var g=gainInfo,h='',v;
   if(!g){$('power').style.display='none';return;}
   $('power').style.display='';
-  (g.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
-  if(g.auto_available)h+="<option value='auto'>Automatic"+
-    (auto?' ('+dbText(g.db).replace('+','')+')':'')+'</option>';
   for(v=0;v>=g.min_db;v-=0.5)
-    h+="<option value='"+v+"'>"+dbText(v).replace('+','')+
-       (rec[v]?' (clean on '+rec[v]+' V)':'')+'</option>';
+    h+="<option value='"+v+"'>"+dbText(v).replace('+','')+'</option>';
   $('pw-db').innerHTML=h;
-  $('pw-db').value=auto?'auto':String(g.db);
+  $('pw-db').value=String(g.db);
 }
 function pickGain(){
-  var sel=$('pw-db'),v=sel.value;
-  Shell.post('/api/audio/digital-gain',v==='auto'?{auto:true}:{db:Number(v)})
+  var sel=$('pw-db');
+  Shell.post('/api/audio/digital-gain',{db:Number(sel.value)})
     .then(function(d){gainInfo=d;Shell.tick(sel,true);},
           function(e){Shell.tick(sel,false,e.message);})
     .then(function(){drawPower();showHeadroom();});
@@ -1476,17 +1469,6 @@ function loadPower(){
     if(!r.ok)return;
     return r.json().then(function(d){gainInfo=d;});
   }).then(function(){drawPower();showHeadroom();},function(){});
-}
-/* The board moves an automatic gain whenever the chains or levels playing
-   change, so it is read back after each change sent. */
-var gainTimer=0;
-function gainMoved(){
-  if(!autoGain())return;
-  clearTimeout(gainTimer);
-  gainTimer=setTimeout(function(){
-    fetch('/api/audio/digital-gain').then(function(r){return r.ok?r.json():null;})
-      .then(function(d){if(d){gainInfo=d;drawPower();showHeadroom();}},function(){});
-  },400);
 }
 
 /* Every chain that is actually driving a driver, across both amplifiers, so
@@ -1596,7 +1578,6 @@ function post(body,okText){
       if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
       return r.json().catch(function(){return {};}).then(function(j){
         noteLive(body);
-        gainMoved();
         if(j.preamp_db!==undefined){data.preamp_db=j.preamp_db;showPreamp();}
         if(okText)show($('msg'),okText,'ok');
         return true;
@@ -2400,7 +2381,6 @@ function revert(){
     if(!r.ok)throw new Error(r.status);
     return load();
   }).then(function(){
-    gainMoved();
     setDirty(false);show($('msg'),'Reverted to the stored tuning.','ok');
   }).catch(function(e){show($('msg'),'Revert failed: '+e.message,'err');});
 }

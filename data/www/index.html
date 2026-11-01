@@ -72,6 +72,9 @@
 <div class='form-group' id='gain-group' hidden><label for='gain-db'>Digital gain</label>
 <div class='row'><select id='gain-db' onchange='saveGain()'></select></div>
 <p class='hint' id='gain-hint'></p></div>
+<div class='form-group' id='again-group' hidden><label for='again-db'>Analog gain</label>
+<div class='row'><select id='again-db' onchange='saveAnalog()'></select></div>
+<p class='hint' id='again-hint'></p></div>
 <div class='actions' id='eq-links'></div>
 </div>
 <div class='card'><h2>Firmware</h2>
@@ -144,32 +147,44 @@ async function saveChannel(){
   catch(e){Shell.tick(sel,false,e.message);}
 }
 
-/* The supply and the digital gain. Each is the board's to choose until
-   set by hand; the gain follows the supply and the EQ. */
-function hz(f){return f>=1000?(f/1000).toFixed(1)+' kHz':Math.round(f)+' Hz';}
-function signed(v){return (v>0?'+':'')+Shell.db(v);}
+/* The supply and the two gains. The supply and the analog gain are the
+   board's to choose until set by hand; the analog gain matches the supply.
+   The digital gain caps full volume. */
 function showGain(g){
-  var rec={},h='',v,auto=g.auto&&g.auto_available,hint;
-  (g.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
-  if(g.auto_available)h+="<option value='auto'>Automatic"+
-    (auto?' ('+Shell.db(g.db)+')':'')+'</option>';
+  var h='',v;
   for(v=0;v>=g.min_db;v-=0.5)
+    h+="<option value='"+v+"'>"+Shell.db(v)+'</option>';
+  $('gain-db').innerHTML=h;
+  $('gain-db').value=String(g.db);
+  $('gain-hint').textContent='The level full volume reaches. The EQ page'+
+    ' shows the room its boosts leave.';
+  $('gain-group').hidden=false;
+  showAnalog(g);
+}
+function showAnalog(g){
+  var rec={},h='',v,auto=g.analog_auto,known=g.clean_db!==undefined,hint;
+  (g.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
+  h+="<option value='auto'>Automatic"+(auto?' ('+Shell.db(g.analog_db)+')':'')+
+     '</option>';
+  for(v=0;v>=g.analog_min_db;v-=0.5)
     h+="<option value='"+v+"'>"+Shell.db(v)+
        (rec[v]?' (clean on '+rec[v]+' V)':'')+'</option>';
-  $('gain-db').innerHTML=h;
-  $('gain-db').value=auto?'auto':String(g.db);
-  if(auto){
-    hint='Automatic: '+Shell.db(g.clean_db)+' is clean on '+g.supply_mv/1000+' V';
-    if(g.boost_db>0.05)hint+=', less the EQ’s '+signed(g.boost_db)+
-                             ' boost at '+hz(g.boost_hz);
-    hint+='.';
-  }else if(g.auto&&g.auto_available===false)
-    hint='The board cannot read its supply, so the gain cannot follow it.';
-  else hint='The level full volume reaches.'+
-    (g.auto_available?' Automatic keeps it at the loudest that stays clean'+
-     ' on the supply with the EQ playing.':'');
-  $('gain-hint').textContent=hint;
-  $('gain-group').hidden=false;
+  $('again-db').innerHTML=h;
+  $('again-db').value=auto?'auto':String(g.analog_db);
+  if(auto&&known){
+    hint='Automatic: matches the '+g.supply_mv/1000+' V supply.';
+    if(g.clean_db<g.analog_min_db)hint+=' That is below what the amplifier'+
+      ' can match, so loud passages clip.';
+  }else if(auto)hint='Automatic: the board cannot read its supply, so it'+
+    ' plays at its default.';
+  else{
+    hint='Set by hand. Automatic matches the supply.';
+    if(known&&g.db+g.analog_db>g.clean_db)hint+=' With the digital gain'+
+      ' above '+Shell.db(g.clean_db)+' in all, loud passages clip on '+
+      g.supply_mv/1000+' V.';
+  }
+  $('again-hint').textContent=hint;
+  $('again-group').hidden=false;
 }
 /* What the board is getting and what the charger offers go in the choices
    themselves. */
@@ -204,9 +219,17 @@ async function loadPower(pd){
     else console.warn('Could not load the USB-C supply',e);}
 }
 async function saveGain(){
-  var sel=$('gain-db'),v=sel.value;
+  var sel=$('gain-db');
   try{showGain(await Shell.post('/api/audio/digital-gain',
-                                v==='auto'?{auto:true}:{db:Number(v)}));
+                                {db:Number(sel.value)}));
+    Shell.tick(sel,true);}
+  catch(e){Shell.tick(sel,false,e.message);loadPower(false);}
+}
+async function saveAnalog(){
+  var sel=$('again-db'),v=sel.value;
+  try{showGain(await Shell.post('/api/audio/digital-gain',
+                                v==='auto'?{analog_auto:true}:
+                                {analog_db:Number(v)}));
     Shell.tick(sel,true);}
   catch(e){Shell.tick(sel,false,e.message);loadPower(false);}
 }
@@ -218,7 +241,7 @@ async function saveVolts(){
     Shell.tick(sel,true);}
   catch(e){Shell.tick(sel,false,e.message);}
   sel.disabled=false;
-  /* An automatic gain follows the new supply. */
+  /* An automatic analog gain follows the new supply. */
   loadPower(false);
 }
 
