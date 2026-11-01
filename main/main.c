@@ -527,8 +527,34 @@ void app_main(void) {
                      NULL);
   log_dram("web server");
 
+#ifdef CONFIG_USB_AUDIO_SINK
+  {
+    // Before AirPlay: its tasks and buffers need internal RAM, and on a board
+    // carrying a display and Ethernet as well, AirPlay starting first left
+    // too little for the TinyUSB task to be created.
+    //
+    // The host can stream with no network configured, in which case
+    // start_airplay_services() has never run and I2S is still unopened.
+    esp_err_t out_err = ensure_audio_output();
+    if (out_err != ESP_OK) {
+      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
+    }
+    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
+    if (usb_err != ESP_OK) {
+      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
+    }
+    log_dram("usb audio");
+  }
+#endif
+
   bool connected = eth_available || wifi_is_connected();
-  if (connected) {
+  bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+  // A host already streaming owns the output; the sink restarts AirPlay
+  // itself once it goes idle.
+  output_owned = usb_audio_sink_is_streaming();
+#endif
+  if (connected && !output_owned) {
     start_airplay_services();
   }
 
@@ -548,21 +574,6 @@ void app_main(void) {
     }
   }
   log_dram("bluetooth");
-#endif
-
-#ifdef CONFIG_USB_AUDIO_SINK
-  {
-    // The host can stream with no network configured, in which case
-    // start_airplay_services() has never run and I2S is still unopened.
-    esp_err_t out_err = ensure_audio_output();
-    if (out_err != ESP_OK) {
-      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
-    }
-    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
-    if (usb_err != ESP_OK) {
-      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
-    }
-  }
 #endif
 
   // Boot baseline: free internal DRAM once WiFi (and BT, where enabled) are
