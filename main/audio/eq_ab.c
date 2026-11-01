@@ -40,7 +40,10 @@ bool eq_ab_get(void) {
 /* Hand the software EQ the amplifier's chains, or flat ones when off.
  * Caller holds s_mutex. */
 static void mirror_locked(void) {
-  tas58xx_bq_t chain[AUDIO_EQ_CHANNELS][AUDIO_EQ_SLOTS];
+  /* Static: 1.3 KB, and the first call comes from the driver's init on the
+   * main task, under whose stack the filter design then overflowed. s_mutex
+   * keeps it to one caller at a time. */
+  static tas58xx_bq_t chain[AUDIO_EQ_CHANNELS][AUDIO_EQ_SLOTS];
   bool ganged = true;
   if (s_on) {
     /* Bridged, the chip plays its left path, which is the left chain. */
