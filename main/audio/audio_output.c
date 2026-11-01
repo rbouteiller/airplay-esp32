@@ -647,6 +647,9 @@ void audio_output_set_sample_rate(uint32_t rate) {
   // (AirPlay playback task must be stopped, BT calls this before
   // the I2S writer task starts consuming data)
   ESP_LOGI(TAG, "Setting sample rate to %" PRIu32 " Hz", rate);
+  // An amplifier that loses its clocks while playing pops, so it is quieted
+  // first; dac_on_i2s_started() below brings it back.
+  dac_on_i2s_stopping();
   i2s_channel_disable(tx_handle);
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);

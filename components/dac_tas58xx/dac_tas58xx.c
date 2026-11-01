@@ -60,8 +60,15 @@
 #define REG_DIG_VOL_CTRL1  0x4E // Volume ramp control
 #define REG_AUTO_MUTE_CTRL 0x50
 #define REG_AUTO_MUTE_TIME 0x51
-#define REG_ANA_CTRL       0x53
-#define REG_AGAIN          0x54 // Analog gain
+/* Silence held this long before the outputs auto-mute: 0b111 on both
+ * channels, 5.33 s at 96 kHz and longer at lower rates (11.6 s at 44.1 kHz),
+ * so the gap of a seek or a track change never engages it, only a stream that
+ * has really gone quiet (a pause drops the part to HIZ anyway). The shortest
+ * setting, 11.5 ms at 96 kHz, switched the outputs off and on again around
+ * every flush. */
+#define AUTO_MUTE_TIME 0x77
+#define REG_ANA_CTRL   0x53
+#define REG_AGAIN      0x54 // Analog gain
 
 #define REG_GPIO_CTL 0x60
 #define REG_GPIO0    0x61
@@ -176,7 +183,7 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
 
     // Auto-mute: enable for both channels
     {REG_AUTO_MUTE_CTRL, 0x07},
-    {REG_AUTO_MUTE_TIME, 0x00},
+    {REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME},
 
     // Clear any pending faults
     {REG_FAULT_CLEAR, 0x80},
@@ -195,6 +202,12 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
 
     // Analog gain: 0 dB
     {REG_AGAIN, 0x00},
+
+    // Switch the left and right PWM outputs in phase. Out of phase, the
+    // reset value, a Louder Pro clicked through quiet piano at any volume,
+    // the louder the content the more; in phase it plays clean, and the
+    // HIZ <-> PLAY transitions pop less. TI's own sequences set it too.
+    {REG_ANA_CTRL, 0x01},
 
     {0xFF, 0xFF} // End of table sentinel
 };
@@ -219,7 +232,7 @@ static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
 
     // Auto-mute: enable for both channels
     {REG_AUTO_MUTE_CTRL, 0x07},
-    {REG_AUTO_MUTE_TIME, 0x00},
+    {REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME},
 
     // Clear any pending faults
     {REG_FAULT_CLEAR, 0x80},
@@ -343,6 +356,9 @@ static tas58xx_dev_t *s_cur = NULL;
  */
 static SemaphoreHandle_t s_reg_mutex = NULL;
 static uint32_t s_power_mode_generation = 0;
+/* Amplifiers dropped from PLAY to HIZ for an I2S retune, for
+ * tas58xx_on_i2s_started() to bring back. */
+static bool s_parked_for_retune[TAS58XX_MAX_DEVICES];
 
 #define REG_LOCK()   xSemaphoreTake(s_reg_mutex, portMAX_DELAY)
 #define REG_UNLOCK() xSemaphoreGive(s_reg_mutex)
@@ -1439,6 +1455,24 @@ static esp_err_t tas58xx_deinit(void) {
 /* Apply a power mode to a single chip. Assumes REG_LOCK is held. */
 static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev);
 
+/*
+ * Ramp a playing amplifier down to mute before its state changes, its clocks
+ * stop or its coefficients are rewritten: dropping PLAY, or losing the clocks
+ * in it, with the outputs at level pops. With the init ramp (DIG_VOL_CTRL1
+ * 0x33, 0.5 dB a sample) full scale reaches mute in about 5 ms at 44.1 kHz;
+ * MUTE_RAMP_MS allows four times that. Assumes REG_LOCK is held and s_cur set;
+ * returns CTRL2 as it now reads.
+ */
+#define MUTE_RAMP_MS 20
+static uint8_t ramp_to_mute_locked(uint8_t ctrl2) {
+  if ((ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY && !(ctrl2 & CTRL2_MUTE)) {
+    ctrl2 |= CTRL2_MUTE;
+    tas58xx_write_reg(REG_DEVICE_CTRL2, ctrl2);
+    vTaskDelay(pdMS_TO_TICKS(MUTE_RAMP_MS));
+  }
+  return ctrl2;
+}
+
 static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
   s_cur = dev;
   uint8_t cur_ctrl2 = 0;
@@ -1450,6 +1484,7 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     // The PLL needs valid I2S clocks to lock — they must be present
     // by the time this function is called.
     if (cur_state != CTRL2_HIZ) {
+      ramp_to_mute_locked(cur_ctrl2);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1488,8 +1523,11 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
         vTaskDelay(pdMS_TO_TICKS(5));
         tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
         tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
-        tas58xx_write_reg(REG_AUTO_MUTE_TIME, 0x00);
+        tas58xx_write_reg(REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME);
         tas58xx_write_reg(REG_AGAIN, 0x00);
+        if (dev->model == TAS58XX_MODEL_TAS5825M) {
+          tas58xx_write_reg(REG_ANA_CTRL, 0x01); /* in-phase PWM, as at init */
+        }
 
         /* Coefficient RAM may be invalid after DEEP_SLEEP — force
          * full re-write of signal-path defaults on next EQ update. */
@@ -1510,8 +1548,10 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    // Request transition to PLAY (unmuted)
-    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
+    /* Request PLAY muted: the outputs start switching on silence, and the
+     * mixer and biquad rewrites below land before anything is heard. The
+     * unmute at the end ramps the volume up. */
+    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY | CTRL2_MUTE);
 
     // Poll POWER_STATE until the device actually reaches PLAY.
     // The TAS5825M won't transition until its PLL locks on SCLK.
@@ -1547,12 +1587,16 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_apply_input_mix();
     bq_program_chain();
 
+    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
+
     tas58xx_dump_status("power-on");
   } else if (mode == DAC_POWER_STANDBY) {
     if (cur_state != CTRL2_DEEP_SLEEP) {
+      ramp_to_mute_locked(cur_ctrl2);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
     }
   } else {
+    ramp_to_mute_locked(cur_ctrl2);
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_DEEP_SLEEP);
     /* DEEP_SLEEP may reset registers and coefficient RAM — ensure
      * full re-initialization happens on the next wake-up. */
@@ -1565,6 +1609,8 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
   REG_LOCK();
   s_power_mode_generation++;
   for (int i = 0; i < s_dev_count; i++) {
+    /* An explicit mode supersedes a retune's pending restore. */
+    s_parked_for_retune[i] = false;
     set_power_mode_dev(&s_devs[i], mode);
   }
   s_cur = NULL;
@@ -1942,6 +1988,7 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
 
 /* ---------- Public ops struct ---------- */
 
+static void tas58xx_on_i2s_stopping(void);
 static void tas58xx_on_i2s_started(uint32_t sample_rate_hz);
 
 const dac_ops_t dac_tas58xx_ops = {
@@ -1951,6 +1998,7 @@ const dac_ops_t dac_tas58xx_ops = {
     .set_power_mode = tas58xx_set_power_mode,
     .enable_speaker = tas58xx_enable_speaker,
     .enable_line_out = tas58xx_enable_line_out,
+    .on_i2s_stopping = tas58xx_on_i2s_stopping,
     .on_i2s_started = tas58xx_on_i2s_started,
 };
 
@@ -2169,9 +2217,14 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
     /*
      * DRC — 3-band Dynamic Range Compression (Pages 0x06–0x07)
      */
+    /* The three bands are summed after their mixer gains, and with the band
+     * filters below all pass-through, three unity gains played the signal
+     * three times over (+9.5 dB) ahead of the clipper and the volume: loud
+     * tracks overflowed there into clicks at any volume. Table 9 passes the
+     * signal through band 1 alone. */
     write_dsp_coeff32(0x06, 0x58, 0x00800000); /* DRC1 mixer gain (unity) */
-    write_dsp_coeff32(0x06, 0x5C, 0x00800000); /* DRC2 mixer gain (unity) */
-    write_dsp_coeff32(0x06, 0x60, 0x00800000); /* DRC3 mixer gain (unity) */
+    write_dsp_coeff32(0x06, 0x5C, 0x00000000); /* DRC2 mixer gain (off) */
+    write_dsp_coeff32(0x06, 0x60, 0x00000000); /* DRC3 mixer gain (off) */
     /* DRC1 time constants */
     write_dsp_coeff32(0x06, 0x64, 0x7FFFFFFF); /* DRC1 Energy  */
     write_dsp_coeff32(0x06, 0x68, 0x7FFFFFFF); /* DRC1 Attack  */
@@ -2888,9 +2941,9 @@ static esp_err_t tas58xx_apply_input_mix(void) {
 static esp_err_t bq_program_chain_muted(void) {
   uint8_t saved_ctrl2 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL2, &saved_ctrl2);
-  if (!(saved_ctrl2 & CTRL2_MUTE)) {
-    tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2 | CTRL2_MUTE);
-  }
+  /* Wait out the ramp: muting and writing at once still rewrote the chain
+   * under audio at level. */
+  ramp_to_mute_locked(saved_ctrl2);
 
   esp_err_t err = bq_program_chain();
 
@@ -3312,13 +3365,54 @@ static void tas58xx_reload_hf_for_rate(void) {
  * Every section's corner is a fraction of the sample rate, so a rate change
  * invalidates the whole coefficient set and the chains must be redesigned.
  */
+/* The I2S clocks are about to stop for a retune: an amplifier that loses
+ * them in PLAY pops (and latches a clock fault), so ramp it to mute and park
+ * it in HIZ for tas58xx_on_i2s_started() to bring back. */
+static void tas58xx_on_i2s_stopping(void) {
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    s_parked_for_retune[i] = false;
+    if (s_devs[i].handle == NULL) {
+      continue;
+    }
+    s_cur = &s_devs[i];
+    uint8_t ctrl2 = 0;
+    if (tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2) == ESP_OK &&
+        (ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY) {
+      ramp_to_mute_locked(ctrl2);
+      tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
+      s_parked_for_retune[i] = true;
+    }
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+}
+
+/* Bring back the amplifiers a retune parked, when nothing else is to be
+ * redone for the new clocks. */
+static void restore_parked(void) {
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    if (!s_parked_for_retune[i]) {
+      continue;
+    }
+    s_parked_for_retune[i] = false;
+    ESP_LOGI(TAG, "@0x%02X restoring PLAY after I2S restart", s_devs[i].addr);
+    set_power_mode_dev(&s_devs[i], DAC_POWER_ON);
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+}
+
 static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   if (sample_rate_hz < 8000 || sample_rate_hz > 192000) {
     ESP_LOGW(TAG, "ignoring implausible I2S rate %" PRIu32 " Hz",
              sample_rate_hz);
+    restore_parked();
     return;
   }
   if ((double)sample_rate_hz == s_bq_fs) {
+    restore_parked();
     return;
   }
 
@@ -3332,6 +3426,8 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
     if (tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2) == ESP_OK) {
       was_playing[device_index] = (ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY;
     }
+    was_playing[device_index] |= s_parked_for_retune[device_index];
+    s_parked_for_retune[device_index] = false;
   }
   s_cur = NULL;
   REG_UNLOCK();
