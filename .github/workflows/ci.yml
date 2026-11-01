@@ -79,6 +79,9 @@ jobs:
       - name: Test software EQ against a reference
         run: python3 tests/audio_eq/run.py
 
+      - name: Test the per-output delay
+        run: python3 tests/audio_delay/run.py
+
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
 

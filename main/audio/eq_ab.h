@@ -31,3 +31,9 @@ bool eq_ab_available(void);
 
 esp_err_t eq_ab_set(bool software);
 bool eq_ab_get(void);
+
+/**
+ * Re-decide who routes the amplifier's input: the software side while it
+ * plays the chains or an output delay is set (audio_delay.h), else the chip.
+ */
+void eq_ab_refresh_routing(void);

@@ -172,6 +172,11 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev);
  */
 bool dac_tas58xx_set_soft_routing(int dev, bool on);
 
+/** Whether the software side routes one amplifier's input. */
+bool dac_tas58xx_get_soft_routing(int dev);
+/** Whether dac_tas58xx_set_soft_routing() would be accepted. */
+bool dac_tas58xx_can_soft_route(int dev);
+
 /* ---------- Fault reporting ---------- */
 
 /**

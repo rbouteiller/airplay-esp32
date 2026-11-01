@@ -61,6 +61,7 @@ elseif(CONFIG_AUDIO_OUTPUT_USB)
     list(APPEND SRC_FILES "audio/audio_output_usb.c")
 else()
     list(APPEND SRC_FILES "audio/audio_output.c")
+    list(APPEND SRC_FILES "audio/audio_delay.c")
 endif()
 
 # Bluetooth A2DP sink (only available on ESP32 with Classic BT)

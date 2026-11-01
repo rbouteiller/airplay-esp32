@@ -64,6 +64,9 @@ input:disabled,select:disabled{opacity:0.25}
 .trim select{width:auto;min-width:220px}
 .trim b{color:#fff;font-weight:600;min-width:52px;text-align:right}
 .trim label{min-width:130px}
+.trim input[type=number]{width:96px;flex:0 0 auto}
+.trim.dl{flex-wrap:wrap}
+.trim small{color:#888;white-space:nowrap}
 .mute{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
       color:#aaa;border-radius:8px;padding:5px 12px;font-size:11px;
       cursor:pointer;min-width:62px}
@@ -265,6 +268,13 @@ of the page is the AirPlay volume. The levels below trim each output against it
 to match drivers; they only cut, so they cost no filter headroom.</p>
 <p class='hint' id='preamp' style='display:none;margin-bottom:14px'></p>
 <div id='gains'></div>
+<div id='delays' style='display:none'>
+<p class='hint' style='margin-bottom:14px'>A delay holds one output back to
+line its driver up with the other: give it to the one whose sound arrives
+first, usually the tweeter, and leave the other at 0. It is applied in whole
+samples and saved at once.</p>
+<div id='delay-rows'></div>
+</div>
 <div id='power' style='display:none'>
 <div class='trim'><label for='pw-db'>Digital gain</label>
 <select id='pw-db' onchange='pickGain()' title='The level full volume
@@ -818,16 +828,19 @@ function chainH(secs,w){
   return {re:re,im:im};
 }
 /* On the same grid sweep() walks, so it overlays the per-chain curves. */
-function sumCurve(groups,rates,gains){
+function sumCurve(groups,rates,gains,delays){
   var N=360,F0=20,F1=Math.min(20000,Math.min.apply(null,rates)/2);
-  var out=[],i,k,h,re,im,m,f,g;
+  var out=[],i,k,h,re,im,m,f,g,t,cr,ci;
   for(i=0;i<=N;i++){
     f=F0*Math.pow(F1/F0,i/N);
     re=0;im=0;
     for(k=0;k<groups.length;k++){
       h=chainH(groups[k],2*P*f/rates[k]);
       g=gains?gains[k]:1;
-      re+=h.re*g;im+=h.im*g;
+      /* A delay turns a branch's phase, which only the sum shows. */
+      t=delays?delays[k]:0;
+      cr=Math.cos(2*P*f*t);ci=-Math.sin(2*P*f*t);
+      re+=(h.re*cr-h.im*ci)*g;im+=(h.re*ci+h.im*cr)*g;
     }
     m=Math.sqrt(re*re+im*im);
     out.push(m>1e-3?Math.max(-60,Math.min(60,20*Math.log10(m))):-60);
@@ -1238,6 +1251,47 @@ function muteToggle(i){
   post({dev:r.a,out:r.c,mute:m},
        gainName(r.a,r.c)+(m?' muted':' unmuted'));
 }
+/* ---- delays ----
+   Per I2S slot, so the board's rather than one amplifier's, and like the
+   levels they go live and are saved at once. */
+function hasDelay(){
+  return !!(data.delay&&data.delay.supported&&data.amps.length===1&&
+            !data.amps[0].pbtl);
+}
+function delayUs(c){
+  return data.delay?Number(data.delay.us[c])||0:0;
+}
+/* Seconds by which the delay holds output c back, for the summed plot. */
+function delayS(c){return hasDelay()?delayUs(c)*1e-6:0;}
+function delayNote(us){
+  var n=Math.round(us*fs()/1e6);
+  return (us*0.343).toFixed(1)+' mm, '+n+' sample'+(n===1?'':'s')+' at '+
+         (fs()/1000)+' kHz';
+}
+function drawDelays(){
+  var show=hasDelay(),h='',c;
+  $('delays').style.display=show?'':'none';
+  if(!show){$('delay-rows').innerHTML='';return;}
+  for(c=0;c<2;c++){
+    h+="<div class='trim dl'><label for='dl-"+c+"'>"+outLabel(c)+
+       " delay</label><input type='number' id='dl-"+c+"' min='0' max='"+
+       data.delay.max_us+"' step='1' value='"+delayUs(c)+
+       "' onchange='delayCommit("+c+")'><span>&micro;s</span>"+
+       "<small id='dl-note-"+c+"'>"+delayNote(delayUs(c))+'</small></div>';
+  }
+  $('delay-rows').innerHTML=h;
+}
+function delayCommit(c){
+  var v=Math.round(Number($('dl-'+c).value));
+  if(!isFinite(v))v=0;
+  v=clamp(v,0,data.delay.max_us);
+  $('dl-'+c).value=v;
+  data.delay.us[c]=v;
+  $('dl-note-'+c).textContent=delayNote(v);
+  plot();
+  post({out:c,delay_us:v},outLabel(c)+' delay '+v+' \u00b5s ('+
+       (v*0.343).toFixed(1)+' mm)');
+}
 function gangChanged(){
   storeRows();
   data.amps[amp].ganged=$('gang').checked;
@@ -1454,12 +1508,12 @@ function activeChains(){
          heard unless every output carrying it is muted. */
       if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
         out.push({c:am.channels[0],n:pre+chainLabel(am),g:sharedTrim(am),
-                  rate:fs(a)});
+                  rate:fs(a),t:delayS(0)});
     }else{
       if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0),
-                              rate:fs(a)});
+                              rate:fs(a),t:delayS(0)});
       if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1),
-                              rate:fs(a)});
+                              rate:fs(a),t:delayS(1)});
     }
   }
   return out;
@@ -1487,7 +1541,7 @@ function plotAll(){
   var chains=activeChains();
   drawView(chains.length);
   if(chains.length<2)return;
-  var sweeps=[],groups=[],gains=[],rates=[],leg='',k,maxHz=20000;
+  var sweeps=[],groups=[],gains=[],rates=[],delays=[],leg='',k,maxHz=20000;
   /* Every curve needs the same frequency grid, even when one DSP runs at
      32 kHz and another at 96 kHz. Evaluate each at its own angular frequency. */
   for(k=0;k<chains.length;k++)maxHz=Math.min(maxHz,chains[k].rate/2);
@@ -1497,13 +1551,14 @@ function plotAll(){
     s.name=chains[k].n;
     groups.push(secs);sweeps.push(s);
     rates.push(chains[k].rate);
+    delays.push(chains[k].t||0);
     gains.push(Math.pow(10,chains[k].g/20));
     leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
          chains[k].n+'</span>';
   }
   var ex=null,hi=growScale(24,peakTotal(sweeps));
   if($('sumq').checked){
-    ex=[{v:sumCurve(groups,rates,gains),c:C_SUM,w:4,n:'Sum'}];
+    ex=[{v:sumCurve(groups,rates,gains,delays),c:C_SUM,w:4,n:'Sum'}];
     leg+="<span><i style='background:"+C_SUM+"'></i>Sum</span>";
   }
   $('sum-hint').style.display=ex?'':'none';
@@ -1561,12 +1616,15 @@ function postSeq(bodies,i,all){
    copy only differs from the page's once an import has staged them. This is
    what it last confirmed, so Apply can send just the difference. */
 var live=null;
+var liveDelay=null;
 function snapLive(){
   live=data.amps.map(function(am){
     return {mix:am.mix,gains:am.gains.slice()};
   });
+  liveDelay=data.delay?data.delay.us.slice():null;
 }
 function noteLive(b){
+  if(b.delay_us!==undefined&&liveDelay)liveDelay[b.out]=b.delay_us;
   if(!live||!live[b.dev])return;
   if(b.mix!==undefined)live[b.dev].mix=b.mix;
   if(b.gain!==undefined)live[b.dev].gains[b.out]=b.gain;
@@ -1580,6 +1638,9 @@ function liveBodies(){
       if(am.gains[c]!==live[a].gains[c])
         out.push({dev:a,out:c,gain:am.gains[c]});
   }
+  for(c=0;hasDelay()&&liveDelay&&c<2;c++)
+    if(data.delay.us[c]!==liveDelay[c])
+      out.push({out:c,delay_us:data.delay.us[c]});
   return out;
 }
 /* Every amplifier, not just the visible tab — a crossover split across two of
@@ -2406,6 +2467,7 @@ function eqFile(){
                :[chainOut(am.channels[0]),chainOut(am.channels[1])];
     f.amps.push(o);
   }
+  if(hasDelay())f.delay_us=[delayUs(0),delayUs(1)];
   return f;
 }
 /* JSON with one filter to a line, so a chain reads top to bottom like the
@@ -2538,6 +2600,14 @@ function eqRead(f){
     }
     r.amps.push(am);
   }
+  if(f.delay_us!==undefined){
+    if(!Array.isArray(f.delay_us)||f.delay_us.length!==2||
+       !f.delay_us.every(function(v){
+         return typeof v==='number'&&isFinite(v)&&v>=0;
+       }))
+      return {err:'"delay_us" should be two delays in microseconds.'};
+    r.delay_us=f.delay_us.map(function(v){return Math.round(v);});
+  }
   return r;
 }
 function ampRef(a){return data.amps.length>1?'Amp '+(a+1):'The amplifier';}
@@ -2608,6 +2678,15 @@ function eqStage(r,name){
       for(c=0;c<(am.pbtl?1:2);c++)
         am.gains[c]=clamp(fa.gains[c],data.gain_min,data.gain_max);
   }
+  if(r.delay_us){
+    if(hasDelay())
+      data.delay.us=r.delay_us.map(function(v){
+        return clamp(v,0,data.delay.max_us);
+      });
+    else if(r.delay_us[0]||r.delay_us[1])
+      notes.push('This board cannot delay one output on its own, so the '+
+                 'delays in the file are not used.');
+  }
   if(r.amps.length>n)
     notes.push('The file holds '+r.amps.length+' amplifiers and this board '+
                n+', so only the first '+(n>1?n+' were':'was')+' loaded.');
@@ -2618,7 +2697,7 @@ function eqStage(r,name){
                ' Hz could not be matched to a filter shape, so '+
                (odd>1?'they':'it')+' will not sound the same at '+fs()+' Hz.');
   if(isGanged(data.amps[amp]))ch=0;
-  drawTabs();drawMix();drawGains();loadRows();setDirty(true);plot();
+  drawTabs();drawMix();drawGains();drawDelays();loadRows();setDirty(true);plot();
   show($('msg'),'Loaded '+esc(name)+'. Apply to hear it, then Commit to keep'+
        ' it.'+lockNote(kept,moved)+(notes.length?' '+notes.join(' '):''),
        'info');
@@ -2829,7 +2908,8 @@ function load(){
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
     var left=autoShape();
-    drawTabs();drawMix();drawGains();loadRows();plot();showPreamp();drawAb();
+    drawTabs();drawMix();drawGains();drawDelays();loadRows();plot();showPreamp();
+    drawAb();
     if(left)
       show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
            ' this page offers reproduces the coefficients. They are still'+

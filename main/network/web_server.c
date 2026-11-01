@@ -27,6 +27,7 @@
 #include "log_stream.h"
 #include "rtsp_server.h"
 #include "playback_events.h"
+#include "audio_delay.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -2832,6 +2833,16 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   }
 #endif
 
+  /* Per I2S slot, so the board's rather than one amplifier's. */
+  cJSON *delay = cJSON_AddObjectToObject(json, "delay");
+  cJSON_AddBoolToObject(delay, "supported", audio_output_delay_supported());
+  cJSON_AddNumberToObject(delay, "max_us", AUDIO_DELAY_MAX_US);
+  cJSON *delay_us = cJSON_AddArrayToObject(delay, "us");
+  for (int c = 0; c < AUDIO_DELAY_CHANNELS; c++) {
+    cJSON_AddItemToArray(delay_us,
+                         cJSON_CreateNumber(audio_output_get_delay_us(c)));
+  }
+
   cJSON *amps = cJSON_AddArrayToObject(json, "amps");
   for (int d = 0; d < devices; d++) {
     cJSON *amp = cJSON_CreateObject();
@@ -2911,6 +2922,42 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
     }
   }
 #endif
+
+  /* A delay holds back an I2S slot, which is the board's, so like the
+   * switch above it needs no 'dev' when sent alone. Saved at once, as the
+   * levels are. */
+  const cJSON *dly = cJSON_GetObjectItem(json, "delay_us");
+  if (dly) {
+    const cJSON *oc = cJSON_GetObjectItem(json, "out");
+    if (!json_int_in_range(oc, 0, AUDIO_DELAY_CHANNELS - 1) ||
+        !json_int_in_range(dly, 0, AUDIO_DELAY_MAX_US)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "Bad 'out' or 'delay_us'");
+      return ESP_FAIL;
+    }
+    /* 0 is always accepted, so a delay can be cleared on any layout. */
+    if (dly->valueint != 0 && !audio_output_delay_supported()) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "This layout cannot delay one output on its own");
+      return ESP_FAIL;
+    }
+    if (audio_output_set_delay_us(oc->valueint, (uint32_t)dly->valueint) !=
+            ESP_OK &&
+        dly->valueint != 0) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Could not save the delay");
+      return ESP_FAIL;
+    }
+    if (!cJSON_GetObjectItem(json, "dev")) {
+      cJSON_Delete(json);
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"success\":true}");
+      return ESP_OK;
+    }
+  }
 
   const cJSON *v = cJSON_GetObjectItem(json, "dev");
   if (!json_int_in_range(v, 0, eqb_devices() - 1)) {

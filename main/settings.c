@@ -27,6 +27,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_GAIN       "amp_gain"
 #define NVS_KEY_AMP_MUTE       "amp_mute"
 #define NVS_KEY_AMP_MIX        "amp_mix"
+#define NVS_KEY_OUT_DELAY      "out_delay"
 #define NVS_KEY_FIRST_PBTL     "amp1_pbtl"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_USB_PD_VOLTS   "pd_volts"
@@ -702,6 +703,52 @@ esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]) {
     ESP_LOGI(TAG, "Saved amp input routing: 1 %u, 2 %u", mix[0], mix[1]);
   } else {
     ESP_LOGE(TAG, "Failed to save amp input routing: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_output_delay_us(uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t);
+  err = nvs_get_blob(nvs, NVS_KEY_OUT_DELAY, us, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t
+settings_set_output_delay_us(const uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_OUT_DELAY, us,
+                     SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save output delays: %s", esp_err_to_name(err));
   }
   return err;
 }

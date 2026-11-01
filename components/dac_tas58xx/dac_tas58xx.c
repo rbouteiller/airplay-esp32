@@ -1961,6 +1961,14 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
   return dev < s_dev_count ? s_devs[dev].mix : s_dev_mix[dev];
 }
 
+bool dac_tas58xx_get_soft_routing(int dev) {
+  return dev >= 0 && dev < TAS58XX_MAX_DEVICES && s_soft_routing[dev];
+}
+
+bool dac_tas58xx_can_soft_route(int dev) {
+  return dev >= 0 && dev < s_dev_count && !s_devs[dev].hf_mix_seen;
+}
+
 bool dac_tas58xx_set_soft_routing(int dev, bool on) {
   if (dev < 0 || dev >= s_dev_count || s_reg_mutex == NULL) {
     return false;
