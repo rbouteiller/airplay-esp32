@@ -2561,8 +2561,12 @@ static esp_err_t write_eq_mode(bool enable) {
       return err;
     }
 
+    /* Gang off. Set, the part plays the left chain on both channels, so an
+     * unganged pair (a crossover) gave output B output A's filters. The
+     * driver gangs by writing the left chain to both (bq_design_slot()), as
+     * the init sequence's GangEQ = 0 expects. */
     uint8_t mode_data[EQ_MODE_SIZE] = {
-        0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
+        0x00, 0x00, 0x00, 0x00,                 /* gang_eq = 0 */
         0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
     };
 
