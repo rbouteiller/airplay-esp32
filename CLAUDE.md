@@ -44,9 +44,12 @@ idf.py -p /dev/ttyUSB0 monitor
 | `smartamp` | ESP32 + Bluetooth | 4MB |
 | `hifi-esp32` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin; Ethernet + OLED |
 | `hifi-esp32-bt` | Same + Bluetooth | |
+| `hifi-esp32-plus` | ESP32 + PCM5122 DAC | Rev J1+ only: I2C-controlled DAC (0x4D) run from BCK, XSMT on GPIO 13; Ethernet + OLED |
+| `hifi-esp32-plus-bt` | Same + Bluetooth | |
 | `hifi-esparagus` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin, no Ethernet/display |
 | `hifi-esparagus-bt` | Same + Bluetooth | |
 | `hifi-esp32-s3` | ESP32-S3 + PCM5100 DAC | Ethernet + OLED |
+| `hifi-esp32-s3-plus` | ESP32-S3 + PCM5122 DAC | Rev H1+ only: HiFi-ESP32-S3 pins plus the DAC's I2C bus (42/41, 0x4D) and XSMT on GPIO 4 |
 | `hifi-esparagus-s3` | ESP32-S3 + PCM5100 DAC | OLED only, no Ethernet |
 | `loud-esp32` | ESP32 + MAX98357A I2S amp | No I2C; enable pin gated by playback play/pause, not just boot-released |
 | `loud-esp32-bt` | Same + Bluetooth | |
@@ -170,7 +173,7 @@ components/
 │   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
 │   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
-│   ├── hifi-esp32-plus/    # PCM5122 over I2C: HiFi-ESP32-Plus, Amped-ESP32-Plus(-S3)
+│   ├── hifi-esp32-plus/    # PCM5122 over I2C: HiFi-ESP32-Plus(-S3), Amped-ESP32-Plus(-S3)
 │   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo, Amped-ESP32(-S3), Amped-Esparagus (RTSP-gated amp enable pin)
 │   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
