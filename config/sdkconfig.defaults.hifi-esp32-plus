@@ -1,5 +1,6 @@
 # HiFi-ESP32-Plus defaults (ESP32 rev J1+, PCM5122 — I2C-controlled DAC run
-# from BCK, DAC/AMP enable on GPIO 13)
+# from BCK, DAC/AMP enable on GPIO 13). Rev J wires SDA/SCL the other way
+# round; this file describes rev J1 and later only.
 CONFIG_BOARD_HIFI_ESP32_PLUS=y
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
@@ -14,6 +15,9 @@ CONFIG_I2S_DO_IO=22
 CONFIG_DAC_I2C_SDA=21
 CONFIG_DAC_I2C_SCL=27
 CONFIG_DAC_ENABLE_GPIO=13
+
+# No status LED: the WS2812 on GPIO 12 is not fitted by default. Set
+# CONFIG_LED_RGB_GPIO=12 on a board that has one.
 
 # W5500 Ethernet
 CONFIG_ETH_W5500_ENABLED=y

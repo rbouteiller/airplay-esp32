@@ -96,6 +96,11 @@ menu "Board Configuration"
             bool "HiFi-ESP32-S3 (ESP32-S3, PCM5100)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_HIFI_ESP32_S3_PLUS
+            bool "HiFi-ESP32-S3-Plus (ESP32-S3, PCM5122)"
+            depends on IDF_TARGET_ESP32S3
+            select DAC_PCM51XX
+
         config BOARD_HIFI_ESPARAGUS_S3
             bool "HiFi-Esparagus-S3 (ESP32-S3, PCM5100)"
             depends on IDF_TARGET_ESP32S3
@@ -167,6 +172,7 @@ menu "Board Configuration"
         default "hifi-esp32" if BOARD_HIFI_ESP32
         default "esp32-generic" if BOARD_HIFI_ESPARAGUS
         default "hifi-esp32-plus" if BOARD_HIFI_ESP32_PLUS
+        default "hifi-esp32-plus" if BOARD_HIFI_ESP32_S3_PLUS
         default "hifi-esp32-plus" if BOARD_AMPED_ESP32_PLUS
         default "hifi-esp32-plus" if BOARD_AMPED_ESP32_S3_PLUS
         default "hifi-esp32" if BOARD_HIFI_ESP32_S3
