@@ -38,15 +38,19 @@ original ESP32.
 | [Esparagus Audio Brick Dual](esparagus-audio-brick-dual-dac.md) | ESP32-S3 | 2× TAS58xx | — | yes | yes |
 | [Esparagus Louder](esparagus-audio-brick.md#esparagus-louder) | ESP32 / S3 | TAS58xx | ESP32 only | yes | yes |
 | [HiFi-ESP32](hifi-esp32.md) | ESP32 / S3 | PCM5100, line level | ESP32 only | yes | yes |
-| [HiFi-ESP32-Plus](hifi-esp32.md#hifi-esp32-plus) | ESP32 | PCM5122, line level, hardware volume | yes | yes | yes |
+| [HiFi-ESP32-Plus](hifi-esp32.md#hifi-esp32-plus-and-hifi-esp32-s3-plus) | ESP32 / S3 | PCM5122, line level, hardware volume | ESP32 only | yes | yes |
 | [HiFi-Esparagus](hifi-esp32.md) | ESP32 / S3 | PCM5100, line level | ESP32 only | — | yes |
 | [Loud-ESP32](loud-esp32.md) | ESP32 / S3 | MAX98357A | ESP32 only | yes | yes |
 | [Loud-Esparagus](loud-esp32.md) | ESP32 | 2× MAX98357A | yes | — | yes |
 | [Esparagus Echo](loud-esp32.md) | ESP32-S3 | 2× MAX98357A | — | yes | yes |
 | [Amped-ESP32](amped-esp32.md) | ESP32 / S3 | PCM5100 + TPA31xx | ESP32 only | yes | yes |
+| [Amped-ESP32-Plus](amped-esp32.md#amped-esp32-plus-and-amped-esp32-s3-plus) | ESP32 / S3 | PCM5122 + TPA3118, hardware volume | ESP32 only | yes | yes |
 | [Amped-Esparagus](amped-esp32.md) | ESP32 | PCM5100 + TPA31xx | yes | yes | yes |
+| [Amped-Esparagus-Plus-S3](amped-esp32.md#amped-esparagus-plus-s3) | ESP32-S3 | PCM5122 + TPA3118 | — | yes | — |
 | [Louder-ESP32](louder-esp32.md) | ESP32 / S3 | TAS5805M | ESP32 only | yes | yes |
 | [Louder-ESP32-Plus](louder-esp32.md) | ESP32 / S3 | TAS5825M | ESP32 only | yes | yes |
+| [Louder-ESP32-S3-Pro](louder-esp32.md#louder-esp32-s3-pro) | ESP32-S3 | TAS5825M, TFT | — | yes | yes |
+| [Louder-ESP32-Mini](louder-esp32.md#louder-esp32-mini) | ESP32-S3 | TAS5805M, bridged | — | — | yes |
 | [Seeed XIAO ESP32-C5](xiao-esp32c5.md) | ESP32-C5 | External I2S | — | — | — |
 | [Custom board](custom.md) | any | any | — | — | — |
 

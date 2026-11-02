@@ -14,17 +14,24 @@ nothing to do beyond bringing up the SPI bus that Ethernet and the display share
 | --- | --- | :-: | :-: | :-: | :-: |
 | `hifi-esp32` | ESP32 | yes | SH1106 OLED | — | — |
 | `hifi-esp32-bt` | ESP32 | yes | SH1106 OLED | yes | yes |
+| `hifi-esp32-plus` | ESP32 | yes | SH1106 OLED | — | — |
+| `hifi-esp32-plus-bt` | ESP32 | yes | SH1106 OLED | yes | yes |
 | `hifi-esparagus` | ESP32 | — | — | — | — |
 | `hifi-esparagus-bt` | ESP32 | — | — | yes | yes |
 | `hifi-esp32-s3` | ESP32-S3 | yes | SH1106 OLED | — | yes |
+| `hifi-esp32-s3-plus` | ESP32-S3 | yes | SH1106 OLED | — | yes |
 | `hifi-esparagus-s3` | ESP32-S3 | — | — | — | yes |
 
 The **Esparagus** variants are the same audio design without the Ethernet jack and the
 display header; they carry a WS2812 status LED instead. Bluetooth Classic exists only on
 the original ESP32, so there is no `-bt` build for either S3 variant.
 
-On an ESP32 the published binary is the Bluetooth one. Build `hifi-esp32` or
-`hifi-esparagus` yourself if you would rather have the RAM and flash back.
+The **Plus** boards carry a PCM5122 instead of the PCM5100 — see
+[HiFi-ESP32-Plus and HiFi-ESP32-S3-Plus](#hifi-esp32-plus-and-hifi-esp32-s3-plus) below.
+
+On an ESP32 the published binary is the Bluetooth one. Build `hifi-esp32`,
+`hifi-esp32-plus` or `hifi-esparagus` yourself if you would rather have the RAM and flash
+back.
 
 ## Features
 
@@ -61,6 +68,10 @@ On an ESP32 the published binary is the Bluetooth one. Build `hifi-esp32` or
     # ESP32-S3 — Esparagus variant
     pio run -e hifi-esparagus-s3 -t upload
     pio run -e hifi-esparagus-s3 -t uploadfs
+
+    # Plus boards — PCM5122 under I2C control
+    pio run -e hifi-esp32-plus-bt -t upload
+    pio run -e hifi-esp32-s3-plus -t upload
     ```
 
 === "ESP-IDF"
@@ -73,7 +84,8 @@ On an ESP32 the published binary is the Bluetooth one. Build `hifi-esp32` or
 
     Swap in `config/sdkconfig.defaults.hifi-esp32-s3` after `idf.py set-target esp32s3`
     for the S3 revision, and drop `config/sdkconfig.defaults.bt` for a build without
-    Bluetooth.
+    Bluetooth. The Plus boards use `config/sdkconfig.defaults.hifi-esp32-plus` and
+    `config/sdkconfig.defaults.hifi-esp32-s3-plus`.
 
 ## Default GPIO assignments
 
@@ -96,6 +108,38 @@ On an ESP32 the published binary is the Bluetooth one. Build `hifi-esp32` or
 
 The Esparagus variants use the same I2S pins and leave the SPI block unconfigured.
 
+## HiFi-ESP32-Plus and HiFi-ESP32-S3-Plus
+
+The **Plus** boards swap the PCM5100 for a **PCM5122**: the same line-level output on the
+same I2S pins, but with an I2C control port at address **0x4D**. The firmware programs it
+at boot to run its PLL from BCK, since neither board wires MCLK, and then uses the chip's
+own digital volume (`CONFIG_DAC_CONTROLS_VOLUME`) instead of attenuating in software. The
+DAC's `XSMT` line is raised only while audio is playing, driven from playback events.
+Ethernet and the OLED sit on the shared SPI bus exactly as on the plain boards, and the
+PCM5122's DSP is not exposed.
+
+| Function | HiFi-ESP32-Plus | HiFi-ESP32-S3-Plus |
+| --- | :-: | :-: |
+| I2S BCK | 26 | 14 |
+| I2S WS | 25 | 15 |
+| I2S DO | 22 | 16 |
+| DAC I2C SDA | 21 | 42 |
+| DAC I2C SCL | 27 | 41 |
+| DAC `XSMT` | 13 | 4 |
+
+Everything else — the SPI bus, Ethernet and the display — matches the plain board of the
+same chip in the [table above](#default-gpio-assignments).
+
+!!! warning "Latest board revision only"
+
+    `config/sdkconfig.defaults.hifi-esp32-plus` describes board **rev J1 and later**, and
+    `config/sdkconfig.defaults.hifi-esp32-s3-plus` describes **rev H1 and later**. The
+    revision before each wires SDA and SCL the other way round and answers at 0x4C, so an
+    earlier board will not find its DAC.
+
+Neither board is fitted with the WS2812 status LED its footprint allows, so neither build
+enables one. Set `CONFIG_LED_RGB_GPIO` to 12 (ESP32) or 9 (S3) if yours has one.
+
 ## Related
 
 - [Loud-ESP32](loud-esp32.md) — the same layout with MAX98357A amplifiers on board
@@ -103,16 +147,3 @@ The Esparagus variants use the same I2S pins and leave the SPI block unconfigure
 - [Bluetooth A2DP](../features/bluetooth.md)
 - [Ethernet (W5500)](../features/ethernet.md)
 - [Build environments](../reference/build-environments.md)
-
-## HiFi-ESP32-Plus
-
-The **HiFi-ESP32-Plus** (board rev J1 and later) swaps the PCM5100 for a
-**PCM5122**: same line-level output and the same I2S pins (BCK 26, WS 25,
-DATA 22), but the DAC is controlled over I2C (SDA 21, SCL 27, address 0x4D).
-The firmware programs it at boot to run its PLL from BCK, since the board does
-not wire MCLK, and uses the chip's digital volume instead of software
-attenuation. GPIO 13 is the board's DAC enable (XSMT) and is raised only while
-audio is playing. Ethernet and the OLED sit on the shared SPI bus exactly as on
-the HiFi-ESP32. Use the `hifi-esp32-plus-bt` build; the PCM5122's DSP is not
-exposed.
-

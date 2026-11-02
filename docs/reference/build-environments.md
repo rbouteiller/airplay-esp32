@@ -8,6 +8,7 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 | --- | --- | --- | --- |
 | `esp32s3` | ESP32-S3 | 16 MB | Default. External I2S DAC such as a PCM5102A |
 | `esp32s3-jtag` | ESP32-S3 | 16 MB | Extends `esp32s3`, uploads over built-in USB JTAG |
+| `esp32s3-uac` | ESP32-S3 | 16 MB | Extends `esp32s3`, enumerates as a [USB speaker](../features/usb-audio.md) |
 | `waveshare-esp32s3` | ESP32-S3 | 16 MB | Waveshare ESP32-S3 pin arrangement |
 | `esp32c5-xiao` | ESP32-C5 | 8 MB | Seeed XIAO, needs the community pioarduino platform |
 | `esp32wrover-dev` | ESP32 | 4 MB | Freenove WROVER, includes Bluetooth |
@@ -50,9 +51,12 @@ environment has a `-bt` variant.
 | --- | --- | --- | --- | :-: |
 | `hifi-esp32` | ESP32 | PCM5100 | 8 MB | — |
 | `hifi-esp32-bt` | ESP32 | PCM5100 | 8 MB | yes |
+| `hifi-esp32-plus` | ESP32 | PCM5122 | 8 MB | — |
+| `hifi-esp32-plus-bt` | ESP32 | PCM5122 | 8 MB | yes |
 | `hifi-esparagus` | ESP32 | PCM5100 | 8 MB | — |
 | `hifi-esparagus-bt` | ESP32 | PCM5100 | 8 MB | yes |
 | `hifi-esp32-s3` | ESP32-S3 | PCM5100 | 8 MB | — |
+| `hifi-esp32-s3-plus` | ESP32-S3 | PCM5122 | 8 MB | — |
 | `hifi-esparagus-s3` | ESP32-S3 | PCM5100 | 8 MB | — |
 | `loud-esp32` | ESP32 | MAX98357A | 8 MB | — |
 | `loud-esp32-bt` | ESP32 | MAX98357A | 8 MB | yes |
@@ -62,9 +66,13 @@ environment has a `-bt` variant.
 | `esparagus-echo` | ESP32-S3 | 2× MAX98357A | 8 MB | — |
 | `amped-esp32` | ESP32 | PCM5100 + TPA31xx | 8 MB | — |
 | `amped-esp32-bt` | ESP32 | PCM5100 + TPA31xx | 8 MB | yes |
+| `amped-esp32-plus` | ESP32 | PCM5122 + TPA3118 | 8 MB | — |
+| `amped-esp32-plus-bt` | ESP32 | PCM5122 + TPA3118 | 8 MB | yes |
 | `amped-esparagus` | ESP32 | PCM5100 + TPA31xx | 8 MB | — |
 | `amped-esparagus-bt` | ESP32 | PCM5100 + TPA31xx | 8 MB | yes |
 | `amped-esp32-s3` | ESP32-S3 | PCM5100 + TPA31xx | 8 MB | — |
+| `amped-esp32-s3-plus` | ESP32-S3 | PCM5122 + TPA3118 | 8 MB | — |
+| `amped-esparagus-plus-s3` | ESP32-S3 | PCM5122 + TPA3118 | 8 MB | — |
 | `louder-esp32` | ESP32 | TAS5805M | 8 MB | — |
 | `louder-esp32-bt` | ESP32 | TAS5805M | 8 MB | yes |
 | `louder-esp32-plus` | ESP32 | TAS5825M | 8 MB | — |
@@ -73,6 +81,19 @@ environment has a `-bt` variant.
 | `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | 8 MB | — |
 | `louder-esp32-s3-mini-uac` | ESP32-S3 | TAS5805M, bridged | 8 MB | — |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | 8 MB | — |
+| `louder-esp32-s3-pro` | ESP32-S3 | TAS5825M | 8 MB | — |
+
+A **Plus** board swaps the family's plain part for one with an I2C control port: a
+**PCM5122** in place of the PCM5100 on HiFi and Amped, a **TAS5825M** in place of the
+TAS5805M on Louder. Volume then happens in the DAC rather than in software. The pinout
+is otherwise the plain board's, so the Plus environments exist to carry the I2C bus and
+the DAC's address — flash the one that matches the silicon. `louder-esp32-s3-pro` is a
+Louder-ESP32-S3-Plus with an [ST7789 TFT](../features/tft-display.md) in place of the
+OLED and an RGB LED.
+
+The Plus environments describe the **latest** board revision only — rev J1 and later on
+the ESP32 boards, rev H1 and later on the S3 ones. Earlier revisions wire SDA and SCL
+the other way round and answer at a different I2C address.
 
 ## Targets without a PlatformIO environment
 
@@ -97,9 +118,10 @@ available in the [browser installer](../getting-started/flashing.md):
 `esparagus-audio-brick-bt`, `esparagus-audio-brick-s3`, `esparagus-audio-brick-dual-dac`,
 `esparagus-audio-brick-dual-uac`, `esparagus-louder-bt`, `esparagus-louder-s3`,
 `esparagus-echo`, `hifi-esp32-bt`, `hifi-esp32-plus-bt`, `hifi-esparagus-bt`,
-`hifi-esp32-s3`, `hifi-esparagus-s3`, `loud-esp32-bt`, `loud-esparagus-bt`,
-`loud-esp32-s3`, `amped-esp32-bt`, `amped-esparagus-bt`, `amped-esp32-s3`,
-`louder-esp32-bt`, `louder-esp32-plus-bt`, `louder-esp32-s3`, `louder-esp32-s3-plus`,
+`hifi-esp32-s3`, `hifi-esp32-s3-plus`, `hifi-esparagus-s3`, `loud-esp32-bt`,
+`loud-esparagus-bt`, `loud-esp32-s3`, `amped-esp32-bt`, `amped-esparagus-bt`,
+`amped-esp32-s3`, `amped-esp32-plus-bt`, `amped-esp32-s3-plus`, `louder-esp32-bt`,
+`louder-esp32-plus-bt`, `louder-esp32-s3`, `louder-esp32-s3-plus`, `louder-esp32-s3-pro`,
 `louder-esp32-s3-mini`.
 
 The list lives in `.github/workflows/targets.json`, and each entry needs a matching
@@ -107,8 +129,9 @@ The list lives in `.github/workflows/targets.json`, and each entry needs a match
 
 Everything else you build yourself. On an ESP32 board that can do Bluetooth the published
 binary always includes it, so there is no prebuilt `squeezeamp`, `esparagus-audio-brick`,
-`esparagus-louder`, `hifi-esp32`, `loud-esp32`, `amped-esp32` or `louder-esp32` — build
-one of those yourself if you want the RAM and flash back.
+`esparagus-louder`, `hifi-esp32`, `hifi-esp32-plus`, `loud-esp32`, `amped-esp32`,
+`amped-esp32-plus` or `louder-esp32` — build one of those yourself if you want the RAM
+and flash back. `amped-esparagus-plus-s3` has no prebuilt binary either.
 
 The same list runs on every push to `staging` and publishes a rolling
 [beta](../getting-started/flashing.md#beta-builds) pre-release, so each of these boards
