@@ -622,6 +622,7 @@ size_t audio_timeline_read(audio_timeline_t *t, uint32_t epoch, uint32_t start,
   size_t produced = 0U;
   uint32_t cursor = start;
   bool released_slot = false;
+  bool crossed_floor_frame = false;
 
   while (produced < requested) {
     uint16_t index = UINT16_MAX;
@@ -708,7 +709,30 @@ size_t audio_timeline_read(audio_timeline_t *t, uint32_t epoch, uint32_t start,
     cursor += (uint32_t)n;
   }
 
-  if (released_slot && t->space_available) {
+  /* The consumer can move past blocks without reading them after a phase
+   * change. Publish the read head from this local cursor, under the timeline
+   * epoch check, so stale ring slots can be reclaimed without reading mutable
+   * scheduler state after a reset. */
+  portENTER_CRITICAL(&t->lock);
+  if (t->base_valid && t->base_epoch == epoch) {
+    const bool same_floor =
+        t->playback_floor_valid && t->playback_floor_epoch == epoch;
+    const uint32_t previous_floor = t->playback_floor_rtp;
+    if (!same_floor || rtp_diff(cursor, previous_floor) > 0) {
+      t->playback_floor_valid = true;
+      t->playback_floor_epoch = epoch;
+      t->playback_floor_rtp = cursor;
+      crossed_floor_frame =
+          !same_floor || block_start_for_cursor(t, cursor) !=
+                             block_start_for_cursor(t, previous_floor);
+    }
+  }
+  portEXIT_CRITICAL(&t->lock);
+
+  /* A stale unread slot becomes reclaimable when the floor passes its end.
+   * Signal once per frame boundary rather than waking a blocked producer on
+   * every smaller output quantum. */
+  if ((released_slot || crossed_floor_frame) && t->space_available) {
     xSemaphoreGive(t->space_available);
   }
   return produced;
