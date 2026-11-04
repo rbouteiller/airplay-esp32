@@ -1265,6 +1265,15 @@ static esp_err_t tas58xx_fixup_after_hf(tas58xx_dev_t *dev) {
   }
 
   /*
+   * A dump carries the analog gain it was tuned at, usually 0 dB, but the
+   * driver owns that register: it matches the supply, or holds the gain set
+   * by hand. Every replay (at init, on waking from deep sleep, and for a new
+   * rate) comes through here, and analog_gain_update() only writes when the
+   * target moves, so without this the dump's would stand until it did.
+   */
+  tas58xx_write_reg(REG_AGAIN, tas58xx_again_reg());
+
+  /*
    * The EVM brings GPIO1 out as SDOUT; on these boards it is the amp's fault
    * line into the MCU, which otherwise reads the data stream as a fault stuck
    * on and mutes. Only the TAS5825M has these pins.
