@@ -288,6 +288,7 @@ typedef struct {
   i2c_master_dev_handle_t handle; /* I2C device handle */
   bool dsp_defaults_written;      /* signal-path coeffs programmed */
   bool pbtl_mono;                 /* bridged (PBTL) mono output stage */
+  bool spk_muted;                 /* muted by enable_speaker(false) */
   tas58xx_mix_t mix;              /* input-mixer routing */
   uint8_t *hf_buf;                /* cached PPC3 dump (NULL if none) */
   size_t hf_size;                 /* bytes in hf_buf */
@@ -447,6 +448,7 @@ static int tas58xx_detect(i2c_master_bus_handle_t bus) {
       s_devs[found].handle = NULL;
       s_devs[found].dsp_defaults_written = false;
       s_devs[found].pbtl_mono = false;
+      s_devs[found].spk_muted = false;
       s_devs[found].mix = TAS58XX_MIX_STEREO;
       found++;
     }
@@ -1612,7 +1614,10 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_apply_input_mix();
     bq_program_chain();
 
-    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
+    /* Unmute, unless enable_speaker() has the outputs muted (a speaker
+     * fault): coming back from sleep or a retune must not lift that. */
+    tas58xx_write_reg(REG_DEVICE_CTRL2,
+                      dev->spk_muted ? CTRL2_PLAY | CTRL2_MUTE : CTRL2_PLAY);
 
     tas58xx_dump_status("power-on");
   } else if (mode == DAC_POWER_STANDBY) {
@@ -1645,6 +1650,8 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
 /* Enable/disable (mute) output on a single chip. Assumes REG_LOCK held. */
 static void enable_speaker_dev(tas58xx_dev_t *dev, bool enable) {
   s_cur = dev;
+  /* Kept so that waking up, which ends by unmuting, honours it. */
+  dev->spk_muted = !enable;
 
   // Use mute bit in DEVICE_CTRL2 to enable/disable output.
   // Read current register, modify mute bit, write back.
