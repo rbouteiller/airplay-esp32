@@ -340,6 +340,16 @@ static float s_max_volume_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
 static int s_supply_mv;
 static bool s_auto_gain;
 
+/* While the software EQ plays the chains instead (dac_tas58xx_bq_set_flat),
+ * every section is written as a pass-through, and the level the software
+ * EQ takes off ahead of its filters is added back to the volume. */
+static bool s_bq_flat;
+static float s_makeup_db;
+static void (*s_eq_listener)(void);
+static void eq_changed(void);
+/* The software EQ routes the input itself (dac_tas58xx_set_soft_routing()). */
+static bool s_soft_routing[TAS58XX_MAX_DEVICES];
+
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
 static bool s_ch_mute[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -404,6 +414,7 @@ static bool bq_chain_is_flat(int dev);
 static bool bq_chain_is_from_dump(int dev);
 static bool tas58xx_seed_bq_from_hf(int idx);
 static void auto_gain_update(void);
+static void eq_changed(void);
 
 /* ---------- Detect ---------- */
 
@@ -1432,7 +1443,7 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
 #endif
 
   /* The chains and the amplifiers are known now. */
-  auto_gain_update();
+  eq_changed();
   return ESP_OK;
 }
 
@@ -1695,7 +1706,7 @@ static float tas58xx_map_volume_db(float volume_airplay_db) {
   //   AirPlay 0 dB    -> DAC s_max_volume_db (CONFIG_TAS58XX_MAX_VOLUME)
   //   AirPlay -25 dB  -> DAC (MAX - 50)
   //   AirPlay -30..-25 dB -> steep roll-off to mute
-  float max_db = s_max_volume_db;
+  float max_db = s_max_volume_db + s_makeup_db;
   float db_level;
 
   if (volume_airplay_db >= -25.0f) {
@@ -2001,6 +2012,8 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
   REG_UNLOCK();
 
   ESP_LOGI(TAG, "Amp %d input routing: %d", dev, (int)mix);
+  /* A software EQ playing the chains routes ahead of them, so it follows. */
+  eq_changed();
   return err;
 }
 
@@ -2009,6 +2022,34 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
     return TAS58XX_MIX_STEREO;
   }
   return dev < s_dev_count ? s_devs[dev].mix : s_dev_mix[dev];
+}
+
+bool dac_tas58xx_get_soft_routing(int dev) {
+  return dev >= 0 && dev < TAS58XX_MAX_DEVICES && s_soft_routing[dev];
+}
+
+bool dac_tas58xx_can_soft_route(int dev) {
+  return dev >= 0 && dev < s_dev_count && !s_devs[dev].hf_mix_seen;
+}
+
+bool dac_tas58xx_set_soft_routing(int dev, bool on) {
+  if (dev < 0 || dev >= s_dev_count || s_reg_mutex == NULL) {
+    return false;
+  }
+  REG_LOCK();
+  /* A dump's routing is part of its tuning and stays with the chip. */
+  if (s_devs[dev].hf_mix_seen) {
+    on = false;
+  }
+  if (s_soft_routing[dev] != on) {
+    s_soft_routing[dev] = on;
+    s_cur = &s_devs[dev];
+    /* Only lands in PLAY; the PLAY transition re-applies it. */
+    (void)tas58xx_apply_input_mix();
+    s_cur = NULL;
+  }
+  REG_UNLOCK();
+  return on;
 }
 
 /* ---------- Public ops struct ---------- */
@@ -2169,6 +2210,36 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
   }
 
   return board_i2c_write(s_cur->handle, sub_addr, data, EQ_COEFF_BYTES);
+}
+
+/**
+ * Read a section's 20-byte block back out of coefficient RAM. The caller must
+ * already have selected the coefficient book. A section that starts near the
+ * end of a page carries on at 0x08 of the next, which a write reaches through
+ * the part's page auto-increment; each page's share is read on its own here,
+ * so the readback checks that layout rather than relying on it.
+ */
+static esp_err_t read_biquad_raw(uint8_t page, uint8_t sub_addr,
+                                 uint8_t out[EQ_COEFF_BYTES]) {
+  size_t done = 0;
+  while (done < EQ_COEFF_BYTES) {
+    esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+    if (err != ESP_OK) {
+      return err;
+    }
+    size_t len = 0x80u - sub_addr;
+    if (len > EQ_COEFF_BYTES - done) {
+      len = EQ_COEFF_BYTES - done;
+    }
+    err = board_i2c_read(s_cur->handle, sub_addr, out + done, len);
+    if (err != ESP_OK) {
+      return err;
+    }
+    done += len;
+    page++;
+    sub_addr = 0x08;
+  }
+  return ESP_OK;
 }
 
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
@@ -2556,6 +2627,29 @@ out:
   return err;
 }
 
+/** Whether the EQ block is bypassed, read from the part. */
+static esp_err_t read_eq_bypassed(bool *bypassed) {
+  esp_err_t err;
+  if (s_cur->model == TAS58XX_MODEL_TAS5805M) {
+    uint8_t value = 0;
+    err = select_default_page();
+    if (err == ESP_OK) {
+      err = tas58xx_read_reg(REG_DSP_MISC, &value);
+    }
+    *bypassed = (value & 0x01) != 0; /* bit0 = BYPASS_EQ */
+    return err;
+  }
+
+  uint8_t mode_data[EQ_MODE_SIZE] = {0};
+  err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, EQ_MODE_REG, mode_data, EQ_MODE_SIZE);
+  }
+  *bypassed = (mode_data[7] & 0x01) != 0; /* bypass_eq word */
+  select_default_page();
+  return err;
+}
+
 /** Take the EQ block out of bypass so the programmed chain is audible. */
 static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
@@ -2805,10 +2899,23 @@ out:
   return ok;
 }
 
+/* The block one section of a channel is written with. A ganged amplifier
+ * sends its left chain to both channels; the right chain stays in memory so
+ * un-ganging brings the old tuning back. */
+static void bq_design_slot(int dev, int ch, int slot,
+                           uint8_t out[EQ_COEFF_BYTES]) {
+  const int src = s_bq_ganged[dev] ? 0 : ch;
+  if (s_bq_flat) {
+    tas58xx_bq_t flat;
+    tas58xx_bq_init_bypass(&flat);
+    tas58xx_bq_design_packed(&flat, bq_design_fs(dev), out);
+    return;
+  }
+  tas58xx_bq_design_packed(&s_bq[dev][src][slot], bq_design_fs(dev), out);
+}
+
 /*
- * Design and write the current chip's whole biquad chain from s_bq. A ganged
- * amplifier sends its left chain to both channels; the right chain stays in
- * memory so un-ganging brings the old tuning back.
+ * Design and write the current chip's whole biquad chain from s_bq.
  * Assumes REG_LOCK is held, s_cur is set and the chip is in PLAY.
  */
 static esp_err_t bq_program_chain(void) {
@@ -2822,13 +2929,10 @@ static esp_err_t bq_program_chain(void) {
     bq_chain_defaults();
   }
 
-  const bool ganged = s_bq_ganged[dev];
-  const double fs = bq_design_fs(dev);
   for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
     uint8_t left[EQ_COEFF_BYTES], right[EQ_COEFF_BYTES];
-    tas58xx_bq_design_packed(&s_bq[dev][0][i], fs, left);
-    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i], fs,
-                             right);
+    bq_design_slot(dev, 0, i, left);
+    bq_design_slot(dev, 1, i, right);
     esp_err_t err = program_biquad_pair(i, left, right);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
@@ -2865,7 +2969,8 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   /* Routing anything but the pair straight through is a process-flow change,
    * which is a TAS5825M feature. The level and mute folded in below are only
    * gains, so those still reach a TAS5805M. */
-  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO) {
+  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO &&
+      !s_soft_routing[s_cur - s_devs]) {
     ESP_LOGW(TAG,
              "@0x%02X input routing only implemented for TAS5825M; "
              "chip will play the left channel only",
@@ -2899,9 +3004,15 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   static const int32_t UNITY_9_23 = 0x00800000; /*  0 dB */
   static const int32_t HALF_9_23 = 0x00400000;  /* -6 dB */
 
+  /* While the software EQ plays the chains it does the routing too, ahead of
+   * its filters, as the DSP does ahead of its EQ; the chip then passes the
+   * pair straight through. */
+  const int dev = (int)(s_cur - s_devs);
+  const tas58xx_mix_t mix =
+      s_soft_routing[dev] ? TAS58XX_MIX_STEREO : s_cur->mix;
   int32_t l_to_l = 0, r_to_l = 0, l_to_r = 0, r_to_r = 0;
   const char *desc;
-  switch (s_cur->mix) {
+  switch (mix) {
   case TAS58XX_MIX_MONO:
     l_to_l = r_to_l = l_to_r = r_to_r = HALF_9_23;
     desc = "mono L+R -6 dB";
@@ -2918,7 +3029,7 @@ static esp_err_t tas58xx_apply_input_mix(void) {
     /* Written rather than skipped so switching back off a summed routing
      * restores the pair instead of leaving the old gains in place. */
     l_to_l = r_to_r = UNITY_9_23;
-    desc = "stereo";
+    desc = s_soft_routing[dev] ? "stereo, routed by the software EQ" : "stereo";
     break;
   }
 
@@ -2934,7 +3045,6 @@ static esp_err_t tas58xx_apply_input_mix(void) {
 
   /* The mixer is a gain matrix, so the per-output level and mute are the same
    * knob as the routing: scale whichever paths feed that output. */
-  const int dev = (int)(s_cur - s_devs);
   const float sa = tas58xx_ch_scale(dev, 0);
   const float sb = tas58xx_ch_scale(dev, 1);
   l_to_l = (int32_t)lrintf((float)l_to_l * sa);
@@ -3045,6 +3155,107 @@ bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
   return true;
 }
 
+esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  if (!s_bq_ready) {
+    bq_chain_defaults();
+  }
+  s_cur = &s_devs[dev];
+  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
+  const eq_bq_addr_t *addr =
+      is_5805 ? (ch ? tas5805m_eq_right_addr : tas5805m_eq_left_addr)
+              : (ch ? tas5825m_eq_right_addr : tas5825m_eq_left_addr);
+  out->design_rate_hz = (uint32_t)bq_design_fs(dev);
+
+  esp_err_t err = select_default_page();
+  if (err == ESP_OK) {
+    err = tas58xx_read_reg(REG_DEVICE_CTRL2, &out->ctrl2);
+  }
+  if (err == ESP_OK) {
+    err = read_eq_bypassed(&out->eq_bypassed);
+  }
+  if (err == ESP_OK) {
+    err = select_book_page(BQ_COEFF_BOOK, 0x00);
+  }
+  for (int i = 0; i < TAS58XX_BQ_SLOTS && err == ESP_OK; i++) {
+    bq_design_slot(dev, ch, i, out->expected[i]);
+    err = read_biquad_raw(addr[i].page, addr[i].sub_addr, out->actual[i]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
+}
+
+/* One big-endian word of DSP memory. The caller has selected the book. */
+static esp_err_t read_coeff32(uint8_t page, uint8_t sub_addr, int32_t *out) {
+  uint8_t b[4] = {0};
+  esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, sub_addr, b, sizeof(b));
+  }
+  *out = (int32_t)(((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                   ((uint32_t)b[2] << 8) | b[3]);
+  return err;
+}
+
+esp_err_t dac_tas58xx_limit_readback(int dev, tas58xx_limit_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (s_devs[dev].model != TAS58XX_MODEL_TAS5805M) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  s_cur = &s_devs[dev];
+  esp_err_t err = select_book_page(MIX_BOOK, 0x2C);
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x5C, &out->agl_release);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x60, &out->agl_attack);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x64, &out->agl_threshold);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x68, &out->agl_enable);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x6C, &out->agl_alpha);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2D, 0x18, &out->agl_omega);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x18, &out->thd_boost);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x1C, &out->fine_vol[0]);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x20, &out->fine_vol[1]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
+}
+
 esp_err_t dac_tas58xx_bq_set(int dev, int ch,
                              const tas58xx_bq_t in[TAS58XX_BQ_SLOTS]) {
   if (!in || dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
@@ -3055,6 +3266,14 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     const char *why = NULL;
     if (!tas58xx_bq_validate(&in[i], &why)) {
       ESP_LOGW(TAG, "BQ: dev %d ch %d slot %d rejected: %s", dev, ch, i, why);
+      return ESP_ERR_INVALID_ARG;
+    }
+    /* Played anyway it would only be a pass-through, which is not what was
+     * asked for either. */
+    if (!tas58xx_bq_fits(&in[i])) {
+      ESP_LOGW(TAG,
+               "BQ: dev %d ch %d slot %d rejected: too much boost for 5.27",
+               dev, ch, i);
       return ESP_ERR_INVALID_ARG;
     }
   }
@@ -3081,7 +3300,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     s_cur = NULL;
   }
   REG_UNLOCK();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3097,7 +3316,7 @@ void dac_tas58xx_bq_set_ganged(int dev, bool ganged) {
   }
   s_bq_ganged[dev] = ganged;
   bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
 }
 
 bool dac_tas58xx_bq_get_ganged(int dev) {
@@ -3113,7 +3332,7 @@ bool dac_tas58xx_bq_get_ganged(int dev) {
 esp_err_t dac_tas58xx_bq_reset(void) {
   bq_chain_defaults();
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3234,7 +3453,7 @@ esp_err_t dac_tas58xx_bq_revert(void) {
     bq_chain_defaults();
   }
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3270,7 +3489,7 @@ static float eq_boost_locked(float *at_hz) {
         continue;
       }
       for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
-        tas58xx_bq_design(&s_bq[dev][ch][i], fs, coeff[i]);
+        tas58xx_bq_design_chip(&s_bq[dev][ch][i], fs, coeff[i]);
       }
       float hz = 0.0f;
       const float peak = tas58xx_bq_chain_peak_db((const double (*)[5])coeff,
@@ -3319,6 +3538,50 @@ static void auto_gain_update(void) {
              "Digital gain follows %.1f dB clean on %.1f V less %+.2f dB of "
              "EQ at %.0f Hz",
              clean, (float)s_supply_mv / 1000.0f, boost, at_hz);
+  }
+  if (s_reg_mutex != NULL) {
+    REG_UNLOCK();
+  }
+}
+
+/* The chains, their ganging or the rate changed: follow with the gain, and
+ * tell whoever mirrors the chains (dac_tas58xx_set_eq_listener). */
+static void eq_changed(void) {
+  auto_gain_update();
+  if (s_eq_listener != NULL) {
+    s_eq_listener();
+  }
+}
+
+void dac_tas58xx_set_eq_listener(void (*listener)(void)) {
+  s_eq_listener = listener;
+}
+
+void dac_tas58xx_bq_set_flat(bool flat) {
+  if (flat == s_bq_flat) {
+    return;
+  }
+  s_bq_flat = flat;
+  ESP_LOGI(TAG, "EQ %s",
+           flat ? "set flat: the software EQ plays the chains"
+                : "back on the DSP");
+  bq_reprogram_all();
+}
+
+bool dac_tas58xx_bq_get_flat(void) {
+  return s_bq_flat;
+}
+
+void dac_tas58xx_set_makeup_db(float db) {
+  db = fmaxf(db, 0.0f);
+  if (s_reg_mutex != NULL) {
+    REG_LOCK();
+  }
+  if (db != s_makeup_db) {
+    s_makeup_db = db;
+    if (s_reg_mutex != NULL) {
+      tas58xx_apply_volume_locked();
+    }
   }
   if (s_reg_mutex != NULL) {
     REG_UNLOCK();
@@ -3481,5 +3744,5 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   }
   s_cur = NULL;
   REG_UNLOCK();
-  auto_gain_update();
+  eq_changed();
 }

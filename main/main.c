@@ -35,6 +35,10 @@
 #include "audio_eq.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
+#endif
+
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
 #endif
@@ -436,6 +440,12 @@ void app_main(void) {
   esp_err_t eq_err = audio_eq_init();
   if (eq_err != ESP_OK) {
     ESP_LOGE(TAG, "Software EQ init failed: %s", esp_err_to_name(eq_err));
+  }
+#elif defined(CONFIG_SOFTWARE_EQ_AB)
+  // Flat until the /bq page switches it in.
+  esp_err_t eq_err = eq_ab_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ A/B init failed: %s", esp_err_to_name(eq_err));
   }
 #endif
   log_stream_init();
