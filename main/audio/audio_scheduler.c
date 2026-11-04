@@ -264,6 +264,13 @@ static void step_reset(audio_scheduler_t *scheduler) {
   scheduler->drift_step_skip = 0;
   scheduler->drift_step_hold = 0;
   scheduler->drift_step_fade_out = false;
+  scheduler->drift_step_fade_in = 0;
+  scheduler->drift_step_faded_in = 0;
+}
+
+static bool step_active(const audio_scheduler_t *scheduler) {
+  return scheduler->drift_step_fade_out || scheduler->drift_step_hold > 0U ||
+         scheduler->drift_step_fade_in > 0U;
 }
 
 /* Read `frames` from the cursor on, silence standing in for any it lacks. */
@@ -287,12 +294,10 @@ static void step_read(audio_scheduler_t *scheduler, audio_timeline_t *timeline,
   }
 }
 
-/* Scale `frames` frames by a straight ramp: up from silence (fade in) or down
- * to it. */
-static void step_fade(int16_t *out, size_t frames, uint8_t channels,
-                      bool fade_in) {
+/* Scale `frames` frames by a straight ramp down to silence. */
+static void step_fade_out(int16_t *out, size_t frames, uint8_t channels) {
   for (size_t k = 0; k < frames; k++) {
-    const int32_t gain = (int32_t)(fade_in ? k + 1U : frames - k);
+    const int32_t gain = (int32_t)(frames - k);
     for (uint8_t ch = 0; ch < channels; ch++) {
       out[k * channels + ch] = (int16_t)((int32_t)out[k * channels + ch] *
                                          gain / (int32_t)(frames + 1U));
@@ -300,8 +305,31 @@ static void step_fade(int16_t *out, size_t frames, uint8_t channels,
   }
 }
 
+/* The next `frames` frames of the fade back in, which may run into the
+ * following block when the hold ended near the end of this one. */
+static void step_fade_in(audio_scheduler_t *scheduler, int16_t *out,
+                         size_t frames, uint8_t channels) {
+  const uint32_t len = scheduler->drift_step_fade_in;
+  const uint32_t left = len - scheduler->drift_step_faded_in;
+  const size_t n = frames < left ? frames : left;
+  for (size_t k = 0; k < n; k++) {
+    const int32_t gain =
+        (int32_t)(scheduler->drift_step_faded_in + (uint32_t)k + 1U);
+    for (uint8_t ch = 0; ch < channels; ch++) {
+      out[k * channels + ch] = (int16_t)((int32_t)out[k * channels + ch] *
+                                         gain / (int32_t)(len + 1U));
+    }
+  }
+  scheduler->drift_step_faded_in += (uint32_t)n;
+  if (scheduler->drift_step_faded_in >= len) {
+    scheduler->drift_step_fade_in = 0;
+    scheduler->drift_step_faded_in = 0;
+  }
+}
+
 /* A block with a step in it: fade out, skip the cursor or hold it behind
- * silence, which may run over several blocks, then fade back in. */
+ * silence, which may run over several blocks, then fade back in, which may
+ * run into the next one. */
 static size_t step_render(audio_scheduler_t *scheduler,
                           audio_timeline_t *timeline, int16_t *out,
                           size_t samples, uint8_t channels,
@@ -309,9 +337,10 @@ static size_t step_render(audio_scheduler_t *scheduler,
   const size_t fade =
       samples / 2U < DRIFT_STEP_FADE ? samples / 2U : DRIFT_STEP_FADE;
   size_t k = 0;
-  if (scheduler->drift_step_fade_out) {
+  const bool skipped = scheduler->drift_step_fade_out;
+  if (skipped) {
     step_read(scheduler, timeline, out, fade, channels, concealed_samples);
-    step_fade(out, fade, channels, false);
+    step_fade_out(out, fade, channels);
     k = fade;
     scheduler->cursor_rtp += scheduler->drift_step_skip;
     audio_timeline_set_playback_floor(timeline, scheduler->epoch,
@@ -319,18 +348,22 @@ static size_t step_render(audio_scheduler_t *scheduler,
     scheduler->drift_step_skip = 0;
     scheduler->drift_step_fade_out = false;
   }
+  const bool held = scheduler->drift_step_hold > 0U;
   const size_t hold = scheduler->drift_step_hold < samples - k
                           ? scheduler->drift_step_hold
                           : samples - k;
   output_silence(&out[k * channels], hold, channels);
   k += hold;
   scheduler->drift_step_hold -= (uint32_t)hold;
-  if (scheduler->drift_step_hold == 0U) {
-    step_read(scheduler, timeline, &out[k * channels], samples - k, channels,
-              concealed_samples);
-    const size_t rest = samples - k < fade ? samples - k : fade;
-    step_fade(&out[k * channels], rest, channels, true);
-    /* Measure afresh from here. */
+  if (scheduler->drift_step_hold > 0U) {
+    return samples;
+  }
+  step_read(scheduler, timeline, &out[k * channels], samples - k, channels,
+            concealed_samples);
+  if (skipped || held) {
+    /* The skip or the hold is done: fade back in, and measure afresh. */
+    scheduler->drift_step_fade_in = DRIFT_STEP_FADE;
+    scheduler->drift_step_faded_in = 0;
     scheduler->error_filter_valid = false;
     scheduler->raw_playout_error_samples = 0;
     scheduler->playout_error_samples = 0;
@@ -341,6 +374,7 @@ static size_t step_render(audio_scheduler_t *scheduler,
     scheduler->drift_servo_phase = 0;
     scheduler->drift_step_confirm = 0;
   }
+  step_fade_in(scheduler, &out[k * channels], samples - k, channels);
   return samples;
 }
 
@@ -526,7 +560,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         (int32_t)(clock_map->sample_rate * DRIFT_STEP_MS / 1000U);
     const int32_t abs_raw = raw_error < 0 ? -raw_error : raw_error;
     const bool past_step = abs_raw >= step_samples && abs_error >= step_samples;
-    if (scheduler->drift_step_fade_out || scheduler->drift_step_hold > 0U) {
+    if (step_active(scheduler)) {
       /* A step is under way, and measures afresh when it is done. */
     } else if (scheduler->drift_servo_warmup < DRIFT_SERVO_WARMUP_RENDERS) {
       scheduler->drift_servo_warmup++;
@@ -696,7 +730,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     return samples;
   }
 
-  if (scheduler->drift_step_fade_out || scheduler->drift_step_hold > 0U) {
+  if (step_active(scheduler)) {
     return step_render(scheduler, timeline, out, samples, channels,
                        concealed_samples);
   }

@@ -318,17 +318,21 @@ static void test_short_block(void) {
  * fading out and back in, where the servo would trim at its limit for over a
  * minute.  The step must not click: a hard jump on the 1600 Hz tone makes a
  * second difference of up to twice its amplitude. */
-static void test_step(double jump_ms) {
-  printf("step, playout %+.0f ms\n", jump_ms);
+typedef struct {
+  uint32_t steps;
+  uint32_t trims_after_step;
+  int32_t error;
+  double worst; /* the largest second difference on channel 0 */
+} step_run_t;
+
+static step_run_t run_step(int64_t jump_ns) {
   drift_ppm = 0.0;
   audio_scheduler_t scheduler;
   start(&scheduler);
-  const int64_t jump_ns = (int64_t)(jump_ms * 1e6);
   const int64_t at = DRIFT_SERVO_WARMUP_RENDERS + 100;
-  double worst = 0.0;
+  step_run_t run = {0};
   int32_t last[2] = {0};
   size_t frames = 0;
-  uint32_t trims_after_step = 0;
   int16_t block[BLOCK * AUDIO_V2_MAX_CHANNELS];
   for (int64_t i = 1; i <= at + 500; i++) {
     const int64_t network_ns = (int64_t)clock_map.anchor_network_ns +
@@ -341,29 +345,64 @@ static void test_step(double jump_ms) {
     CHECK(produced == BLOCK, "render %lld produced %zu", (long long)i,
           produced);
     if (scheduler.drift_steps > 0U) {
-      trims_after_step += scheduler.drift_servo_trims - trims;
+      run.trims_after_step += scheduler.drift_servo_trims - trims;
     }
     for (size_t k = 0; k < produced; k++, frames++) {
       const int32_t now = block[k * AUDIO_V2_MAX_CHANNELS];
       const double d2 = fabs((double)now - 2.0 * last[1] + last[0]);
-      if (frames >= 2 && d2 > worst) {
-        worst = d2;
+      if (frames >= 2 && d2 > run.worst) {
+        run.worst = d2;
       }
       last[0] = last[1];
       last[1] = now;
     }
   }
+  run.steps = scheduler.drift_steps;
+  run.error = scheduler.playout_error_samples;
+  return run;
+}
+
+/* Playout knocked `jump_ms` off at once, as by a stall of the playback task
+ * (late, positive) or the mirror (early, negative): one step makes it up,
+ * fading out and back in, where the servo would trim at its limit for over a
+ * minute.  The step must not click: a hard jump on the 1600 Hz tone makes a
+ * second difference of up to twice its amplitude. */
+static void test_step(double jump_ms) {
+  printf("step, playout %+.0f ms\n", jump_ms);
+  const step_run_t run = run_step((int64_t)(jump_ms * 1e6));
   printf("  %u step(s), %u trims after, error %d samples, second difference "
          "%.0f\n",
-         (unsigned)scheduler.drift_steps, (unsigned)trims_after_step,
-         (int)scheduler.playout_error_samples, worst);
-  CHECK(scheduler.drift_steps == 1U, "%u steps",
-        (unsigned)scheduler.drift_steps);
-  CHECK(abs(scheduler.playout_error_samples) <= 2, "playout %d samples off",
-        (int)scheduler.playout_error_samples);
-  CHECK(trims_after_step <= 2U, "%u trims after the step",
-        (unsigned)trims_after_step);
-  CHECK(worst < AMP / 4.0, "second difference %.0f: it clicks", worst);
+         (unsigned)run.steps, (unsigned)run.trims_after_step, (int)run.error,
+         run.worst);
+  CHECK(run.steps == 1U, "%u steps", (unsigned)run.steps);
+  CHECK(abs(run.error) <= 2, "playout %d samples off", (int)run.error);
+  CHECK(run.trims_after_step <= 2U, "%u trims after the step",
+        (unsigned)run.trims_after_step);
+  CHECK(run.worst < AMP / 4.0, "second difference %.0f: it clicks", run.worst);
+}
+
+/* An early step holds the cursor behind silence for as long as the error,
+ * which ends anywhere in a block: at its very end, the fade back in has no
+ * frames left in it, and a few frames short of it, almost none.  Step by one
+ * frame through a whole block's worth of holds. */
+static void test_step_hold_ends(void) {
+  printf("early steps, the hold ending at every point in a block\n");
+  double worst = 0.0;
+  int clicks = 0, bad_steps = 0;
+  for (int offset = 0; offset < BLOCK; offset++) {
+    const int64_t jump_ns = -40000000LL - (int64_t)offset * 1000000000LL / RATE;
+    const step_run_t run = run_step(jump_ns);
+    if (run.worst > worst) {
+      worst = run.worst;
+    }
+    clicks += run.worst >= AMP / 4.0;
+    bad_steps += run.steps != 1U;
+  }
+  printf("  %d of %d click, %d without exactly one step, worst second "
+         "difference %.0f\n",
+         clicks, BLOCK, bad_steps, worst);
+  CHECK(clicks == 0, "%d of %d holds click", clicks, BLOCK);
+  CHECK(bad_steps == 0, "%d holds without exactly one step", bad_steps);
 }
 
 int main(void) {
@@ -376,6 +415,7 @@ int main(void) {
   test_short_block();
   test_step(40.0);
   test_step(-40.0);
+  test_step_hold_ends();
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;

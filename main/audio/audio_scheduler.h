@@ -65,6 +65,8 @@ typedef struct {
   uint32_t drift_step_skip;
   uint32_t drift_step_hold;
   bool drift_step_fade_out;
+  uint32_t drift_step_fade_in;  /* frames of the fade back in, 0 if none */
+  uint32_t drift_step_faded_in; /* ...and how many of them have played */
   uint32_t drift_steps;
   audio_scheduler_wait_reason_t wait_reason;
   uint64_t render_calls;
