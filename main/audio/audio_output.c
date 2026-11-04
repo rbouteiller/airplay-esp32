@@ -594,6 +594,13 @@ esp_err_t audio_output_init(void) {
     ESP_LOGI(TAG, "Loaded output delays: %u / %u us", (unsigned)delay_us[0],
              (unsigned)delay_us[1]);
   }
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* A delay makes the software side take a summed routing over, and the
+   * routing was decided at the amplifier's init, before the delays were
+   * known. Otherwise it waits for a rate or chain change, which a stream at
+   * the idle rate never makes, and the delay stays refused. */
+  eq_ab_refresh_routing();
+#endif
 
   return ESP_OK;
 }
