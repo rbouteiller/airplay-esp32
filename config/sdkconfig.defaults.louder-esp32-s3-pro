@@ -62,9 +62,9 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 
 # Internal RAM is the limit on this board once display, Ethernet, Wi-Fi,
-# AirPlay and (on a uac build) USB audio are all resident. Let .bss go to
-# PSRAM, which moves the Wi-Fi/lwIP libraries' and LVGL's pool
-# (components/display/lvgl_mem.lf) out of internal RAM, and let Wi-Fi and
-# lwIP take their buffers from PSRAM.
-CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# AirPlay and (on a uac build) USB audio are all resident. On top of the
+# .bss the defaults move to PSRAM, let Wi-Fi and lwIP take their buffers
+# from PSRAM. This also makes the Wi-Fi TX buffers static, which on the
+# original ESP32 costs more internal RAM than it saves (see
+# sdkconfig.defaults.bt), so it is not a default.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

@@ -4,6 +4,12 @@
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+# Internal RAM, not PSRAM, is what runs out: with a display, Ethernet,
+# Wi-Fi, AirPlay and USB audio all resident, the TinyUSB task could not be
+# created. Let .bss go to PSRAM. That moves the static state of the Wi-Fi,
+# lwIP and Bluetooth libraries, and LVGL's pool
+# (components/display/lvgl_mem.lf), out of internal RAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # FLASH mode
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
