@@ -41,11 +41,11 @@ builder and measurement fit. What differs:
 
 - **One amplifier, two outputs.** A is the left channel and B the right. Layouts that need
   a second amplifier are not offered.
-- **Boosts cost level.** A TAS58xx has headroom inside its DSP; here a boost could only
-  clip. So the signal is turned down ahead of the filters by as much as the curves boost
-  at their highest point, both channels by the same amount so the balance holds. Cuts
-  cost nothing, and an output trimmed down gives some of it back. The page shows how far
-  the signal is currently turned down, and the volume is there to make it up.
+- **Boosts play at full level, as on a TAS58xx.** Most music is mastered with some
+  headroom, so a boost usually plays clean. A track mastered close to full scale can
+  clip where the curves boost; the volume is applied before the output is rounded, so
+  turning it down cures that. The page shows how far the curves boost at their highest
+  point.
 - **Edits are heard at once, without a mute.** Sections that stay in the chain keep
   running through an edit, and level changes fade over a few milliseconds. A section
   newly added to a playing chain can still tick as it starts.
@@ -63,9 +63,7 @@ to 16 bits and the software volume rounds it again. A DAC or amplifier that take
 words, such as the MAX98357A (which picks the word length from the bit clock), can be
 sent those instead: turn on **Send 32-bit words over I2S** (`CONFIG_I2S_32BIT_OUTPUT=y`).
 The EQ then hands its output over in floating point, the volume is applied at full
-precision, and the only rounding left is into the 32-bit word. A boost that runs past
-full scale is no longer clipped ahead of the volume either, only where it is still past
-full scale after it.
+precision, and the only rounding left is into the 32-bit word.
 
 It costs about 16 KB more internal RAM: the DMA ring doubles, and the words need buffers
 of their own.

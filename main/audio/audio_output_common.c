@@ -126,3 +126,19 @@ __attribute__((weak)) esp_err_t audio_output_write_pcm(const void *data,
   led_audio_feed(data, bytes / (2 * sizeof(int16_t)));
   return audio_output_write(data, bytes, wait);
 }
+
+// Only the I2S backend has the per-output delay.
+__attribute__((weak)) bool audio_output_delay_supported(void) {
+  return false;
+}
+
+__attribute__((weak)) uint32_t audio_output_get_delay_us(int ch) {
+  (void)ch;
+  return 0;
+}
+
+__attribute__((weak)) esp_err_t audio_output_set_delay_us(int ch, uint32_t us) {
+  (void)ch;
+  (void)us;
+  return ESP_ERR_NOT_SUPPORTED;
+}

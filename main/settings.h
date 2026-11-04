@@ -258,6 +258,17 @@ esp_err_t settings_get_amp_mix(uint8_t mix[SETTINGS_AMPS]);
  */
 esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]);
 
+// ---- Per-output delay (audio_delay.h) ----
+
+#define SETTINGS_DELAY_OUTPUTS 2
+
+/** Get the saved per-output delays in microseconds. */
+esp_err_t settings_get_output_delay_us(uint16_t us[SETTINGS_DELAY_OUTPUTS]);
+
+/** Save the per-output delays in microseconds. */
+esp_err_t
+settings_set_output_delay_us(const uint16_t us[SETTINGS_DELAY_OUTPUTS]);
+
 // ---- Per-channel level trim (TAS57xx) ----
 
 /** The two amplifier output channels, A and B. */
@@ -343,3 +354,10 @@ esp_err_t settings_set_usb_pd_auto(bool on);
  */
 bool settings_get_gain_auto(void);
 esp_err_t settings_set_gain_auto(bool on);
+
+/**
+ * Whether a TAS58xx board plays its EQ on the ESP32 rather than the
+ * amplifier's DSP (CONFIG_SOFTWARE_EQ_AB). Off until turned on.
+ */
+bool settings_get_software_eq_ab(void);
+esp_err_t settings_set_software_eq_ab(bool on);

@@ -79,6 +79,9 @@ jobs:
       - name: Test software EQ against a reference
         run: python3 tests/audio_eq/run.py
 
+      - name: Test the per-output delay
+        run: python3 tests/audio_delay/run.py
+
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
 
@@ -93,6 +96,12 @@ jobs:
 
       - name: Test how far a TAS58xx filter chain lifts full scale
         run: python3 tests/tas58xx_peak/run.py
+
+      - name: Test every TAS58xx filter shape, as designed and as packed
+        run: python3 tests/tas58xx_bq/run.py
+
+      - name: Test the EQ page draws the filters the firmware designs
+        run: python3 tests/bq_page/run.py
 
   lint-check:
     needs: changes

@@ -216,3 +216,14 @@ bool audio_output_channel_mode_locked(void);
  * STEREO means the (L+R)/2 mix and only LEFT and RIGHT pick a single channel.
  */
 bool audio_output_channel_mode_in_dsp(void);
+
+/**
+ * Whether one output can be delayed on its own (audio_delay.h): only where
+ * each I2S slot feeds one output, not bridged, beside a second amplifier, or
+ * with a DSP routing ahead of it that the software side cannot take over.
+ */
+bool audio_output_delay_supported(void);
+/** An output's delay in microseconds, 0 for none. */
+uint32_t audio_output_get_delay_us(int ch);
+/** Set and save an output's delay, clamped to AUDIO_DELAY_MAX_US. */
+esp_err_t audio_output_set_delay_us(int ch, uint32_t us);

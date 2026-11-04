@@ -27,6 +27,7 @@
 #include "log_stream.h"
 #include "rtsp_server.h"
 #include "playback_events.h"
+#include "audio_delay.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -43,6 +44,10 @@
 
 #ifdef CONFIG_SOFTWARE_EQ
 #include "audio_eq.h"
+#endif
+
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
 #endif
 
 /* The /bq page and API run on the TAS58xx DSP or, for plain DACs, in
@@ -2545,6 +2550,18 @@ static esp_err_t eqb_set_chain(int dev, int ch,
                                const tas58xx_bq_t in[EQB_SLOTS]) {
   return dac_tas58xx_bq_set(dev, ch, in);
 }
+/* The chip's coefficient words stop at 16, so a boost steep enough to need
+ * more is turned away here, with a reason the page can show. */
+static bool eqb_check(const tas58xx_bq_t *bq, const char **why) {
+  if (!tas58xx_bq_validate(bq, why)) {
+    return false;
+  }
+  if (!tas58xx_bq_fits(bq)) {
+    *why = "too much boost for the amplifier's DSP";
+    return false;
+  }
+  return true;
+}
 static esp_err_t eqb_commit(void) {
   return dac_tas58xx_bq_commit();
 }
@@ -2647,6 +2664,9 @@ static esp_err_t eqb_set_chain(int dev, int ch,
                                const tas58xx_bq_t in[EQB_SLOTS]) {
   (void)dev;
   return audio_eq_set_chain(ch, in);
+}
+static bool eqb_check(const tas58xx_bq_t *bq, const char **why) {
+  return tas58xx_bq_validate(bq, why);
 }
 static esp_err_t eqb_commit(void) {
   return audio_eq_commit();
@@ -2805,6 +2825,23 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   if (eqb_preamp_db(&preamp_db)) {
     cJSON_AddNumberToObject(json, "preamp_db", preamp_db);
   }
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* Present only where the switch works. Not preamp_db, which would tell
+   * the page the board has no DSP. */
+  if (eq_ab_available()) {
+    cJSON_AddBoolToObject(json, "software_ab", eq_ab_get());
+  }
+#endif
+
+  /* Per I2S slot, so the board's rather than one amplifier's. */
+  cJSON *delay = cJSON_AddObjectToObject(json, "delay");
+  cJSON_AddBoolToObject(delay, "supported", audio_output_delay_supported());
+  cJSON_AddNumberToObject(delay, "max_us", AUDIO_DELAY_MAX_US);
+  cJSON *delay_us = cJSON_AddArrayToObject(delay, "us");
+  for (int c = 0; c < AUDIO_DELAY_CHANNELS; c++) {
+    cJSON_AddItemToArray(delay_us,
+                         cJSON_CreateNumber(audio_output_get_delay_us(c)));
+  }
 
   cJSON *amps = cJSON_AddArrayToObject(json, "amps");
   for (int d = 0; d < devices; d++) {
@@ -2864,6 +2901,62 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
   if (!json) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
     return ESP_FAIL;
+  }
+
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* Which side plays the chains is the board's, not one amplifier's, so it
+   * needs no 'dev' when sent alone. */
+  const cJSON *ab = cJSON_GetObjectItem(json, "software_ab");
+  if (ab) {
+    if (!cJSON_IsBool(ab) || eq_ab_set(cJSON_IsTrue(ab)) != ESP_OK) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "The software EQ cannot stand in here");
+      return ESP_FAIL;
+    }
+    if (!cJSON_GetObjectItem(json, "dev")) {
+      cJSON_Delete(json);
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"success\":true}");
+      return ESP_OK;
+    }
+  }
+#endif
+
+  /* A delay holds back an I2S slot, which is the board's, so like the
+   * switch above it needs no 'dev' when sent alone. Saved at once, as the
+   * levels are. */
+  const cJSON *dly = cJSON_GetObjectItem(json, "delay_us");
+  if (dly) {
+    const cJSON *oc = cJSON_GetObjectItem(json, "out");
+    if (!json_int_in_range(oc, 0, AUDIO_DELAY_CHANNELS - 1) ||
+        !json_int_in_range(dly, 0, AUDIO_DELAY_MAX_US)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "Bad 'out' or 'delay_us'");
+      return ESP_FAIL;
+    }
+    /* 0 is always accepted, so a delay can be cleared on any layout. */
+    if (dly->valueint != 0 && !audio_output_delay_supported()) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "This layout cannot delay one output on its own");
+      return ESP_FAIL;
+    }
+    if (audio_output_set_delay_us(oc->valueint, (uint32_t)dly->valueint) !=
+            ESP_OK &&
+        dly->valueint != 0) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "Could not save the delay");
+      return ESP_FAIL;
+    }
+    if (!cJSON_GetObjectItem(json, "dev")) {
+      cJSON_Delete(json);
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"success\":true}");
+      return ESP_OK;
+    }
   }
 
   const cJSON *v = cJSON_GetObjectItem(json, "dev");
@@ -2952,6 +3045,18 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
       }
     }
 
+    for (int i = 0; i < EQB_SLOTS; i++) {
+      const char *why = NULL;
+      if (!eqb_check(&chain[i], &why)) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Filter %d: %s", i + 1,
+                 why ? why : "rejected");
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
+        return ESP_FAIL;
+      }
+    }
+
     if (eqb_set_chain(dev, ch, chain) != ESP_OK) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Filter rejected");
@@ -2994,6 +3099,119 @@ static esp_err_t bq_revert_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#ifdef CONFIG_DAC_TAS58XX
+static void add_block_hex(cJSON *arr,
+                          const uint8_t block[TAS58XX_BQ_COEFF_BYTES]) {
+  char hex[TAS58XX_BQ_COEFF_BYTES * 2 + 1];
+  for (int i = 0; i < TAS58XX_BQ_COEFF_BYTES; i++) {
+    snprintf(&hex[i * 2], 3, "%02x", block[i]);
+  }
+  cJSON_AddItemToArray(arr, cJSON_CreateString(hex));
+}
+
+/* A DSP word as the chip holds it, and its value at @p frac_bits. */
+static void add_coeff(cJSON *obj, const char *name, int32_t raw,
+                      int frac_bits) {
+  cJSON *c = cJSON_AddObjectToObject(obj, name);
+  char hex[9];
+  snprintf(hex, sizeof(hex), "%08lx", (unsigned long)(uint32_t)raw);
+  cJSON_AddStringToObject(c, "raw", hex);
+  const double v = ldexp((double)raw, -frac_bits);
+  cJSON_AddNumberToObject(c, "value", v);
+  if (v > 0.0) {
+    cJSON_AddNumberToObject(c, "db", 20.0 * log10(v));
+  }
+}
+
+/* The amplifier's limiter and clipper, which the driver leaves as it finds
+ * them. Only the TAS5805M's map is known here. */
+static void add_limits(cJSON *amp, int dev) {
+  tas58xx_limit_readback_t lim;
+  if (dac_tas58xx_limit_readback(dev, &lim) != ESP_OK) {
+    return;
+  }
+  /* TI's note lists Enable as non-zero yet calls the AGL off by default, so
+   * the flag is shown as read rather than as on or off. */
+  cJSON *agl = cJSON_AddObjectToObject(amp, "agl");
+  add_coeff(agl, "enable", lim.agl_enable, 31);
+  add_coeff(agl, "threshold", lim.agl_threshold, 31);
+  add_coeff(agl, "attack", lim.agl_attack, 31);
+  add_coeff(agl, "release", lim.agl_release, 31);
+  add_coeff(agl, "alpha", lim.agl_alpha, 31);
+  add_coeff(agl, "omega", lim.agl_omega, 31);
+  cJSON *clip = cJSON_AddObjectToObject(amp, "clipper");
+  add_coeff(clip, "thd_boost", lim.thd_boost, 23);
+  add_coeff(clip, "fine_volume_l", lim.fine_vol[0], 30);
+  add_coeff(clip, "fine_volume_r", lim.fine_vol[1], 30);
+}
+
+/* Each section as designed next to what the part's coefficient RAM holds, so
+ * a chain can be checked end to end. A mismatch only means something while
+ * the amplifier is playing, which is when the chain is written. */
+static esp_err_t bq_readback_handler(httpd_req_t *req) {
+  static const char *const states[] = {"deep sleep", "sleep", "hi-z", "play"};
+  tas58xx_bq_readback_t *rb = malloc(sizeof(*rb));
+  if (!rb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  int total = 0;
+  bool ok = true;
+  cJSON *amps = cJSON_AddArrayToObject(json, "amps");
+  for (int d = 0; d < eqb_devices() && ok; d++) {
+    cJSON *amp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(amp, "index", d);
+    cJSON *chans = cJSON_AddArrayToObject(amp, "channels");
+    for (int c = 0; c < EQB_CHANNELS && ok; c++) {
+      if (dac_tas58xx_bq_readback(d, c, rb) != ESP_OK) {
+        ok = false;
+        break;
+      }
+      if (c == 0) {
+        cJSON_AddStringToObject(amp, "state", states[rb->ctrl2 & 0x03]);
+        cJSON_AddBoolToObject(amp, "muted", (rb->ctrl2 & 0x08) != 0);
+        cJSON_AddBoolToObject(amp, "eq_bypassed", rb->eq_bypassed);
+        cJSON_AddNumberToObject(amp, "rate", rb->design_rate_hz);
+        add_limits(amp, d);
+      }
+      cJSON *ch = cJSON_CreateObject();
+      cJSON *mismatched = cJSON_AddArrayToObject(ch, "mismatched");
+      cJSON *expected = cJSON_AddArrayToObject(ch, "expected");
+      cJSON *actual = cJSON_AddArrayToObject(ch, "actual");
+      for (int i = 0; i < EQB_SLOTS; i++) {
+        add_block_hex(expected, rb->expected[i]);
+        add_block_hex(actual, rb->actual[i]);
+        if (memcmp(rb->expected[i], rb->actual[i], TAS58XX_BQ_COEFF_BYTES)) {
+          cJSON_AddItemToArray(mismatched, cJSON_CreateNumber(i));
+          total++;
+        }
+      }
+      cJSON_AddItemToArray(chans, ch);
+    }
+    cJSON_AddItemToArray(amps, amp);
+  }
+  free(rb);
+  cJSON_AddBoolToObject(json, "success", ok);
+  cJSON_AddNumberToObject(json, "mismatches", total);
+
+  char *json_str = cJSON_PrintUnformatted(json);
+  cJSON_Delete(json);
+  if (!json_str) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  if (!ok) {
+    httpd_resp_set_status(req, HTTPD_500);
+  }
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  return ESP_OK;
+}
+#endif
+
 #endif /* HAS_BQ_API */
 
 esp_err_t web_server_start(uint16_t port) {
@@ -3029,8 +3247,9 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // per-channel level get/post
 #endif
 #ifdef CONFIG_DAC_TAS58XX
-  // primary + dual DAC wiring and digital gain, get/post each
-  config.max_uri_handlers += 6;
+  // primary + dual DAC wiring and digital gain, get/post each, and the
+  // biquad readback
+  config.max_uri_handlers += 7;
 #endif
 #ifdef HAS_BQ_API
   config.max_uri_handlers += 5; // biquad page + get/post/commit/revert
@@ -3328,6 +3547,13 @@ esp_err_t web_server_start(uint16_t port) {
                                .method = HTTP_POST,
                                .handler = bq_revert_handler};
   register_uri(&bq_revert_uri);
+
+#ifdef CONFIG_DAC_TAS58XX
+  httpd_uri_t bq_readback_uri = {.uri = "/api/bq/readback",
+                                 .method = HTTP_GET,
+                                 .handler = bq_readback_handler};
+  register_uri(&bq_readback_uri);
+#endif
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
