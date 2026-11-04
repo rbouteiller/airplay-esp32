@@ -5,9 +5,15 @@
 #
 # When disabled, only the stub is compiled.
 
+set(ldfragments "")
+if(CONFIG_DISPLAY_DRIVER_ST7789)
+    list(APPEND ldfragments "lvgl_mem.lf")
+endif()
+
 idf_component_register(
     SRCS "display_stub.c"
     INCLUDE_DIRS "include"
+    LDFRAGMENTS ${ldfragments}
 )
 
 if(CONFIG_DISPLAY_ENABLED)

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 /* Host tests for main/audio/audio_eq.c: the audio path against a
- * double-precision direct-form reference built from the same designer, the
- * anti-clipping preamp against a dense search, and edits that must not
- * restart the filters or step the level. */
+ * double-precision direct-form reference built from the same designer,
+ * boosts at full level on a plain DAC, the A/B switch's anti-clipping preamp
+ * against a dense search, and edits that must not restart the filters or
+ * step the level. Run once per way the EQ can start: plain, and with "blank"
+ * as audio_eq_init_blank(). */
 
 #include "audio_eq.h"
 
@@ -98,6 +100,12 @@ static tas58xx_bq_t highpass(float f) {
   bq.sub = TAS58XX_BQ_SUB_BUTTERWORTH_2;
   bq.freq_hz = f;
   bq.q = 0.7071f;
+  return bq;
+}
+
+static tas58xx_bq_t lowpass(float f) {
+  tas58xx_bq_t bq = highpass(f);
+  bq.type = TAS58XX_BQ_LOWPASS;
   return bq;
 }
 
@@ -436,6 +444,41 @@ static void test_preamp_covers_peak(void) {
         audio_eq_get_preamp_db());
 }
 
+/* A plain DAC's EQ turns nothing down: a +6 dB peak lifts a -3 dBFS sine at
+ * its centre to +3 dBFS, past full scale, for the volume to deal with. */
+static void test_boosts_at_full_level(void) {
+  printf("boosts play at full level\n");
+  static float outf[MAX_FRAMES * 2];
+  const uint32_t rate = 48000;
+  const size_t frames = SECONDS(rate, 1);
+  tas58xx_bq_t chain[AUDIO_EQ_SLOTS];
+  chain_flat(chain);
+  chain[0] = peak(1000.0f, 1.0f, 6.0f);
+  reset(rate);
+  CHECK(audio_eq_set_chain(0, chain) == ESP_OK, "peak rejected");
+  CHECK(audio_eq_get_preamp_db() == 0.0f, "preamp %.2f dB",
+        audio_eq_get_preamp_db());
+
+  const double amp = 32767.0 * pow(10.0, -3.0 / 20.0);
+  for (size_t i = 0; i < frames; i++) {
+    int16_t x = (int16_t)lrint(amp * sin(2 * M_PI * 1000 * (double)i / rate));
+    s_in[2 * i] = x;
+    s_in[2 * i + 1] = x;
+  }
+  for (size_t i = 0; i < frames; i += BLOCK) {
+    size_t n = frames - i < BLOCK ? frames - i : BLOCK;
+    CHECK(audio_eq_process_float(s_in + 2 * i, outf + 2 * i, n),
+          "float path declined the peak");
+  }
+  float pk = 0.0f;
+  for (size_t i = frames / 2; i < frames; i++) {
+    pk = fmaxf(pk, fabsf(outf[2 * i]));
+  }
+  double db = 20.0 * log10(pk / 32768.0);
+  printf("  -3 dBFS sine under a +6 dB peak: %+.2f dBFS\n", db);
+  CHECK(fabs(db - 3.0) < 0.1, "peak %+.2f dBFS, expected +3", db);
+}
+
 static void test_rate_follows_clock(void) {
   printf("design follows the clock, cached or not\n");
   tas58xx_bq_t chain[AUDIO_EQ_SLOTS];
@@ -706,18 +749,83 @@ static void test_ganged_and_rejects(void) {
         "unstable custom accepted");
 }
 
-int main(void) {
-  CHECK(audio_eq_init() == ESP_OK, "init failed");
+/* A crossover on a summed routing: the routing has to come first, as it does
+ * in the amplifier's DSP, or both outputs carry both bands. Each routing is
+ * checked against the same input routed by hand and filtered as a plain
+ * stereo pair, processed in place so a channel overwriting its half of the
+ * frame before the other has read it would show. */
+static void test_routing_ahead_of_filters(void) {
+  printf("a summed routing is applied ahead of per-channel filters\n");
+  static int16_t routed[MAX_FRAMES * 2];
+  tas58xx_bq_t lo[AUDIO_EQ_SLOTS], hi[AUDIO_EQ_SLOTS];
+  chain_flat(lo);
+  chain_flat(hi);
+  lo[0] = lo[1] = lowpass(2000.0f);
+  hi[0] = hi[1] = highpass(2000.0f);
+  const size_t n = SECONDS(48000, 0.5);
+  signal_mix(n, 48000, 5);
+  for (size_t i = 0; i < n; i++) {
+    /* A right channel unlike the left, both even so (L+R)/2 is exact. */
+    s_in[2 * i] = (int16_t)(s_in[2 * i] & ~1);
+    s_in[2 * i + 1] = (int16_t)((-s_in[2 * i] / 3) & ~1);
+  }
+  static const audio_eq_mix_t mixes[] = {AUDIO_EQ_MIX_MONO, AUDIO_EQ_MIX_LEFT,
+                                         AUDIO_EQ_MIX_RIGHT};
+  static const char *const names[] = {"mono", "left", "right"};
+  for (int m = 0; m < 3; m++) {
+    for (size_t i = 0; i < n; i++) {
+      const int l = s_in[2 * i], r = s_in[2 * i + 1];
+      const int16_t x = (int16_t)(mixes[m] == AUDIO_EQ_MIX_MONO   ? (l + r) / 2
+                                  : mixes[m] == AUDIO_EQ_MIX_LEFT ? l
+                                                                  : r);
+      s_out[2 * i] = s_out[2 * i + 1] = x;
+    }
+    reset(48000);
+    audio_eq_set_ganged(false);
+    audio_eq_set_chain(0, lo);
+    audio_eq_set_chain(1, hi);
+    process(s_out, n);
+
+    memcpy(routed, s_in, n * 2 * sizeof(int16_t));
+    reset(48000);
+    audio_eq_set_ganged(false);
+    audio_eq_set_chain(0, lo);
+    audio_eq_set_chain(1, hi);
+    audio_eq_set_mix(mixes[m]);
+    process(routed, n);
+    audio_eq_set_mix(AUDIO_EQ_MIX_STEREO);
+
+    size_t diff = 0;
+    for (size_t i = 0; i < 2 * n; i++) {
+      diff += routed[i] != s_out[i];
+    }
+    CHECK(diff == 0, "%s routing: %zu samples differ from routing by hand",
+          names[m], diff);
+  }
+}
+
+int main(int argc, char **argv) {
+  /* audio_eq starts once per process, so each way is a run of its own. */
+  const bool blank = argc > 1 && strcmp(argv[1], "blank") == 0;
+  printf("%s\n", blank ? "-- as the A/B switch starts it, boosts cut"
+                       : "-- as a plain DAC starts it, boosts at full level");
+  CHECK((blank ? audio_eq_init_blank(0.0f) : audio_eq_init()) == ESP_OK,
+        "init failed");
   test_flat_is_bit_exact();
   test_matches_reference();
   test_float_output();
-  test_preamp_covers_peak();
-  test_rate_follows_clock();
+  if (blank) {
+    test_preamp_covers_peak();
+    test_rate_follows_clock();
+  } else {
+    test_boosts_at_full_level();
+  }
   test_edits_keep_state();
   test_levels_glide();
   test_silence_rests();
   test_reset_after_stop();
   test_ganged_and_rejects();
+  test_routing_ahead_of_filters();
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;

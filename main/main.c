@@ -35,6 +35,10 @@
 #include "audio_eq.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
+#endif
+
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
 #endif
@@ -383,20 +387,18 @@ void app_main(void) {
     }
   }
 #elif defined(CONFIG_DAC_TAS58XX)
-  // Digital gain, the user's to match to the supply.
+  // Digital gain, 0 dB unless set by hand.
   float full_volume_db;
   if (settings_get_full_volume_db(&full_volume_db) == ESP_OK) {
     dac_tas58xx_set_full_volume_db(full_volume_db);
   }
-#ifdef CONFIG_HUSB238A
-  else {
-    // USB-C powered, and a USB-PD trigger starts every port at 5 V.
-    dac_tas58xx_set_full_volume_db(dac_tas58xx_clean_db(5000));
+  // Unless set by hand, the analog gain matches the supply, as a USB-PD
+  // trigger agrees it or as a TAS5825M measures it.
+  float analog_db;
+  if (settings_get_analog_gain_db(&analog_db) == ESP_OK) {
+    dac_tas58xx_set_analog_gain_db(analog_db);
   }
-  // Unless set by hand, the gain then follows the supply the trigger reports
-  // and the EQ; the level above stands while the supply cannot be read.
-  dac_tas58xx_set_auto_gain(settings_get_gain_auto());
-#endif
+  dac_tas58xx_set_analog_auto(settings_get_analog_auto());
   // Amplifier wiring must be known before the DAC is initialised.
   bool first_pbtl;
   if (settings_get_first_pbtl(&first_pbtl) == ESP_OK) {
@@ -436,6 +438,12 @@ void app_main(void) {
   esp_err_t eq_err = audio_eq_init();
   if (eq_err != ESP_OK) {
     ESP_LOGE(TAG, "Software EQ init failed: %s", esp_err_to_name(eq_err));
+  }
+#elif defined(CONFIG_SOFTWARE_EQ_AB)
+  // Flat until the /bq page switches it in.
+  esp_err_t eq_err = eq_ab_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ A/B init failed: %s", esp_err_to_name(eq_err));
   }
 #endif
   log_stream_init();
@@ -527,8 +535,34 @@ void app_main(void) {
                      NULL);
   log_dram("web server");
 
+#ifdef CONFIG_USB_AUDIO_SINK
+  {
+    // Before AirPlay: its tasks and buffers need internal RAM, and on a board
+    // carrying a display and Ethernet as well, AirPlay starting first left
+    // too little for the TinyUSB task to be created.
+    //
+    // The host can stream with no network configured, in which case
+    // start_airplay_services() has never run and I2S is still unopened.
+    esp_err_t out_err = ensure_audio_output();
+    if (out_err != ESP_OK) {
+      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
+    }
+    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
+    if (usb_err != ESP_OK) {
+      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
+    }
+    log_dram("usb audio");
+  }
+#endif
+
   bool connected = eth_available || wifi_is_connected();
-  if (connected) {
+  bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+  // A host already streaming owns the output; the sink restarts AirPlay
+  // itself once it goes idle.
+  output_owned = usb_audio_sink_is_streaming();
+#endif
+  if (connected && !output_owned) {
     start_airplay_services();
   }
 
@@ -548,21 +582,6 @@ void app_main(void) {
     }
   }
   log_dram("bluetooth");
-#endif
-
-#ifdef CONFIG_USB_AUDIO_SINK
-  {
-    // The host can stream with no network configured, in which case
-    // start_airplay_services() has never run and I2S is still unopened.
-    esp_err_t out_err = ensure_audio_output();
-    if (out_err != ESP_OK) {
-      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
-    }
-    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
-    if (usb_err != ESP_OK) {
-      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
-    }
-  }
 #endif
 
   // Boot baseline: free internal DRAM once WiFi (and BT, where enabled) are

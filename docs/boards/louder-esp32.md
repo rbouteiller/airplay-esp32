@@ -89,29 +89,30 @@ a 65 W charger; a 30 W one manages 15 V. A charger that does not offer the volta
 chose gets the highest one below it, and a supply without USB-PD, such as a computer's
 port, stays at 5 V.
 
-The amplifier's gain does not change with its supply, only how far it can swing before it
-clips, so the **Digital gain**, the level full volume plays at, has to match the supply.
-Left to itself, the board keeps it at the loudest level that stays clean on the supply it
-got:
+The amplifier's **Analog gain** sets how far digital full scale swings the output, so it
+has to match the supply. Left to itself, the board sets it to the supply it got:
 
-| Supply | Digital gain | Most it delivers, 4 Ω / 8 Ω |
+| Supply | Analog gain | Most it delivers, 4 Ω / 8 Ω |
 | --- | --- | --- |
-| 5 V | −16.5 dB | about 3 / 1.5 W |
+| 5 V | −15.5 dB, the lowest it goes | about 3 / 1.5 W |
 | 9 V | −11 dB | about 9 / 4.5 W |
 | 12 V | −8.5 dB | about 15 / 8 W |
 | 15 V | −7 dB | about 22 / 11 W |
 | 20 V | −4.5 dB | about 39 / 19 W |
 
-An EQ boost needs room above that level too, so the board takes the highest boost of the
-filters playing off the gain: with a +9 dB bass shelf on 20 V it plays at −13.5 dB. It
-follows every change to the filters and output levels as they are applied.
+On 5 V the gain runs out half a dB short, so the loudest passages clip slightly early.
+Matching in the analog gain rather than the digital volume also keeps the output stage's
+own noise down at low volume.
 
 A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
-has been strapped to a fixed voltage in hardware, keeps a gain set by hand, starting at
-−16.5 dB, the 5 V level. The gain can also be set by hand on any board, on the Speaker
-page or in the Output card on the EQ page; the EQ page then says when the filters boost past what the supply carries, and
-what to set it to. A louder setting clips the loudest passages; at low frequencies that
-is often hard to hear.
+has been strapped to a fixed voltage in hardware, plays at the 5 V level. The analog gain
+can also be set by hand on the Speaker page.
+
+The **Digital gain**, the level full volume plays at, stays at 0 dB unless you lower it,
+and nothing lowers it for you. An EQ boost needs room above full volume: the Output card
+on the EQ page shows how much is left, and the digital gain, there or on the Speaker
+page, is what to lower to make room. Left higher, the loudest passages clip; at low
+frequencies that is often hard to hear.
 
 !!! note "Never more than 20 V"
 

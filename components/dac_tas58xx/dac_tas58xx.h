@@ -84,9 +84,9 @@ void dac_tas58xx_set_second_pbtl(bool pbtl);
 bool dac_tas58xx_is_pbtl(int dev);
 
 /**
- * The digital gain at which full volume is as loud as @p supply_mv lets the
- * output swing before it clips, in 0.5 dB steps. The gain does not change
- * with the supply, only the point where the output clips does.
+ * The analog gain at which digital full scale swings the output as far as
+ * @p supply_mv lets it before it clips, in 0.5 dB steps and at most 0 dB.
+ * Below about 5.2 V it is under TAS58XX_ANALOG_GAIN_MIN_DB.
  */
 float dac_tas58xx_clean_db(int supply_mv);
 
@@ -95,11 +95,32 @@ float dac_tas58xx_clean_db(int supply_mv);
 
 /**
  * Set the digital gain AirPlay's full volume maps to, in dB, rounded to
- * 0.5 dB and held to TAS58XX_FULL_VOLUME_MIN_DB..0. Until set it is
- * CONFIG_TAS58XX_MAX_VOLUME. Safe before dac_init().
+ * 0.5 dB and held to TAS58XX_FULL_VOLUME_MIN_DB..0. 0 dB until set. Safe
+ * before dac_init().
  */
 void dac_tas58xx_set_full_volume_db(float db);
 float dac_tas58xx_get_full_volume_db(void);
+
+/** Deepest analog gain dac_tas58xx_set_analog_gain_db() takes. */
+#define TAS58XX_ANALOG_GAIN_MIN_DB (-15.5f)
+
+/**
+ * Set the amplifier's analog gain by hand, in dB, rounded to 0.5 dB and held
+ * to TAS58XX_ANALOG_GAIN_MIN_DB..0, and stop it following the supply. The
+ * digital gain does not follow it. Safe before dac_init().
+ */
+void dac_tas58xx_set_analog_gain_db(float db);
+/** The analog gain playing, set by hand or following the supply. */
+float dac_tas58xx_get_analog_gain_db(void);
+
+/**
+ * Have the analog gain match the supply (dac_tas58xx_clean_db()), held to
+ * TAS58XX_ANALOG_GAIN_MIN_DB, or CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY
+ * while the supply is unknown; or go back to the one set by hand. On until
+ * turned off. Safe before dac_init().
+ */
+void dac_tas58xx_set_analog_auto(bool on);
+bool dac_tas58xx_get_analog_auto(void);
 
 /**
  * Tell the driver the amplifier's supply in mV, or 0 if it is not known.
@@ -107,24 +128,6 @@ float dac_tas58xx_get_full_volume_db(void);
  */
 void dac_tas58xx_set_supply_mv(int supply_mv);
 int dac_tas58xx_get_supply_mv(void);
-
-/**
- * Keep the digital gain at the loudest level that stays clean: the level
- * clean on the supply (dac_tas58xx_clean_db()) less the highest boost of the
- * chains playing, trims included, held to TAS58XX_FULL_VOLUME_MIN_DB..0. It
- * follows every change to the chains, trims, mutes, sample rate and supply,
- * and does nothing while the supply is unknown. Setting a gain with
- * dac_tas58xx_set_full_volume_db() turns it off. Safe before dac_init().
- */
-void dac_tas58xx_set_auto_gain(bool on);
-bool dac_tas58xx_get_auto_gain(void);
-
-/**
- * How far above full scale the chains playing lift a full-scale tone, trims
- * included: the highest point across every unmuted output. 0 dB when nothing
- * plays. @p at_hz, if given, receives where.
- */
-float dac_tas58xx_eq_boost_db(float *at_hz);
 
 /**
  * Whether an amplifier can route its inputs at all. Routing is a process-flow
@@ -160,6 +163,22 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix);
 
 /** Get one amplifier's input routing. */
 tas58xx_mix_t dac_tas58xx_get_mix(int dev);
+
+/**
+ * Hand one amplifier's input routing to the software EQ, which applies it
+ * ahead of its filters (as the DSP applies it ahead of its EQ), and pass the
+ * pair through the chip's mixer unrouted. The per-output levels and mutes
+ * stay in the chip. Refused, returning false, while a PPC3 dump's routing is
+ * in force, since that is part of the dump's tuning.
+ *
+ * @return whether the software EQ now owns the routing
+ */
+bool dac_tas58xx_set_soft_routing(int dev, bool on);
+
+/** Whether the software side routes one amplifier's input. */
+bool dac_tas58xx_get_soft_routing(int dev);
+/** Whether dac_tas58xx_set_soft_routing() would be accepted. */
+bool dac_tas58xx_can_soft_route(int dev);
 
 /* ---------- Fault reporting ---------- */
 
@@ -217,6 +236,69 @@ esp_err_t dac_tas58xx_bq_revert(void);
 
 /** Reset every chain to bypass, in memory and on the hardware. */
 esp_err_t dac_tas58xx_bq_reset(void);
+
+/** One channel's sections as designed, next to what the chip holds. */
+typedef struct {
+  uint8_t expected[TAS58XX_BQ_SLOTS][TAS58XX_BQ_COEFF_BYTES];
+  uint8_t actual[TAS58XX_BQ_SLOTS][TAS58XX_BQ_COEFF_BYTES];
+  uint8_t ctrl2;           /**< DEVICE_CTRL2 at the read: power state, mute */
+  bool eq_bypassed;        /**< EQ block bypassed, so none of it plays */
+  uint32_t design_rate_hz; /**< rate the sections are designed for */
+} tas58xx_bq_readback_t;
+
+/**
+ * Read one channel's sections back out of the chip's coefficient RAM, with
+ * the blocks the chain should have written there, to check that the designs
+ * reach the part intact. The chain is rewritten whenever the amplifier
+ * enters PLAY, so read while audio is playing: a part that has slept since
+ * may hold anything.
+ */
+esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out);
+
+/**
+ * A TAS5805M's automatic gain limiter and full-scale clipper as the chip
+ * holds them: raw words from book 0x8C, Process Flow 1 (TI SLOA263A,
+ * Table 5). The driver writes none of them, so they show the part's own
+ * state.
+ */
+typedef struct {
+  int32_t agl_release;   /**< 1.31 */
+  int32_t agl_attack;    /**< 1.31 */
+  int32_t agl_threshold; /**< 1.31, linear */
+  int32_t agl_enable;    /**< 1.31, non-zero = on */
+  int32_t agl_alpha;     /**< 1.31, energy time constant */
+  int32_t agl_omega;     /**< 1.31 */
+  int32_t thd_boost;     /**< 9.23, gain into the clip at full scale */
+  int32_t fine_vol[2];   /**< 2.30, left and right gain after it */
+} tas58xx_limit_readback_t;
+
+/** Read a TAS5805M's limiter and clipper; ESP_ERR_NOT_SUPPORTED on others. */
+esp_err_t dac_tas58xx_limit_readback(int dev, tas58xx_limit_readback_t *out);
+
+/**
+ * Write every section as a pass-through while keeping the chains, so the
+ * software EQ can play them instead and the two can be compared by ear. The
+ * chains, their API and auto gain are unchanged; only what reaches the
+ * chip's coefficient RAM is. Not saved here; safe before dac_init(), so a
+ * saved choice can be set before the chains are first written.
+ */
+void dac_tas58xx_bq_set_flat(bool flat);
+bool dac_tas58xx_bq_get_flat(void);
+
+/**
+ * Raise the volume by @p db (>= 0) on top of the digital gain, to give back
+ * what an EQ ahead of the amplifier takes off before its filters. It moves
+ * the register in 0.5 dB steps, so a level that is not a multiple of 0.5 dB
+ * is not returned exactly.
+ */
+void dac_tas58xx_set_makeup_db(float db);
+
+/**
+ * Called after the chains, their ganging or the sample rate change, from
+ * the task that changed them (the web server, or an audio task on a new
+ * rate). One listener; NULL removes it.
+ */
+void dac_tas58xx_set_eq_listener(void (*listener)(void));
 
 /**
  * Whether PBTL mode on the primary amplifier is forced by configuration.

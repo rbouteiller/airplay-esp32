@@ -26,6 +26,13 @@
 /* Below this the shelves degenerate to 0/0, so treat them as unity. */
 #define BQ_GAIN_EPSILON_DB 1e-4
 
+/* One past the largest magnitude a 5.27 coefficient holds. */
+#define BQ_COEFF_LIMIT 16.0
+
+/* Every rate a chain is designed for: the I2S rates a TAS5825M runs its
+ * sections at, and the two a TAS5805M's converter takes them to. */
+static const double bq_rates[] = {44100.0, 48000.0, 88200.0, 96000.0};
+
 typedef struct {
   double b0, b1, b2, a1, a2; /* a1/a2 negated, i.e. device convention */
 } bq_coeff_t;
@@ -447,6 +454,46 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
   bq_store(o, out);
 }
 
+/* Whether every coefficient fits the part's 5.27 words, which hold -16 up to
+ * just under +16. */
+static bool bq_fits(const double c[5]) {
+  for (int i = 0; i < 5; i++) {
+    if (!(fabs(c[i]) < BQ_COEFF_LIMIT)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool tas58xx_bq_fits(const tas58xx_bq_t *bq) {
+  if (!bq) {
+    return false;
+  }
+  for (size_t i = 0; i < sizeof(bq_rates) / sizeof(bq_rates[0]); i++) {
+    double c[5];
+    tas58xx_bq_design(bq, bq_rates[i], c);
+    if (!bq_fits(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void tas58xx_bq_design_chip(const tas58xx_bq_t *bq, double sample_rate_hz,
+                            double out[5]) {
+  if (!out) {
+    return;
+  }
+  /* Callers pack out[] unconditionally; a null bq designs unity. */
+  tas58xx_bq_design(bq, sample_rate_hz, out);
+  /* Packed, these would saturate and leave the chain running a different
+   * filter altogether. */
+  if (bq && !bq_fits(out)) {
+    out[0] = bq->invert ? -1.0 : 1.0;
+    out[1] = out[2] = out[3] = out[4] = 0.0;
+  }
+}
+
 void tas58xx_bq_pack(const double coeff[5],
                      uint8_t out[TAS58XX_BQ_COEFF_BYTES]) {
   for (int i = 0; i < 5; i++) {
@@ -497,7 +544,7 @@ void tas58xx_bq_unpack(const uint8_t in[TAS58XX_BQ_COEFF_BYTES],
 void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
                               uint8_t out[TAS58XX_BQ_COEFF_BYTES]) {
   double coeff[5];
-  tas58xx_bq_design(bq, sample_rate_hz, coeff);
+  tas58xx_bq_design_chip(bq, sample_rate_hz, coeff);
   tas58xx_bq_pack(coeff, out);
 }
 

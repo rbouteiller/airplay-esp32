@@ -43,3 +43,4 @@ with tempfile.TemporaryDirectory(prefix="audio-eq-tests-") as temporary:
     print("Software EQ host tests", flush=True)
     subprocess.run(command, check=True)
     subprocess.run([str(build / "test")], check=True)
+    subprocess.run([str(build / "test"), "blank"], check=True)

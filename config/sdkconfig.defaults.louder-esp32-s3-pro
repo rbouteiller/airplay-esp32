@@ -60,3 +60,11 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+
+# Internal RAM is the limit on this board once display, Ethernet, Wi-Fi,
+# AirPlay and (on a uac build) USB audio are all resident. Let .bss go to
+# PSRAM, which moves the Wi-Fi/lwIP libraries' and LVGL's pool
+# (components/display/lvgl_mem.lf) out of internal RAM, and let Wi-Fi and
+# lwIP take their buffers from PSRAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

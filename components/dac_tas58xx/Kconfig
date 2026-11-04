@@ -1,13 +1,15 @@
 if DAC_TAS58XX
 
-    config TAS58XX_MAX_VOLUME
-        int "Maximum DAC volume (dB)"
-        range -100 0
+    config TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY
+        int "Analog gain while the supply is unknown (dB)"
+        range -16 0
         default -10
         help
-            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
-            The TAS5825M DIG_VOL register range is +24 dB to -103 dB.
-            A value of -10 means AirPlay full volume maps to -10 dB on the DAC.
+            The amplifier's analog gain follows its supply, as a USB-PD
+            trigger agrees it or a TAS5825M measures it. Until the board knows
+            the supply it plays at this gain. 0 dB is 29.5 V peak at digital
+            full scale; -10 dB is 9.3 V. -16 is the 5 V level, which plays at
+            the bottom of the range, -15.5 dB.
 
     config TAS58XX_FORCE_PBTL
         bool "Force PBTL (mono) mode on primary amplifier"

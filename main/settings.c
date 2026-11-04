@@ -27,12 +27,15 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_GAIN       "amp_gain"
 #define NVS_KEY_AMP_MUTE       "amp_mute"
 #define NVS_KEY_AMP_MIX        "amp_mix"
+#define NVS_KEY_OUT_DELAY      "out_delay"
 #define NVS_KEY_FIRST_PBTL     "amp1_pbtl"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_USB_PD_VOLTS   "pd_volts"
 #define NVS_KEY_FULL_VOLUME    "full_vol"
+#define NVS_KEY_ANALOG_GAIN    "analog_gain"
 #define NVS_KEY_USB_PD_AUTO    "pd_auto"
-#define NVS_KEY_GAIN_AUTO      "gain_auto"
+#define NVS_KEY_ANALOG_AUTO    "again_auto"
+#define NVS_KEY_SOFTWARE_EQ_AB "sw_eq_ab"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
 #define NVS_KEY_SENDSPIN       "ss_en"
@@ -705,6 +708,52 @@ esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]) {
   return err;
 }
 
+esp_err_t settings_get_output_delay_us(uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t);
+  err = nvs_get_blob(nvs, NVS_KEY_OUT_DELAY, us, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t
+settings_set_output_delay_us(const uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_OUT_DELAY, us,
+                     SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save output delays: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
 /* ================================================================== */
 /*  Primary amplifier wiring                                           */
 /* ================================================================== */
@@ -854,6 +903,14 @@ esp_err_t settings_set_full_volume_db(float db) {
   return set_half_db(NVS_KEY_FULL_VOLUME, "digital gain", db);
 }
 
+esp_err_t settings_get_analog_gain_db(float *db) {
+  return get_half_db(NVS_KEY_ANALOG_GAIN, db);
+}
+
+esp_err_t settings_set_analog_gain_db(float db) {
+  return set_half_db(NVS_KEY_ANALOG_GAIN, "analog gain", db);
+}
+
 esp_err_t settings_get_usb_pd_volts(int *volts) {
   if (!volts) {
     return ESP_ERR_INVALID_ARG;
@@ -949,12 +1006,43 @@ esp_err_t settings_set_usb_pd_auto(bool on) {
   return set_auto(NVS_KEY_USB_PD_AUTO, "USB-PD voltage", on);
 }
 
-bool settings_get_gain_auto(void) {
-  return get_auto(NVS_KEY_GAIN_AUTO, NVS_KEY_FULL_VOLUME);
+bool settings_get_analog_auto(void) {
+  return get_auto(NVS_KEY_ANALOG_AUTO, NVS_KEY_ANALOG_GAIN);
 }
 
-esp_err_t settings_set_gain_auto(bool on) {
-  return set_auto(NVS_KEY_GAIN_AUTO, "digital gain", on);
+esp_err_t settings_set_analog_auto(bool on) {
+  return set_auto(NVS_KEY_ANALOG_AUTO, "analog gain", on);
+}
+
+bool settings_get_software_eq_ab(void) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    return false;
+  }
+  uint8_t stored = 0;
+  nvs_get_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, &stored);
+  nvs_close(nvs);
+  return stored != 0;
+}
+
+esp_err_t settings_set_software_eq_ab(bool on) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+  err = nvs_set_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, on ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved EQ engine: %s", on ? "ESP32" : "amplifier DSP");
+  } else {
+    ESP_LOGE(TAG, "Failed to save EQ engine: %s", esp_err_to_name(err));
+  }
+  return err;
 }
 
 /* ================================================================== */
