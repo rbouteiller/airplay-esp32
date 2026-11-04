@@ -309,7 +309,6 @@ static bool s_auto_gain;
 static bool s_bq_flat;
 static float s_makeup_db;
 static void (*s_eq_listener)(void);
-static void eq_changed(void);
 /* The software EQ routes the input itself (dac_tas58xx_set_soft_routing()). */
 static bool s_soft_routing[TAS58XX_MAX_DEVICES];
 
