@@ -1,10 +1,11 @@
-# Louder-ESP32 and Louder-ESP32-Plus
+# Louder-ESP32, Louder-ESP32-Plus and Louder-ESP32-S3-Pro
 
 The Sonocotta [Louder-ESP32](https://github.com/sonocotta/esp32-audio-dock) boards carry a
 TI **TAS58xx** combined DAC and Class-D amplifier, the same family the
 [Esparagus Audio Brick](esparagus-audio-brick.md) uses. Speakers connect directly.
 
-The **Plus** boards are fitted with a **TAS5825M**; the plain boards with a **TAS5805M**.
+The **Plus** and **Pro** boards are fitted with a **TAS5825M**; the plain boards with a
+**TAS5805M**.
 Both are driven by the same driver, which reads the die ID at startup, so the difference
 is what the part can do rather than which build you flash:
 
@@ -26,11 +27,12 @@ Volume is done in the amplifier (`CONFIG_DAC_CONTROLS_VOLUME`) rather than in so
 | `louder-esp32-plus-bt` | ESP32 | TAS5825M | yes | yes |
 | `louder-esp32-s3` | ESP32-S3 | TAS5805M | — | yes |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | — | yes |
+| `louder-esp32-s3-pro` | ESP32-S3 | TAS5825M | — | yes |
 | `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | — | yes |
 | `louder-esp32-s3-mini-uac` | ESP32-S3 | TAS5805M, bridged | — | — |
 
-Bluetooth Classic exists only on the original ESP32, so neither S3 board has a `-bt`
-build. On an ESP32 the published binary is the Bluetooth one.
+Bluetooth Classic exists only on the original ESP32, so no S3 board has a `-bt` build. On
+an ESP32 the published binary is the Bluetooth one.
 
 !!! note "Esparagus Louder is a separate board"
 
@@ -119,6 +121,23 @@ is often hard to hear.
     trigger can negotiate up to 48 V from an EPR charger, but the firmware only ever asks
     for the fixed 5–20 V offers, and never above `CONFIG_HUSB238A_MAX_VOLTS`.
 
+## Louder-ESP32-S3-Pro
+
+The **Louder-ESP32-S3-Pro** is a Louder-ESP32-S3-Plus with a screen and an LED. It keeps
+the Plus pinout — the same TAS5825M at the same I2C pins, the same Ethernet, the same
+amplifier `PDN` — and changes three things:
+
+- A **320×240 [ST7789 TFT](../features/tft-display.md)** on the display header in place
+  of the SH1106 OLED, rendered through LVGL 9 the same way the
+  [Audio Brick Dual](esparagus-audio-brick-dual-dac.md)'s is. It uses the Plus board's
+  display pins (CS 47, DC 38, RST 48) with the backlight on **GPIO 42**.
+- A **WS2812 status LED** on GPIO 21.
+- A cooling fan, PWM on GPIO 2 and tacho on GPIO 1, which **this firmware does not
+  drive**. GPIO 2 left alone runs the fan continuously; nothing reads the tacho.
+
+Because it is electrically a Plus board, the TAS5825M's process flows, PPC3 dumps and
+15-band EQ all behave as they do on `louder-esp32-s3-plus`.
+
 ## Features
 
 - TAS5825M or TAS5805M with on-chip DSP and a 15-band parametric EQ (25 Hz – 16 kHz)
@@ -127,7 +146,8 @@ is often hard to hear.
 - 8 MB flash
 - [Bluetooth A2DP](../features/bluetooth.md) on the ESP32 variants
 - [W5500 SPI Ethernet](../features/ethernet.md) with automatic WiFi failover
-- [SH1106 OLED](../features/oled-display.md) over SPI, sharing the Ethernet bus
+- [SH1106 OLED](../features/oled-display.md) over SPI, sharing the Ethernet bus — or a
+  [320×240 ST7789 TFT](../features/tft-display.md) on the Pro
 
 ## Flashing
 
@@ -154,6 +174,10 @@ is often hard to hear.
     # ESP32-S3 + TAS5825M
     pio run -e louder-esp32-s3-plus -t upload
     pio run -e louder-esp32-s3-plus -t uploadfs
+
+    # ESP32-S3 + TAS5825M, TFT and RGB LED
+    pio run -e louder-esp32-s3-pro -t upload
+    pio run -e louder-esp32-s3-pro -t uploadfs
     ```
 
 === "ESP-IDF"
@@ -165,7 +189,8 @@ is often hard to hear.
     ```
 
     Swap in `config/sdkconfig.defaults.louder-esp32-s3-plus` after
-    `idf.py set-target esp32s3` for the S3 revision.
+    `idf.py set-target esp32s3` for the S3 revision, or
+    `config/sdkconfig.defaults.louder-esp32-s3-pro` for the Pro.
 
 ## Default GPIO assignments
 
@@ -198,6 +223,7 @@ toggle from playback events.
 
 - [Esparagus Audio Brick](esparagus-audio-brick.md) — the same TAS58xx driver, EQ and PPC3 workflow
 - [HybridFlow DSP](../features/hybridflow.md)
+- [TFT display](../features/tft-display.md)
 - [Bluetooth A2DP](../features/bluetooth.md)
 - [Ethernet (W5500)](../features/ethernet.md)
 - [Build environments](../reference/build-environments.md)
