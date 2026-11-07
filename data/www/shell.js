@@ -102,12 +102,22 @@ function db(v){return (v<0?'−':'')+Math.abs(v).toFixed(1)+' dB';}
 /* ---- requests ----
    The device serves three sockets at most (two with Bluetooth), and the page
    uses them too, so the shell's requests and those the pages send through
-   Shell.get/post go one at a time. */
+   Shell.get/post go one at a time. Each gets 20 s, so one that never
+   answers can't hold up every request behind it. */
 var queue=Promise.resolve();
+var REQUEST_MS=20000;
 function request(url,opts){
   var p=queue.then(function(){
+    var ac=window.AbortController?new AbortController():null,timer=0;
+    if(ac){
+      opts.signal=ac.signal;
+      timer=setTimeout(function(){ac.abort();},REQUEST_MS);
+    }
     return fetch(url,opts).then(function(r){
       return r.text().then(function(t){return {r:r,t:t};});
+    }).then(function(x){clearTimeout(timer);return x;},function(e){
+      clearTimeout(timer);
+      throw ac&&ac.signal.aborted?new Error('No answer from the device'):e;
     });
   });
   queue=p.then(function(){},function(){});

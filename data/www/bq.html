@@ -30,12 +30,16 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 #vol-card{grid-area:vol}
 #plots{grid-area:plots}
 #chain-card{grid-area:chain}
-/* Which output is selected drives both the plots and the chain, so the tabs
-   head the plots, which stay in view on a wide screen. */
+/* Which output is selected drives both the plots and the chain. The tabs
+   head the chain card, beside the rows they pick; the plots name the
+   selected output in their legend. */
 .picker{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;
         margin-bottom:14px;padding-bottom:14px;
         border-bottom:1px solid rgba(255,255,255,0.08)}
 .picker .tabs{margin-bottom:0}
+/* A one-amplifier speaker has no amplifier tabs; the empty box would still
+   take a gap before the output tabs. */
+#amp-tabs:empty{display:none}
 /* Wraps under the amplifier tabs as a whole rather than stacking its own
    tabs, and grows so the copy button keeps to the far end. */
 #ch-tabs{flex:1 0 auto}
@@ -133,10 +137,6 @@ input:disabled,select:disabled{opacity:0.25}
 
 <div class='work'>
 <div class='card' id='plots'>
-<div class='picker' id='picker'>
-<div class='tabs' id='amp-tabs'></div>
-<div class='tabs' id='ch-tabs'></div>
-</div>
 <div class='viewrow'>
 <h2>Response</h2>
 <div class='tabs' id='view-tabs'>
@@ -176,6 +176,10 @@ spacing or the room.</p>
 
 <div class='card' id='chain-card'>
 <h2 id='chain-title'>Filter Chain</h2>
+<div class='picker' id='picker'>
+<div class='tabs' id='amp-tabs'></div>
+<div class='tabs' id='ch-tabs'></div>
+</div>
 <div class='actions top'>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
@@ -873,7 +877,7 @@ function drawGraph(cv,sweeps,lo,hi,step,fmt,totalsOnly,extras){
     g.stroke();
   }
   for(var s=0;s<sweeps.length;s++){
-    var col=TRACE[s%TRACE.length];
+    var col=sweeps[s].col||TRACE[s%TRACE.length];
     if(!totalsOnly)
       for(k=0;k<sweeps[s].curves.length;k++)trace(sweeps[s].curves[k],col[1],2);
     trace(sweeps[s].total,col[0],4);
@@ -884,7 +888,7 @@ function drawGraph(cv,sweeps,lo,hi,step,fmt,totalsOnly,extras){
   g.restore();
   var series=[];
   for(k=0;k<sweeps.length;k++)
-    series.push({v:sweeps[k].total,c:TRACE[k%TRACE.length][0],
+    series.push({v:sweeps[k].total,c:(sweeps[k].col||TRACE[k%TRACE.length])[0],
                  n:sweeps[k].name||''});
   if(extras)for(k=0;k<extras.length;k++)
     series.push({v:extras[k].v,c:extras[k].c,n:extras[k].n||''});
@@ -1171,8 +1175,8 @@ function drawLegend(){
   var h=ganged
     ?"<span><i style='background:#e94560'></i>"+chainLabel(data.amps[amp])+
      '</span>'
-    :"<span><i style='background:#e94560'></i>"+outLabel(0)+'</span>'+
-     "<span><i style='background:#4ecca3'></i>"+outLabel(1)+'</span>';
+    :"<span><i style='background:"+TRACE[ch][0]+"'></i>"+outLabel(ch)+
+     '</span>';
   if(meas)h+="<span><i style='background:"+C_MEAS+"'></i>Measured</span>"+
              "<span><i style='background:"+C_FIX+"'></i>Corrected</span>";
   $('legend').innerHTML=h;
@@ -1262,45 +1266,70 @@ function offsetTotal(s,db){
   if(db)for(var i=0;i<s.total.length;i++)s.total[i]+=db;
   return s;
 }
-function growScale(hi,pk){
-  while(hi<pk&&hi<96)hi+=12;
-  return hi;
-}
-function peakTotal(sweeps){
-  var pk=0,k,i;
-  for(k=0;k<sweeps.length;k++)
-    for(i=0;i<sweeps[k].total.length;i++)
-      pk=Math.max(pk,Math.abs(sweeps[k].total[i]));
-  return pk;
+/* The magnitude scale follows the pass bands, not the deepest point. A
+   crossover's stop band falls 100 dB or more inside the audio band, and a
+   symmetric scale stretched to hold it left the part worth reading a few
+   pixels tall. So the top holds the highest point of any curve, the bottom
+   sits 30 dB under the lowest chain's peak (enough for a crossover's slopes
+   through its corner, and for a trim that drags a whole chain down), and
+   anything deeper runs off the bottom. A measurement is centred on 0 and
+   kept whole. */
+function magScale(sweeps,extras){
+  var top=0,floor=0,k,i,v,pk;
+  for(k=0;k<sweeps.length;k++){
+    pk=-Infinity;
+    for(i=0;i<sweeps[k].total.length;i++){
+      v=sweeps[k].total[i];
+      if(isFinite(v))pk=Math.max(pk,v);
+    }
+    /* To 0.1 dB, so a flat chain a hair under 0 doesn't open a step. */
+    pk=Math.round(pk*10)/10;
+    if(isFinite(pk)){top=Math.max(top,pk);floor=Math.min(floor,pk);}
+  }
+  if(extras)for(k=0;k<extras.length;k++){
+    if(extras[k].pk!==undefined){
+      top=Math.max(top,extras[k].pk);floor=Math.min(floor,-extras[k].pk+30);
+      continue;
+    }
+    for(i=0;i<extras[k].v.length;i++){
+      v=extras[k].v[i];
+      if(v!==null&&isFinite(v))top=Math.max(top,v);
+    }
+  }
+  var hi=Math.min(top+3,96),lo=Math.max(floor-30,-120),span=hi-lo;
+  var step=span<=36?6:span<=72?12:24;
+  hi=Math.max(step,Math.ceil(hi/step)*step);
+  lo=Math.floor(lo/step)*step;
+  return {lo:lo,hi:hi,step:step};
 }
 function plot(){
   if(!data)return;
   /* First, so a canvas being shown is in its box before it is drawn. */
   drawView(activeChains().length);
-  var a=data.amps[amp],groups=[],names=[],trims=[];
+  /* Only the output being edited; "All outputs" shows them together. It
+     keeps its colour from that view, so B stays green on its own. */
+  var a=data.amps[amp],groups=[],names=[],trims=[],cols=[];
   if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
-                  names.push(chainLabel(a));trims.push(trimOf(a,0));}
+                  names.push(chainLabel(a));trims.push(trimOf(a,0));
+                  cols.push(TRACE[0]);}
   else{
-    groups.push(sectionsOf(a.channels[0]));names.push(outLabel(0));
-    trims.push(trimOf(a,0));
-    groups.push(sectionsOf(a.channels[1]));names.push(outLabel(1));
-    trims.push(trimOf(a,1));
+    groups.push(sectionsOf(a.channels[ch]));names.push(outLabel(ch));
+    trims.push(trimOf(a,ch));cols.push(TRACE[ch]);
   }
   var mag=[],ph=[],lim=0,k,i;
   for(k=0;k<groups.length;k++){
     var m=offsetTotal(sweep(groups[k],fs(),magDb,false),trims[k]);
     var p=sweep(groups[k],fs(),phaseDeg,true);
-    m.name=names[k];p.name=names[k];
+    m.name=names[k];p.name=names[k];m.col=p.col=cols[k];
     for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
     mag.push(m);ph.push(p);
   }
   /* A measurement swings well past the ±18 dB filters are kept inside, and a
      trim drags a whole chain down, so the scale opens up to hold both rather
      than clipping them against the frame. */
-  var ex=measCurves(),hi=growScale(24,peakTotal(mag));
-  if(ex)hi=growScale(hi,Math.max(ex[0].pk,ex[1].pk));
-  drawGraph($('mag'),mag,-hi,hi,hi/4,function(d){return d>0?'+'+d:''+d;},
-            false,ex);
+  var ex=measCurves(),sc=magScale(mag,ex);
+  drawGraph($('mag'),mag,sc.lo,sc.hi,sc.step,
+            function(d){return d>0?'+'+d:''+d;},false,ex);
   var range=180;
   while(range<lim&&range<1440)range*=2;
   drawGraph($('phase'),ph,-range,range,range/2,
@@ -1475,14 +1504,15 @@ function plotAll(){
     leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
          chains[k].n+'</span>';
   }
-  var ex=null,hi=growScale(24,peakTotal(sweeps));
+  var ex=null,sc;
   if($('sumq').checked){
     ex=[{v:sumCurve(groups,rates,gains),c:C_SUM,w:4,n:'Sum'}];
     leg+="<span><i style='background:"+C_SUM+"'></i>Sum</span>";
   }
   $('sum-hint').style.display=ex?'':'none';
   $('all-legend').innerHTML=leg;
-  drawGraph($('all'),sweeps,-hi,hi,hi/4,
+  sc=magScale(sweeps,ex);
+  drawGraph($('all'),sweeps,sc.lo,sc.hi,sc.step,
             function(d){return d>0?'+'+d:''+d;},true,ex);
 }
 
@@ -1575,10 +1605,13 @@ function blankBq(){
   return {type:T_BYPASS,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
           invert:false,coeff:[1,0,0,0,0]};
 }
+/* Locked rows are ones the user means to keep, so a clear leaves them. */
 function resetChain(){
-  var c=chan();
-  for(var i=0;i<SLOTS;i++)c[i]=blankBq();
+  var c=chan(),mask=lockMask(amp,ch),kept=lockCount(mask);
+  for(var i=0;i<SLOTS;i++)if(!(mask&(1<<i)))c[i]=blankBq();
   loadRows();setDirty(true);plot();
+  show($('msg'),kept?'Cleared the chain apart from '+kept+' locked filter'+
+                     (kept>1?'s':'')+'.':'','info');
 }
 /* The fixed graphic EQ this page replaced: one peaking section per band, Q
    widening towards the bottom where the centres are furthest apart. */
