@@ -148,6 +148,10 @@ on the primary amplifier, the input routing defaults to **mono (L+R)** and the s
 option is not offered — a bridged amplifier drives one output, so feeding it stereo has no
 meaning.
 
+A TAS5805M has no input mixer to sum with, so a bridged one plays the left I2S channel.
+The output **channel mode** decides what that carries instead, and it starts on mono
+(L+R) on a board built with `CONFIG_TAS58XX_FORCE_PBTL`.
+
 ### Configuration options
 
 #### From web UI (when not forced)
