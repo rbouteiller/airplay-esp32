@@ -63,6 +63,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `amped-esp32-plus` | ESP32 + PCM5122 (I2C) + TPA3118 | Rev J1+ I2C pinout; shares the `hifi-esp32-plus` board dir |
 | `amped-esp32-plus-bt` | Same + Bluetooth | |
 | `amped-esp32-s3-plus` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Different pinout from the ESP32 revision |
+| `amped-esparagus-plus-s3` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Rev H1+ pinout; rotary encoder + ST7789 TFT; no released binary |
 | `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
 | `amped-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |

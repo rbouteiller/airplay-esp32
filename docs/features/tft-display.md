@@ -33,9 +33,18 @@ background, with a progress bar and elapsed/remaining time. Rendering uses
 | VCC | 3.3 V | Power |
 | GND | GND | Ground |
 
+Three boards come with an ST7789 on their display header and configure it themselves, so
+none of this wiring applies to them — the pins are in their own pages:
+
+| Board | Panel | Backlight |
+| --- | --- | --- |
+| [Esparagus Audio Brick Dual](../boards/esparagus-audio-brick-dual-dac.md) | 320×240 | GPIO 2 |
+| [Louder-ESP32-S3-Pro](../boards/louder-esp32.md#louder-esp32-s3-pro) | 320×240 | GPIO 42 |
+| [Amped-Esparagus-Plus-S3](../boards/amped-esp32.md#amped-esparagus-plus-s3) | 320×240 | GPIO 1 |
+
 ## Enabling
 
-The display is **disabled by default**.
+The display is **disabled by default**, except on the boards above.
 
 === "menuconfig"
 

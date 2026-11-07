@@ -102,6 +102,12 @@
     "core": true
   },
   {
+    "name": "hifi-esp32-s3-plus",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-s3-plus",
+    "core": false
+  },
+  {
     "name": "hifi-esparagus-s3",
     "target": "esp32s3",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus-s3",
