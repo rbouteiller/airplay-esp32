@@ -3,6 +3,7 @@
 
 #include "web_server.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -1370,6 +1371,16 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "eth_supported", false);
 #endif
   cJSON_AddNumberToObject(info, "free_heap", esp_get_free_heap_size());
+  /* free_heap counts PSRAM too, so it says nothing about the internal RAM
+   * that tasks, DMA and the USB stack need. The minimum is the low-water mark
+   * since boot, which is what shows whether a board has headroom. */
+  cJSON_AddNumberToObject(info, "internal_free",
+                          heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  cJSON_AddNumberToObject(info, "internal_min_free",
+                          heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+  cJSON_AddNumberToObject(
+      info, "internal_largest",
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
   // WiFi link diagnostics (only meaningful when associated as STA)
   if (wifi_connected) {

@@ -60,8 +60,15 @@
 #define REG_DIG_VOL_CTRL1  0x4E // Volume ramp control
 #define REG_AUTO_MUTE_CTRL 0x50
 #define REG_AUTO_MUTE_TIME 0x51
-#define REG_ANA_CTRL       0x53
-#define REG_AGAIN          0x54 // Analog gain
+/* Silence held this long before the outputs auto-mute: 0b111 on both
+ * channels, 5.33 s at 96 kHz and longer at lower rates (11.6 s at 44.1 kHz),
+ * so the gap of a seek or a track change never engages it, only a stream that
+ * has really gone quiet (a pause drops the part to HIZ anyway). The shortest
+ * setting, 11.5 ms at 96 kHz, switched the outputs off and on again around
+ * every flush. */
+#define AUTO_MUTE_TIME 0x77
+#define REG_ANA_CTRL   0x53
+#define REG_AGAIN      0x54 // Analog gain
 
 #define REG_GPIO_CTL 0x60
 #define REG_GPIO0    0x61
@@ -95,10 +102,14 @@
 #define CTRL2_PLAY       0x03
 
 /* ---------- DEVICE_CTRL1 (0x02) bit fields ---------- */
-// Modulation mode (bits 0-1) and switching freq (bits 4-6) live here too;
-// use read-modify-write so those defaults are preserved.
-#define CTRL1_PBTL_EN     (1 << 2) // Parallel bridge-tied load (mono)
-#define CTRL1_PBTL_CH_SEL (1 << 1) // PBTL data source: 0 = left, 1 = right
+// DAMP_MOD (bits 1-0: 00 BD, 01 1SPW, 10 Hybrid) and FSW_SEL (bits 6-4) live
+// here too; use read-modify-write so the reset values (or a dump's) are kept.
+// There is no PBTL channel select: bridged, both parts play the left I2S
+// frame (TAS5805M/TAS5825M datasheets, PBTL Mode), so routing is the input
+// mixer's job.
+#define CTRL1_PBTL_EN (1 << 2)   // DAMP_PBTL: parallel bridge-tied load (mono)
+#define CTRL1_DAMP_MOD_MASK 0x03 // DAMP_MOD: modulation scheme
+#define CTRL1_DAMP_MOD_BD   0x00 // BD modulation (reset value)
 
 /* ---------- DIG_VOL (0x4C) ---------- */
 // 0x00 = +24.0 dB, 0x30 = 0.0 dB, 0xFE = -103.0 dB, 0xFF = mute
@@ -153,26 +164,33 @@ struct tas58xx_cmd_s {
  * later via dac_set_power_mode(DAC_POWER_ON) once I2S is active.
  */
 static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
-    {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
-    {REG_BOOK_SEL, 0x00},        // Select Book 0
-    {REG_PAGE_SEL, 0x00},        // Confirm Page 0
-    {REG_RESET_CTRL, RESET_REG}, // Reset control port registers
+    {REG_PAGE_SEL, 0x00},          // Select Book 0 Page 0
+    {REG_BOOK_SEL, 0x00},          // Select Book 0
+    {REG_PAGE_SEL, 0x00},          // Confirm Page 0
+    {REG_DEVICE_CTRL2, CTRL2_HIZ}, // Stop driving before the reset
+    // Reset the whole digital core as well as the control registers, as TI's
+    // own sequences do: the coefficient RAM survives an ESP32 restart with
+    // the amplifier powered, so without it whatever the last firmware wrote
+    // stays in any block this driver does not rewrite.
+    {REG_RESET_CTRL, RESET_DIG_CORE | RESET_REG},
     {REG_DEVICE_CTRL2, CTRL2_HIZ},
 
     // I2S format: standard I2S, 16-bit word length
     {REG_SAP_CTRL1, 0x00}, // DATA_FORMAT=I2S(00), WORD_LENGTH=16bit(00)
     {REG_CLOCK_DET_CTRL, 0x00},
 
-    // DSP: Process Flow 1 (Base/Pro, 96kHz, 2.0)
+    // DSP: ROM Process Flow 1 (Base/Pro, 2.0). TI calls it a 96 kHz flow,
+    // but DSP_CTRL[4:3] (USER_DEFINED_PROCESSING_RATE) = 00 runs it at the
+    // input rate, so the biquads run at the I2S rate (measured on a brick).
     {REG_DSP_PGM_MODE, 0x01},
-    {REG_DSP_CTRL, 0x01}, // Use default coefficients
+    {REG_DSP_CTRL, 0x01}, // Input rate, default coefficients
 
     // Volume ramp: smooth transitions
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
 
     // Auto-mute: enable for both channels
     {REG_AUTO_MUTE_CTRL, 0x07},
-    {REG_AUTO_MUTE_TIME, 0x00},
+    {REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME},
 
     // Clear any pending faults
     {REG_FAULT_CLEAR, 0x80},
@@ -192,30 +210,49 @@ static const struct tas58xx_cmd_s tas5825m_init_seq[] = {
     // Analog gain: 0 dB
     {REG_AGAIN, 0x00},
 
+    // Switch the left and right PWM outputs in phase. Out of phase, the
+    // reset value, a Louder Pro clicked through quiet piano at any volume,
+    // the louder the content the more; in phase it plays clean, and the
+    // HIZ <-> PLAY transitions pop less. TI's own sequences set it too.
+    {REG_ANA_CTRL, 0x01},
+
     {0xFF, 0xFF} // End of table sentinel
 };
 
 /* TAS5805M is slightly simpler configuration, namely
    - lack of GPIO configuration
-   - no process flow select register
-   - DSP_MISC register to configure BQ coefficients per channel */
+   - no documented process flow select register
+   - DSP_MISC register to configure BQ coefficients per channel
+
+   Its register 0x46 is undocumented and does not mean what the TAS5825M's
+   DSP_CTRL does: it picks between the two ROM programs. Every PPC3 export
+   for Process Flow 1 (2.0, sample-rate converter to 96/88.2 kHz ahead of
+   the EQ) writes 0x01, and every one for the 48 kHz program (Flows 2 and
+   3: FIR and sub path) writes 0x11. Power-on already gives Flow 1; writing
+   it states the flow tas5805m_dsp_rate() assumes rather than inheriting
+   it. */
 static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
-    {REG_PAGE_SEL, 0x00},        // Select Book 0 Page 0
-    {REG_BOOK_SEL, 0x00},        // Select Book 0
-    {REG_PAGE_SEL, 0x00},        // Confirm Page 0
-    {REG_RESET_CTRL, RESET_REG}, // Reset control port registers
+    {REG_PAGE_SEL, 0x00},          // Select Book 0 Page 0
+    {REG_BOOK_SEL, 0x00},          // Select Book 0
+    {REG_PAGE_SEL, 0x00},          // Confirm Page 0
+    {REG_DEVICE_CTRL2, CTRL2_HIZ}, // Stop driving before the reset
+    // Full digital core reset, as on the TAS5825M above
+    {REG_RESET_CTRL, RESET_DIG_CORE | RESET_REG},
     {REG_DEVICE_CTRL2, CTRL2_HIZ},
 
     // I2S format: standard I2S, 16-bit word length
     {REG_SAP_CTRL1, 0x00}, // DATA_FORMAT=I2S(00), WORD_LENGTH=16bit(00)
     {REG_CLOCK_DET_CTRL, 0x00},
 
+    // DSP: ROM Process Flow 1 (2.0, 96/88.2 kHz), as PPC3 selects it
+    {REG_DSP_CTRL, 0x01},
+
     // Volume ramp: smooth transitions
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
 
     // Auto-mute: enable for both channels
     {REG_AUTO_MUTE_CTRL, 0x07},
-    {REG_AUTO_MUTE_TIME, 0x00},
+    {REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME},
 
     // Clear any pending faults
     {REG_FAULT_CLEAR, 0x80},
@@ -251,6 +288,7 @@ typedef struct {
   i2c_master_dev_handle_t handle; /* I2C device handle */
   bool dsp_defaults_written;      /* signal-path coeffs programmed */
   bool pbtl_mono;                 /* bridged (PBTL) mono output stage */
+  bool spk_muted;                 /* muted by enable_speaker(false) */
   tas58xx_mix_t mix;              /* input-mixer routing */
   uint8_t *hf_buf;                /* cached PPC3 dump (NULL if none) */
   size_t hf_size;                 /* bytes in hf_buf */
@@ -339,6 +377,9 @@ static tas58xx_dev_t *s_cur = NULL;
  */
 static SemaphoreHandle_t s_reg_mutex = NULL;
 static uint32_t s_power_mode_generation = 0;
+/* Amplifiers dropped from PLAY to HIZ for an I2S retune, for
+ * tas58xx_on_i2s_started() to bring back. */
+static bool s_parked_for_retune[TAS58XX_MAX_DEVICES];
 
 #define REG_LOCK()   xSemaphoreTake(s_reg_mutex, portMAX_DELAY)
 #define REG_UNLOCK() xSemaphoreGive(s_reg_mutex)
@@ -407,6 +448,7 @@ static int tas58xx_detect(i2c_master_bus_handle_t bus) {
       s_devs[found].handle = NULL;
       s_devs[found].dsp_defaults_written = false;
       s_devs[found].pbtl_mono = false;
+      s_devs[found].spk_muted = false;
       s_devs[found].mix = TAS58XX_MIX_STEREO;
       found++;
     }
@@ -787,17 +829,16 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
   }
   uint8_t ctrl1 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
+  /* Only DAMP_PBTL. Bits 1-0 are the modulation mode, not a channel select:
+   * setting bit 1 selects Hybrid modulation, which the 10 uH boards cannot
+   * take above 12 V and which needs its own start-up sequence. */
   ctrl1 |= CTRL1_PBTL_EN;
 
-  /* In PBTL mode, the channel selector bit (bit 1) determines which input
-   * channel feeds the bridged output. For mono mode (summed L+R), both channels
-   * are fed equally so the channel select bit doesn't matter. For left/right
-   * selection, the user can configure the input mixer to route only one
-   * channel.
-   *
-   * The key requirement: if stereo is selected while in PBTL mode, default to
-   * mono (summed) and prevent stereo. Left/right selection should be allowed
-   * and remembered.
+  /* The bridged output plays the left path, so which input it carries is
+   * the input mixer's routing (tas58xx_apply_input_mix()): Left, Right and
+   * Mono all feed both paths. Stereo would drop the right channel, so a
+   * part that can route sums the pair instead. Left/right selection is
+   * allowed and remembered.
    */
   if (dev->mix == TAS58XX_MIX_STEREO &&
       dac_tas58xx_can_route((int)(dev - s_devs))) {
@@ -810,27 +851,6 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
     dev->mix = TAS58XX_MIX_MONO;
   }
 
-  /* For PBTL, set the channel select bit based on the current mix setting.
-   * The input mixer handles which channels get summed to the output. */
-  switch (dev->mix) {
-  case TAS58XX_MIX_MONO:
-    /* Mono sums L+R to both outputs - channel select doesn't matter */
-    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-    break;
-  case TAS58XX_MIX_LEFT:
-    /* Left channel only - select left */
-    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-    break;
-  case TAS58XX_MIX_RIGHT:
-    /* Right channel only - select right */
-    ctrl1 |= CTRL1_PBTL_CH_SEL;
-    break;
-  default:
-    /* Default to left for any other setting */
-    ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-    break;
-  }
-
   esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "@0x%02X failed to enable PBTL: %s", dev->addr,
@@ -840,6 +860,40 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
   ESP_LOGI(TAG, "@0x%02X PBTL mono mode enabled (DEVICE_CTRL1=0x%02X, mix=%d)",
            dev->addr, ctrl1, (int)dev->mix);
   return ESP_OK;
+}
+
+/*
+ * Hold a TAS5805M to BD modulation. 1SPW and Hybrid need at least 15 uH above
+ * 12 V PVDD (SLASEH5D Table 8-2) and these boards have 10 uH, so neither the
+ * init sequence nor a PPC3 dump may leave one selected. Only DAMP_MOD
+ * changes; DAMP_PBTL and FSW_SEL are kept. The TAS5825M is left as it is
+ * (its FSW_SEL codes differ). Like tas58xx_apply_pbtl(), this runs in HiZ on
+ * every power-on, as DEEP_SLEEP resets DEVICE_CTRL1. Assumes REG_LOCK is held
+ * and s_cur == dev.
+ */
+static esp_err_t tas58xx_apply_bd_mod(tas58xx_dev_t *dev) {
+  if (dev->model != TAS58XX_MODEL_TAS5805M) {
+    return ESP_OK;
+  }
+  uint8_t ctrl1 = 0;
+  esp_err_t err = tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
+  if (err != ESP_OK) {
+    /* Writing a guess would clobber DAMP_PBTL and FSW_SEL. */
+    ESP_LOGE(TAG, "@0x%02X failed to read DEVICE_CTRL1: %s", dev->addr,
+             esp_err_to_name(err));
+    return err;
+  }
+  if ((ctrl1 & CTRL1_DAMP_MOD_MASK) != CTRL1_DAMP_MOD_BD) {
+    ESP_LOGW(TAG, "@0x%02X DAMP_MOD was %u, setting BD (DEVICE_CTRL1=0x%02X)",
+             dev->addr, (unsigned)(ctrl1 & CTRL1_DAMP_MOD_MASK), ctrl1);
+  }
+  ctrl1 = (uint8_t)((ctrl1 & ~CTRL1_DAMP_MOD_MASK) | CTRL1_DAMP_MOD_BD);
+  err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "@0x%02X failed to set BD modulation: %s", dev->addr,
+             esp_err_to_name(err));
+  }
+  return err;
 }
 
 /*
@@ -1202,6 +1256,10 @@ static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev) {
   if (err != ESP_OK) {
     return err;
   }
+  err = tas58xx_apply_bd_mod(dev);
+  if (err != ESP_OK) {
+    return err;
+  }
 
   // Give the device time to settle
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -1419,6 +1477,24 @@ static esp_err_t tas58xx_deinit(void) {
 /* Apply a power mode to a single chip. Assumes REG_LOCK is held. */
 static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev);
 
+/*
+ * Ramp a playing amplifier down to mute before its state changes, its clocks
+ * stop or its coefficients are rewritten: dropping PLAY, or losing the clocks
+ * in it, with the outputs at level pops. With the init ramp (DIG_VOL_CTRL1
+ * 0x33, 0.5 dB a sample) full scale reaches mute in about 5 ms at 44.1 kHz;
+ * MUTE_RAMP_MS allows four times that. Assumes REG_LOCK is held and s_cur set;
+ * returns CTRL2 as it now reads.
+ */
+#define MUTE_RAMP_MS 20
+static uint8_t ramp_to_mute_locked(uint8_t ctrl2) {
+  if ((ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY && !(ctrl2 & CTRL2_MUTE)) {
+    ctrl2 |= CTRL2_MUTE;
+    tas58xx_write_reg(REG_DEVICE_CTRL2, ctrl2);
+    vTaskDelay(pdMS_TO_TICKS(MUTE_RAMP_MS));
+  }
+  return ctrl2;
+}
+
 static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
   s_cur = dev;
   uint8_t cur_ctrl2 = 0;
@@ -1430,6 +1506,7 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     // The PLL needs valid I2S clocks to lock — they must be present
     // by the time this function is called.
     if (cur_state != CTRL2_HIZ) {
+      ramp_to_mute_locked(cur_ctrl2);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1463,13 +1540,21 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
         ESP_LOGI(TAG, "Woke from DEEP_SLEEP — re-programming DSP registers");
         tas58xx_write_reg(REG_SAP_CTRL1, 0x00); /* I2S, 16-bit */
         tas58xx_write_reg(REG_CLOCK_DET_CTRL, 0x00);
-        tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01); /* PF1 (Base/Pro, 96kHz) */
-        tas58xx_write_reg(REG_DSP_CTRL, 0x01);     /* USE_DEFAULT_COEFFS */
+        /* Process Flow 1, as the init sequences set it. Only the TAS5825M
+         * has DSP_PGM_MODE; on both, DSP_CTRL 0x01 is that flow at the rate
+         * the biquads are designed for (see the init sequences). */
+        if (dev->model == TAS58XX_MODEL_TAS5825M) {
+          tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01);
+        }
+        tas58xx_write_reg(REG_DSP_CTRL, 0x01);
         vTaskDelay(pdMS_TO_TICKS(5));
         tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
         tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
-        tas58xx_write_reg(REG_AUTO_MUTE_TIME, 0x00);
+        tas58xx_write_reg(REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME);
         tas58xx_write_reg(REG_AGAIN, 0x00);
+        if (dev->model == TAS58XX_MODEL_TAS5825M) {
+          tas58xx_write_reg(REG_ANA_CTRL, 0x01); /* in-phase PWM, as at init */
+        }
 
         /* Coefficient RAM may be invalid after DEEP_SLEEP — force
          * full re-write of signal-path defaults on next EQ update. */
@@ -1480,35 +1565,7 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     /* DEVICE_CTRL1 is reset by DEEP_SLEEP and the device is in HiZ here, so
      * re-bridge the outputs before the output stage is allowed to drive. */
     tas58xx_apply_pbtl(dev);
-
-    /* Re-apply the channel selector after DEEP_SLEEP reset */
-    if (dev->pbtl_mono) {
-      uint8_t ctrl1 = 0;
-      tas58xx_read_reg(REG_DEVICE_CTRL1, &ctrl1);
-      /* Re-apply PBTL mode and channel selector based on current mix setting */
-      ctrl1 |= CTRL1_PBTL_EN;
-
-      switch (dev->mix) {
-      case TAS58XX_MIX_MONO:
-        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-        break;
-      case TAS58XX_MIX_LEFT:
-        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-        break;
-      case TAS58XX_MIX_RIGHT:
-        ctrl1 |= CTRL1_PBTL_CH_SEL;
-        break;
-      default:
-        ctrl1 &= ~CTRL1_PBTL_CH_SEL;
-        break;
-      }
-
-      esp_err_t err = tas58xx_write_reg(REG_DEVICE_CTRL1, ctrl1);
-      if (err != ESP_OK) {
-        ESP_LOGE(TAG, "@0x%02X failed to set PBTL channel selector: %s",
-                 dev->addr, esp_err_to_name(err));
-      }
-    }
+    tas58xx_apply_bd_mod(dev);
 
     /* DEEP_SLEEP also resets DIG_VOL to 0 dB, which would be a full-scale
      * blast on the first frame after PLAY. */
@@ -1518,8 +1575,10 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    // Request transition to PLAY (unmuted)
-    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
+    /* Request PLAY muted: the outputs start switching on silence, and the
+     * mixer and biquad rewrites below land before anything is heard. The
+     * unmute at the end ramps the volume up. */
+    tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY | CTRL2_MUTE);
 
     // Poll POWER_STATE until the device actually reaches PLAY.
     // The TAS5825M won't transition until its PLL locks on SCLK.
@@ -1555,12 +1614,19 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_apply_input_mix();
     bq_program_chain();
 
+    /* Unmute, unless enable_speaker() has the outputs muted (a speaker
+     * fault): coming back from sleep or a retune must not lift that. */
+    tas58xx_write_reg(REG_DEVICE_CTRL2,
+                      dev->spk_muted ? CTRL2_PLAY | CTRL2_MUTE : CTRL2_PLAY);
+
     tas58xx_dump_status("power-on");
   } else if (mode == DAC_POWER_STANDBY) {
     if (cur_state != CTRL2_DEEP_SLEEP) {
+      ramp_to_mute_locked(cur_ctrl2);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
     }
   } else {
+    ramp_to_mute_locked(cur_ctrl2);
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_DEEP_SLEEP);
     /* DEEP_SLEEP may reset registers and coefficient RAM — ensure
      * full re-initialization happens on the next wake-up. */
@@ -1573,6 +1639,8 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
   REG_LOCK();
   s_power_mode_generation++;
   for (int i = 0; i < s_dev_count; i++) {
+    /* An explicit mode supersedes a retune's pending restore. */
+    s_parked_for_retune[i] = false;
     set_power_mode_dev(&s_devs[i], mode);
   }
   s_cur = NULL;
@@ -1582,6 +1650,8 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
 /* Enable/disable (mute) output on a single chip. Assumes REG_LOCK held. */
 static void enable_speaker_dev(tas58xx_dev_t *dev, bool enable) {
   s_cur = dev;
+  /* Kept so that waking up, which ends by unmuting, honours it. */
+  dev->spk_muted = !enable;
 
   // Use mute bit in DEVICE_CTRL2 to enable/disable output.
   // Read current register, modify mute bit, write back.
@@ -1950,6 +2020,7 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
 
 /* ---------- Public ops struct ---------- */
 
+static void tas58xx_on_i2s_stopping(void);
 static void tas58xx_on_i2s_started(uint32_t sample_rate_hz);
 
 const dac_ops_t dac_tas58xx_ops = {
@@ -1959,6 +2030,7 @@ const dac_ops_t dac_tas58xx_ops = {
     .set_power_mode = tas58xx_set_power_mode,
     .enable_speaker = tas58xx_enable_speaker,
     .enable_line_out = tas58xx_enable_line_out,
+    .on_i2s_stopping = tas58xx_on_i2s_stopping,
     .on_i2s_started = tas58xx_on_i2s_started,
 };
 
@@ -2177,9 +2249,14 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
     /*
      * DRC — 3-band Dynamic Range Compression (Pages 0x06–0x07)
      */
+    /* The three bands are summed after their mixer gains, and with the band
+     * filters below all pass-through, three unity gains played the signal
+     * three times over (+9.5 dB) ahead of the clipper and the volume: loud
+     * tracks overflowed there into clicks at any volume. Table 9 passes the
+     * signal through band 1 alone. */
     write_dsp_coeff32(0x06, 0x58, 0x00800000); /* DRC1 mixer gain (unity) */
-    write_dsp_coeff32(0x06, 0x5C, 0x00800000); /* DRC2 mixer gain (unity) */
-    write_dsp_coeff32(0x06, 0x60, 0x00800000); /* DRC3 mixer gain (unity) */
+    write_dsp_coeff32(0x06, 0x5C, 0x00000000); /* DRC2 mixer gain (off) */
+    write_dsp_coeff32(0x06, 0x60, 0x00000000); /* DRC3 mixer gain (off) */
     /* DRC1 time constants */
     write_dsp_coeff32(0x06, 0x64, 0x7FFFFFFF); /* DRC1 Energy  */
     write_dsp_coeff32(0x06, 0x68, 0x7FFFFFFF); /* DRC1 Attack  */
@@ -2509,8 +2586,12 @@ static esp_err_t write_eq_mode(bool enable) {
       return err;
     }
 
+    /* Gang off. Set, the part plays the left chain on both channels, so an
+     * unganged pair (a crossover) gave output B output A's filters. The
+     * driver gangs by writing the left chain to both (bq_design_slot()), as
+     * the init sequence's GangEQ = 0 expects. */
     uint8_t mode_data[EQ_MODE_SIZE] = {
-        0x00, 0x80, 0x00, 0x00,                 /* gang_eq = 0x00800000 */
+        0x00, 0x00, 0x00, 0x00,                 /* gang_eq = 0 */
         0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
     };
 
@@ -2815,8 +2896,9 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   /*
    * Input mixer gains live in Book 0x8C as 9.23 fixed point, but on a
    * different page per part (SLAA786A Table 9 vs SLOA263A Table 5).
-   * In PBTL the paralleled output follows one channel, so feeding both
-   * output paths makes the content independent of PBTL_CH_SEL.
+   * In PBTL the paralleled output plays the left path (there is no channel
+   * select), so the routings that feed both paths are the ones that reach
+   * a bridged amplifier intact.
    */
   const uint8_t mix_page = is_5805 ? MIX_PAGE_5805 : MIX_PAGE_5825;
   const uint8_t mix_base = is_5805 ? MIX_BASE_5805 : MIX_BASE_5825;
@@ -2895,9 +2977,9 @@ static esp_err_t tas58xx_apply_input_mix(void) {
 static esp_err_t bq_program_chain_muted(void) {
   uint8_t saved_ctrl2 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL2, &saved_ctrl2);
-  if (!(saved_ctrl2 & CTRL2_MUTE)) {
-    tas58xx_write_reg(REG_DEVICE_CTRL2, saved_ctrl2 | CTRL2_MUTE);
-  }
+  /* Wait out the ramp: muting and writing at once still rewrote the chain
+   * under audio at level. */
+  ramp_to_mute_locked(saved_ctrl2);
 
   esp_err_t err = bq_program_chain();
 
@@ -3292,7 +3374,10 @@ static void tas58xx_reload_hf_for_rate(void) {
 
     ESP_LOGI(TAG, "@0x%02X switching to %s", d->addr, d->hf_path);
     s_cur = d;
-    if (tas58xx_write_hf(d, d->hf_buf, d->hf_size) == ESP_OK) {
+    const esp_err_t hf_err = tas58xx_write_hf(d, d->hf_buf, d->hf_size);
+    /* Even a partly written dump may have reached DEVICE_CTRL1. */
+    tas58xx_apply_bd_mod(d);
+    if (hf_err == ESP_OK) {
       tas58xx_fixup_after_hf(d);
       /* The dump brought its own coefficients; ours would overwrite them. */
       d->dsp_defaults_written = true;
@@ -3316,13 +3401,54 @@ static void tas58xx_reload_hf_for_rate(void) {
  * Every section's corner is a fraction of the sample rate, so a rate change
  * invalidates the whole coefficient set and the chains must be redesigned.
  */
+/* The I2S clocks are about to stop for a retune: an amplifier that loses
+ * them in PLAY pops (and latches a clock fault), so ramp it to mute and park
+ * it in HIZ for tas58xx_on_i2s_started() to bring back. */
+static void tas58xx_on_i2s_stopping(void) {
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    s_parked_for_retune[i] = false;
+    if (s_devs[i].handle == NULL) {
+      continue;
+    }
+    s_cur = &s_devs[i];
+    uint8_t ctrl2 = 0;
+    if (tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2) == ESP_OK &&
+        (ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY) {
+      ramp_to_mute_locked(ctrl2);
+      tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
+      s_parked_for_retune[i] = true;
+    }
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+}
+
+/* Bring back the amplifiers a retune parked, when nothing else is to be
+ * redone for the new clocks. */
+static void restore_parked(void) {
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    if (!s_parked_for_retune[i]) {
+      continue;
+    }
+    s_parked_for_retune[i] = false;
+    ESP_LOGI(TAG, "@0x%02X restoring PLAY after I2S restart", s_devs[i].addr);
+    set_power_mode_dev(&s_devs[i], DAC_POWER_ON);
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+}
+
 static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   if (sample_rate_hz < 8000 || sample_rate_hz > 192000) {
     ESP_LOGW(TAG, "ignoring implausible I2S rate %" PRIu32 " Hz",
              sample_rate_hz);
+    restore_parked();
     return;
   }
   if ((double)sample_rate_hz == s_bq_fs) {
+    restore_parked();
     return;
   }
 
@@ -3336,6 +3462,8 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
     if (tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2) == ESP_OK) {
       was_playing[device_index] = (ctrl2 & CTRL2_STATE_MASK) == CTRL2_PLAY;
     }
+    was_playing[device_index] |= s_parked_for_retune[device_index];
+    s_parked_for_retune[device_index] = false;
   }
   s_cur = NULL;
   REG_UNLOCK();
