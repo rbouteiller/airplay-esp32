@@ -554,13 +554,13 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
              "playout: raw=%s%" PRIu32 ".%03" PRIu32 " ms span=%" PRId32
              " us filt=%s%" PRIu32 ".%03" PRIu32 " ms (%" PRId32
              " smp) drift=%" PRId32 " ppm trims=%" PRIu32 "/s (%" PRIu32
-             ") buffered=%u concealed=%" PRIu64 " holes=%" PRIu64 " (+%" PRIu64
-             ")",
+             ") steps=%" PRIu32 " buffered=%u concealed=%" PRIu64
+             " holes=%" PRIu64 " (+%" PRIu64 ")",
              raw_us < 0 ? "-" : "", raw_abs_us / 1000U, raw_abs_us % 1000U,
              span_us, filtered_us < 0 ? "-" : "", filtered_abs_us / 1000U,
              filtered_abs_us % 1000U, filtered_samples,
              engine->scheduler.estimated_drift_ppm, new_trims,
-             engine->scheduler.drift_servo_trims,
+             engine->scheduler.drift_servo_trims, engine->scheduler.drift_steps,
              (unsigned)audio_timeline_count(&engine->timeline),
              engine->concealed_samples, engine->conceal_events, new_conceals);
   }
