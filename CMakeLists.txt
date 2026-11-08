@@ -1,5 +1,5 @@
 # AirPlay 2 Receiver for ESP32
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.22.1)
 
 # Read firmware version from version.txt
 file(READ "${CMAKE_SOURCE_DIR}/version.txt" PROJECT_VER)

@@ -22,7 +22,8 @@ if(CONFIG_DISPLAY_ENABLED)
             "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c")
         target_link_libraries(${COMPONENT_LIB} PRIVATE
             idf::esp_lcd
-            idf::driver
+            idf::esp_driver_gpio
+            idf::esp_driver_spi
             idf::esp_timer
             idf::espressif__esp_lvgl_port
             idf::spiffs_storage)
