@@ -45,8 +45,8 @@ static int aes_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
   size_t finish_len = 0;
   uint8_t finish_buf[16];
   if (status == PSA_SUCCESS) {
-    status = psa_cipher_finish(&op, finish_buf, sizeof(finish_buf),
-                               &finish_len);
+    status =
+        psa_cipher_finish(&op, finish_buf, sizeof(finish_buf), &finish_len);
   }
 
   psa_cipher_abort(&op);

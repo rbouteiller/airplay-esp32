@@ -51,8 +51,8 @@ static esp_err_t ota_validate_image(const uint8_t *image, size_t len) {
     size_t computed_hash_len = 0;
     psa_crypto_init();
     if (psa_hash_compute(PSA_ALG_SHA_256, image, data_len, computed_hash,
-                         sizeof(computed_hash), &computed_hash_len) !=
-        PSA_SUCCESS) {
+                         sizeof(computed_hash),
+                         &computed_hash_len) != PSA_SUCCESS) {
       ESP_LOGE(TAG, "SHA-256 hash computation failed");
       return ESP_ERR_INVALID_STATE;
     }

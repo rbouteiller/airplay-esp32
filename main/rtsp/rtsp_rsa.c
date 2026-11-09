@@ -158,8 +158,8 @@ static int ensure_pk_initialized_locked(void) {
 
   psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
   psa_set_key_type(&attr, PSA_KEY_TYPE_RSA_KEY_PAIR);
-  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_HASH |
-                                      PSA_KEY_USAGE_DECRYPT);
+  psa_set_key_usage_flags(&attr,
+                          PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_DECRYPT);
   // Primary alg: OAEP-SHA1 decrypt (rsa_decrypt_aes_key). Enrollment alg:
   // raw PKCS#1 v1.5 sign (rsa_apple_challenge_response) — a PSA key policy
   // only grants one algorithm unless a second is enrolled this way.
@@ -180,7 +180,7 @@ static int ensure_pk_initialized_locked(void) {
   uint8_t warm[256];
   size_t warm_len = 0;
   psa_sign_hash(s_rsa_key, PSA_ALG_RSA_PKCS1V15_SIGN_RAW, scratch,
-               sizeof(scratch), warm, sizeof(warm), &warm_len);
+                sizeof(scratch), warm, sizeof(warm), &warm_len);
 
   s_pk_initialized = true;
 
@@ -267,7 +267,7 @@ int rsa_apple_challenge_response(const char *challenge_b64, uint32_t ip_addr,
   size_t rsa_len = 0;
   psa_status_t status =
       psa_sign_hash(s_rsa_key, PSA_ALG_RSA_PKCS1V15_SIGN_RAW, data,
-                   sizeof(data), rsa_out, sizeof(rsa_out), &rsa_len);
+                    sizeof(data), rsa_out, sizeof(rsa_out), &rsa_len);
   xSemaphoreGive(lock);
 
   if (status != PSA_SUCCESS) {
