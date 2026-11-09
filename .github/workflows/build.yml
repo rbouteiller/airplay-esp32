@@ -23,6 +23,14 @@ on:
         type: string
         default: release
         required: false
+      beta:
+        description: >
+          Tag the built firmware's PROJECT_VER (and so the web UI/mDNS "fv")
+          with "-beta", identifying it as a beta.yml build rather than a release
+          or a plain CI/dev build.
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   targets:
@@ -69,7 +77,8 @@ jobs:
           esp_idf_version: v5.5.5
           target: ${{ matrix.target }}
           command: >
-            idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build &&
+            idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}"
+            -DFIRMWARE_BETA=${{ inputs.beta && 'ON' || 'OFF' }} build &&
             cd build &&
             esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
             cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin

@@ -8,6 +8,14 @@ cmake_minimum_required(VERSION 3.22.1)
 file(READ "${CMAKE_SOURCE_DIR}/version.txt" PROJECT_VER)
 string(STRIP "${PROJECT_VER}" PROJECT_VER)
 
+# Set by build.yml (-DFIRMWARE_BETA=ON) only for beta.yml's rolling pre-release,
+# so a board flashed from it is identifiable as a beta build rather than a
+# release or a plain dev build.
+option(FIRMWARE_BETA "Tag PROJECT_VER as a beta build" OFF)
+if(FIRMWARE_BETA)
+    set(PROJECT_VER "${PROJECT_VER}-beta")
+endif()
+
 find_package(Git QUIET)
 if(GIT_EXECUTABLE)
     # Reconfigure (and thus re-run these commands) whenever HEAD or the index
