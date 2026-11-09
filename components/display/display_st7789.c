@@ -689,7 +689,7 @@ void display_init(void *bus) {
   esp_lcd_panel_handle_t panel_handle = NULL;
   esp_lcd_panel_dev_config_t panel_cfg = {
       .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
-      .rgb_endian = LCD_RGB_ENDIAN_RGB,
+      .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
       .bits_per_pixel = 16,
   };
   ESP_ERROR_CHECK(
