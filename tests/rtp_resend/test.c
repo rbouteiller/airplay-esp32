@@ -189,27 +189,31 @@ static void test_gap_longer_than_window(void) {
 }
 
 static void test_request_cap(void) {
-  printf("50 separate holes: 16 requests at a time, oldest first\n");
+  printf("50 separate holes: 12 requests a quarter second, oldest first\n");
   rtp_resend_reset(&r, STEP);
   for (uint32_t i = 0; i <= 100; i += 2) {
     (void)feed(i);
   }
   size_t n = ask(0);
-  CHECK(n == 16 && ranges[0].first == 1 && ranges[15].first == 31,
+  CHECK(n == 12 && ranges[0].first == 1 && ranges[11].first == 23,
         "first pass: %zu, from %u", n, n ? ranges[0].first : 0);
-  n = ask(0);
-  CHECK(n == 16 && ranges[0].first == 33, "second pass: %zu, from %u", n,
+  CHECK(ask(0) == 0 && ask(200) == 0, "asked past the quarter's share");
+  n = ask(250);
+  CHECK(n == 12 && ranges[0].first == 25, "second quarter: %zu, from %u", n,
         n ? ranges[0].first : 0);
-  n = ask(0);
-  CHECK(n == 16 && ranges[0].first == 65, "third pass: %zu, from %u", n,
+  // The oldest are due again by now, and come first.  Nothing has been
+  // resent, so this is the last of the 32 requests a silent sender gets.
+  n = ask(500);
+  CHECK(n == 8 && ranges[0].first == 1, "third quarter: %zu, from %u", n,
         n ? ranges[0].first : 0);
-  n = ask(0);
-  CHECK(n == 2 && ranges[0].first == 97 && ranges[1].first == 99,
-        "fourth pass: %zu", n);
-  CHECK(ask(0) == 0, "asked twice at once");
-  n = ask(300);
-  CHECK(n == 16 && ranges[0].first == 1, "retry: %zu, from %u", n,
-        n ? ranges[0].first : 0);
+  CHECK(ask(750) == 0 && ask(2000) == 0, "asked a silent sender again");
+  n = ask(2500);
+  CHECK(n == RTP_RESEND_PROBE_REQUESTS, "probe: %zu", n);
+  CHECK(ask(2750) == 0, "asked again straight after the probe");
+  // One answer, and asking is back to the quarter's share.
+  CHECK(resend(1) == RTP_RESEND_FILLED, "answer refused");
+  n = ask(3000);
+  CHECK(n == 12, "after an answer: %zu", n);
 }
 
 static void test_wraparound(void) {
@@ -570,6 +574,86 @@ static void test_bursty_loss(void) {
   CHECK(balanced(), "counts do not add up after the run");
 }
 
+/* ---------- a sender that does not answer ---------- */
+
+/* What the receive task did to an ESP32 Audio Brick in the field: most
+ * packets lost, none ever resent, and every open hole asked for again four
+ * times a second.  The task spent its time sending requests, fell behind its
+ * socket, and so lost more.  The work has to stay bounded whatever is lost. */
+static void test_silent_sender(void) {
+  printf("silent sender, 2 in 3 packets lost for 20 s: bounded asking\n");
+  rtp_resend_reset(&r, STEP);
+  uint32_t state = 12345;
+  uint32_t requests = 0;
+  uint32_t worst_second = 0;
+  uint32_t this_second = 0;
+  for (uint32_t i = 0; i < 2500; i++) { // 125 packets a second
+    const uint32_t now_ms = i * 8U;
+    if (i % 125U == 0U) {
+      this_second = 0;
+    }
+    state = state * 1664525U + 1013904223U;
+    if (i != 0U && (state >> 16) % 3U != 0U) {
+      continue; // lost
+    }
+    (void)feed(i);
+    const size_t n = ask(now_ms);
+    requests += (uint32_t)n;
+    this_second += (uint32_t)n;
+    if (this_second > worst_second) {
+      worst_second = this_second;
+    }
+  }
+  printf("  %u requests for %u packets asked, worst second %u requests\n",
+         requests, r.counts.asked, worst_second);
+  CHECK(worst_second <= RTP_RESEND_REQUESTS_PER_SECOND,
+        "%u requests in one second", worst_second);
+  // Once the sender has shown it will not answer, asking all but stops.
+  CHECK(requests <= 20U * RTP_RESEND_REQUESTS_PER_SECOND / 4U,
+        "%u requests to a sender that never answered", requests);
+  CHECK(balanced(), "counts do not add up");
+}
+
+/* A hole is asked for a few times and then left alone, though it stays open
+ * for a late answer. */
+static void test_ask_limit(void) {
+  printf("one hole, never answered: asked %u times, then left open\n",
+         RTP_RESEND_MAX_ASKS);
+  rtp_resend_reset(&r, STEP);
+  feed_around(0, 10, 5, 1);
+  uint32_t asks = 0;
+  for (uint32_t now = 0; now < 4000U; now += 50U) {
+    asks += (uint32_t)ask(now);
+  }
+  CHECK(asks == RTP_RESEND_MAX_ASKS, "asked %u times", asks);
+  CHECK(rtp_resend_outstanding(&r) == 1, "hole closed");
+  CHECK(resend(5) == RTP_RESEND_FILLED, "late answer refused");
+}
+
+/* An answering sender is asked as before, apart from the cap per second. */
+static void test_answering_sender_not_paused(void) {
+  printf("answering sender: asking goes on past the silence limit\n");
+  rtp_resend_reset(&r, STEP);
+  uint32_t filled = 0;
+  for (uint32_t i = 0; i < 4000U; i++) {
+    if (i % 4U == 1U) {
+      continue; // one packet in four lost: 31 holes a second
+    }
+    const uint32_t now_ms = i * 8U;
+    (void)feed(i);
+    const size_t n = ask(now_ms);
+    for (size_t k = 0; k < n; k++) {
+      for (uint16_t c = 0; c < ranges[k].count; c++) {
+        if (resend((uint16_t)(ranges[k].first + c)) == RTP_RESEND_FILLED) {
+          filled++;
+        }
+      }
+    }
+  }
+  CHECK(filled >= 990U, "only %u of 1000 holes filled", filled);
+  CHECK(balanced(), "counts do not add up");
+}
+
 int main(void) {
   test_in_order();
   test_one_hole();
@@ -584,6 +668,9 @@ int main(void) {
   test_packet_length_learnt();
   test_reset();
   test_bursty_loss();
+  test_silent_sender();
+  test_ask_limit();
+  test_answering_sender_not_paused();
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;

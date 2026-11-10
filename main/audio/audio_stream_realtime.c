@@ -144,7 +144,8 @@ static void resend_sync(audio_receiver_state_t *state) {
 /* Once a second while packets go astray, what became of them.  queue_max is
  * the most still waiting on the socket after a read: the socket drops what
  * does not fit, so a queue near its limit means this task fell behind, and
- * a short one that the packets never reached the board. */
+ * a short one that the packets never reached the board.  ask_ms is the time
+ * this task spent sending requests, which it cannot spend reading. */
 static void resend_report(audio_receiver_state_t *state, int64_t now) {
   if (now - state->resend_report_us < RESEND_REPORT_US) {
     return;
@@ -155,29 +156,34 @@ static void resend_report(audio_receiver_state_t *state, int64_t now) {
   const uint32_t events = c->skipped + c->resent + c->late + c->expired +
                           c->unwanted + state->resend_rejected;
   if (events != 0U) {
-    ESP_LOGI(TAG,
-             "loss: rx=%" PRIu32 " skipped=%" PRIu32 " resent=%" PRIu32
-             " late=%" PRIu32 " expired=%" PRIu32 " unwanted=%" PRIu32
-             " asked=%" PRIu32 " in %" PRIu32 " open=%" PRIu32
-             " queue_max=%" PRIu32 " B rejected=%" PRIu32,
-             c->received, c->skipped, c->resent, c->late, c->expired,
-             c->unwanted, c->asked, c->requests,
-             rtp_resend_outstanding(&state->resend), state->resend_queue_max,
-             state->resend_rejected);
+    ESP_LOGI(
+        TAG,
+        "loss: rx=%" PRIu32 " skipped=%" PRIu32 " resent=%" PRIu32
+        " late=%" PRIu32 " expired=%" PRIu32 " unwanted=%" PRIu32
+        " asked=%" PRIu32 " in %" PRIu32 " open=%" PRIu32 " gave_up=%" PRIu32
+        " ask_ms=%" PRIu32 " queue_max=%" PRIu32 " B rejected=%" PRIu32,
+        c->received, c->skipped, c->resent, c->late, c->expired, c->unwanted,
+        c->asked, c->requests, rtp_resend_outstanding(&state->resend),
+        c->gave_up, (uint32_t)(state->resend_send_us / 1000),
+        state->resend_queue_max, state->resend_rejected);
   }
   memset(c, 0, sizeof(*c));
+  state->resend_send_us = 0;
   state->resend_queue_max = 0;
   state->resend_rejected = 0;
 }
 
-/* Asks for every missing packet that could still play and has not been asked
- * for in the last RTP_RESEND_RETRY_MS.  Runs after every packet and on every
- * receive timeout, so a hole is asked for as soon as it opens, and again for
- * as long as its audio is still to come. */
-static void resend_service(audio_receiver_state_t *state) {
+/* Asks for the missing packets that could still play and are due to be
+ * asked for; rtp_resend.h has the limits.  Runs after every packet and on
+ * every receive timeout, so a hole is asked for as soon as it opens.
+ *
+ * Reading comes first: while packets wait on the socket (backlog), nothing
+ * is asked for.  A request sent then delays the read that would have shown
+ * the packet was already here, and lets the socket overflow. */
+static void resend_service(audio_receiver_state_t *state, bool backlog) {
   const int64_t now = esp_timer_get_time();
   const bool can_ask =
-      state->retransmit_enabled && state->control_socket > 0 &&
+      !backlog && state->retransmit_enabled && state->control_socket > 0 &&
       (state->last_resend_error_time_us == 0 ||
        now - state->last_resend_error_time_us >= RESEND_ERROR_BACKOFF_US);
 
@@ -192,6 +198,9 @@ static void resend_service(audio_receiver_state_t *state) {
     if (!send_resend_request(state, ranges[i].first, ranges[i].count)) {
       break;
     }
+  }
+  if (n > 0) {
+    state->resend_send_us += (uint32_t)(esp_timer_get_time() - now);
   }
 
   resend_report(state, now);
@@ -239,7 +248,7 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   if (len < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       resend_sync(state);
-      resend_service(state);
+      resend_service(state, false);
       return true;
     }
     if (stream->running) {
@@ -286,7 +295,7 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   resend_sync(state);
   const rtp_resend_verdict_t verdict =
       rtp_resend_on_packet(&state->resend, seq, timestamp, is_retransmit);
-  resend_service(state);
+  resend_service(state, queued > 0);
   if (verdict == RTP_RESEND_UNWANTED) {
     ESP_LOGD(TAG, "Dropping unwanted %s seq=%u",
              is_retransmit ? "retransmit" : "packet", seq);
