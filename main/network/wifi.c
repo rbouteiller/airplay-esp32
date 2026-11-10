@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -335,11 +336,30 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   s_ap_config.ap.channel = 1;
   s_ap_config.ap.max_connection = 4;
 
-  if (strlen(default_password) == 0) {
+  // WPA2 takes an 8-63 character passphrase or a 64-digit hex key; anything
+  // else makes esp_wifi_set_config() fail with ESP_ERR_WIFI_PASSWORD. The AP
+  // is the setup and recovery path, so a bad configured password must not
+  // abort boot: fall back to an open AP and say why.
+  size_t pw_len = strlen(default_password);
+  bool pw_valid = pw_len >= 8 && pw_len <= 64;
+  if (pw_len == 64) {
+    for (size_t i = 0; i < pw_len && pw_valid; i++) {
+      pw_valid = isxdigit((unsigned char)default_password[i]) != 0;
+    }
+  }
+  if (pw_len > 0 && !pw_valid) {
+    ESP_LOGE(TAG,
+             "AP password must be 8-63 characters or 64 hex digits (got %u "
+             "characters); starting an open AP instead",
+             (unsigned)pw_len);
+  }
+
+  if (!pw_valid) {
     s_ap_config.ap.authmode = WIFI_AUTH_OPEN;
   } else {
-    strncpy((char *)s_ap_config.ap.password, default_password,
-            sizeof(s_ap_config.ap.password) - 1);
+    // Like the STA key above, the field is taken without a terminator, so a
+    // 64-digit hex key needs all 64 bytes.
+    memcpy(s_ap_config.ap.password, default_password, pw_len);
     s_ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
   }
 
