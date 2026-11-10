@@ -15,12 +15,24 @@
 #include "driver/spi_master.h"
 #include "esp_eth.h"
 #include "esp_eth_mac.h"
-#include "esp_eth_mac_spi.h"
 #include "esp_eth_netif_glue.h"
 #include "esp_eth_phy.h"
+#include "esp_idf_version.h"
 #include "esp_mac.h"
 #include "board_utils.h"
 #include "iot_board.h"
+
+// The W5500 MAC/PHY driver moved out of esp_eth into its own managed
+// component (espressif/w5500) in ESP-IDF 6.0, which also split
+// eth_w5500_config_t's fields into a nested .base member.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "esp_eth_mac_w5500.h"
+#include "esp_eth_phy_w5500.h"
+#define W5500_BASE(cfg) ((cfg).base)
+#else
+#include "esp_eth_mac_spi.h"
+#define W5500_BASE(cfg) (cfg)
+#endif
 
 #include <string.h>
 
@@ -129,9 +141,9 @@ esp_err_t ethernet_init(void) {
 
   eth_w5500_config_t w5500_config =
       ETH_W5500_DEFAULT_CONFIG(BOARD_SPI_HOST, &spi_devcfg);
-  w5500_config.int_gpio_num = BOARD_ETH_INT_GPIO;
+  W5500_BASE(w5500_config).int_gpio_num = BOARD_ETH_INT_GPIO;
 #if BOARD_ETH_INT_GPIO < 0
-  w5500_config.poll_period_ms = 10;
+  W5500_BASE(w5500_config).poll_period_ms = 10;
 #else
   // The W5500 driver registers its own per-pin handler, so the shared ISR
   // service must already exist (boards without a fault pin don't install it).

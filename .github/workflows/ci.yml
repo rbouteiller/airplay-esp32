@@ -152,6 +152,58 @@ jobs:
     with:
       scope: ${{ github.event_name == 'pull_request' && 'core' || 'release' }}
 
+  # ESP-IDF 6.1 compatibility check. Not every board in targets.json has been
+  # verified against 6.1, so this builds a deliberately small set that between
+  # them cover the most hardware: an original ESP32 + Bluetooth (squeezeamp-bt),
+  # an ESP32-S3 with Ethernet and an I2C/SPI DAC (esparagus-audio-brick-s3), and
+  # the RISC-V ESP32-C5 (esp32c5-xiao, not in targets.json/the release matrix at
+  # all). Each also builds under 5.5.5 here, so a regression that only shows up
+  # on one ESP-IDF version doesn't hide behind the other build job's 5.5.5-only
+  # coverage of squeezeamp-bt or the fact that esparagus-audio-brick-s3 and
+  # esp32c5-xiao aren't flagged "core" / aren't in targets.json at all.
+  build-idf-versions:
+    needs: [format-check, lint-check]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: squeezeamp-bt
+            idf_version: v5.5.5
+            target: esp32
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt"
+          - name: squeezeamp-bt
+            idf_version: v6.1
+            target: esp32
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt"
+          - name: esparagus-audio-brick-s3
+            idf_version: v5.5.5
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3"
+          - name: esparagus-audio-brick-s3
+            idf_version: v6.1
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3"
+          - name: esp32c5-xiao
+            idf_version: v5.5.5
+            target: esp32c5
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32c5"
+          - name: esp32c5-xiao
+            idf_version: v6.1
+            target: esp32c5
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32c5"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+
+      - name: Build ${{ matrix.name }} (${{ matrix.idf_version }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf_version }}
+          target: ${{ matrix.target }}
+          command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build
+
   # The one required status check for this workflow. Branch protection cannot
   # depend on the jobs above directly: they are skipped on a docs-only pull
   # request, and the individual job names would also have to be re-listed in the
@@ -159,7 +211,8 @@ jobs:
   # the whole workflow into a single pass/fail, treating skipped as fine.
   ci-gate:
     if: always()
-    needs: [changes, format-check, lint-check, output-backends, build]
+    needs:
+      [changes, format-check, lint-check, output-backends, build, build-idf-versions]
     runs-on: ubuntu-latest
     steps:
       - name: Check upstream results

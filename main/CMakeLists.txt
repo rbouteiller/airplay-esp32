@@ -106,7 +106,8 @@ set( INC_DIRS
 )
 
 set( DEPS
-    driver
+    esp_driver_gpio
+    esp_driver_spi
     nvs_flash
     esp_wifi
     esp_netif
@@ -117,7 +118,7 @@ set( DEPS
     esp_http_server
     esp_http_client
     app_update
-    json
+    cjson
     mbedtls
     esp_driver_ledc
     boards

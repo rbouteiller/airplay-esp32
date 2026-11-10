@@ -5,8 +5,40 @@
 
 #include "audio_crypto.h"
 
-#include "mbedtls/aes.h"
+#include "psa/crypto.h"
 #include "sodium.h"
+
+// The AES-CBC key is fixed for the life of a stream (set once from
+// audio_receiver_set_encryption); re-importing it into PSA on every packet
+// would cost more than the AES op itself, so cache the imported key.
+static mbedtls_svc_key_id_t s_cbc_key_id;
+static bool s_cbc_key_valid = false;
+static uint8_t s_cbc_key_cached[16];
+
+static int get_cbc_key(const uint8_t key[16], mbedtls_svc_key_id_t *out_key) {
+  if (s_cbc_key_valid && memcmp(s_cbc_key_cached, key, 16) == 0) {
+    *out_key = s_cbc_key_id;
+    return 0;
+  }
+
+  if (s_cbc_key_valid) {
+    psa_destroy_key(s_cbc_key_id);
+    s_cbc_key_valid = false;
+  }
+
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
+  psa_set_key_algorithm(&attr, PSA_ALG_CBC_NO_PADDING);
+  if (psa_import_key(&attr, key, 16, &s_cbc_key_id) != PSA_SUCCESS) {
+    return -1;
+  }
+
+  memcpy(s_cbc_key_cached, key, 16);
+  s_cbc_key_valid = true;
+  *out_key = s_cbc_key_id;
+  return 0;
+}
 
 int audio_crypto_decrypt_rtp(const audio_encrypt_t *encrypt,
                              const uint8_t *input, size_t input_len,
@@ -38,20 +70,41 @@ int audio_crypto_decrypt_rtp(const audio_encrypt_t *encrypt,
     size_t encrypted_len = num_blocks * 16;
 
     if (encrypted_len > 0) {
-      mbedtls_aes_context aes;
-      mbedtls_aes_init(&aes);
+      psa_crypto_init();
 
-      int ret = mbedtls_aes_setkey_dec(&aes, encrypt->key, 128);
-      if (ret != 0) {
-        mbedtls_aes_free(&aes);
+      mbedtls_svc_key_id_t key_id;
+      if (get_cbc_key(encrypt->key, &key_id) != 0) {
         return -1;
       }
 
-      ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, encrypted_len, iv,
-                                  input, output);
-      mbedtls_aes_free(&aes);
-      if (ret != 0) {
+      psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+      psa_status_t status =
+          psa_cipher_decrypt_setup(&op, key_id, PSA_ALG_CBC_NO_PADDING);
+      if (status == PSA_SUCCESS) {
+        status = psa_cipher_set_iv(&op, iv, sizeof(iv));
+      }
+
+      size_t out_len = 0;
+      if (status == PSA_SUCCESS) {
+        status = psa_cipher_update(&op, input, encrypted_len, output,
+                                   output_capacity, &out_len);
+      }
+
+      size_t finish_len = 0;
+      uint8_t finish_buf[16];
+      if (status == PSA_SUCCESS) {
+        status =
+            psa_cipher_finish(&op, finish_buf, sizeof(finish_buf), &finish_len);
+      }
+
+      psa_cipher_abort(&op);
+
+      if (status != PSA_SUCCESS) {
         return -1;
+      }
+
+      if (finish_len > 0) {
+        memcpy(output + out_len, finish_buf, finish_len);
       }
     }
 

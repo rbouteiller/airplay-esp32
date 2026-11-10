@@ -1,9 +1,48 @@
 # AirPlay 2 Receiver for ESP32
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.22.1)
 
-# Read firmware version from version.txt
+# Read firmware version from version.txt, then tag it with the commit it was
+# built from (and -dirty if the tree has uncommitted changes) so the version
+# shown in the web UI and mDNS TXT record ("fv") identifies the exact build.
+# esp_app_format truncates PROJECT_VER to 31 chars + NUL, so this always fits.
 file(READ "${CMAKE_SOURCE_DIR}/version.txt" PROJECT_VER)
 string(STRIP "${PROJECT_VER}" PROJECT_VER)
+
+# Set by build.yml (-DFIRMWARE_BETA=ON) only for beta.yml's rolling pre-release,
+# so a board flashed from it is identifiable as a beta build rather than a
+# release or a plain dev build.
+option(FIRMWARE_BETA "Tag PROJECT_VER as a beta build" OFF)
+if(FIRMWARE_BETA)
+    set(PROJECT_VER "${PROJECT_VER}-beta")
+endif()
+
+find_package(Git QUIET)
+if(GIT_EXECUTABLE)
+    # Reconfigure (and thus re-run these commands) whenever HEAD or the index
+    # changes, so switching branches/commits or staging a change picks up a
+    # fresh hash/dirty state without a full clean build.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 "${CMAKE_SOURCE_DIR}/.git/HEAD" "${CMAKE_SOURCE_DIR}/.git/index")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE GIT_HASH_RESULT)
+    if(GIT_HASH_RESULT EQUAL 0 AND GIT_HASH)
+        set(PROJECT_VER "${PROJECT_VER}-g${GIT_HASH}")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} status --porcelain
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE GIT_DIRTY
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(GIT_DIRTY)
+            set(PROJECT_VER "${PROJECT_VER}-dirty")
+        endif()
+    endif()
+endif()
 
 # Add components directory
 set(EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")

@@ -123,7 +123,7 @@ menu "Airplay ESP Configuration"
         string "Access Point Password"
         default ""
         help
-            Password used for the Access Point. Leave empty and set AUTH MODE to WIFI_AUTH_OPEN for no password.
+            Password used for the Access Point. Leave empty for an open AP. Otherwise 8-63 characters, or exactly 64 hex digits (WPA2); anything else is logged and the AP starts open.
 
     config DEFAULT_AP_CHANNEL
         int "Access Point WiFi Channel"

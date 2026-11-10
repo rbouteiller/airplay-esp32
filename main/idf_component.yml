@@ -7,6 +7,7 @@ dependencies:
     version: "*"
     rules:
       - if: "target == esp32p4"
+  espressif/cjson: "^1.7.19"
   espressif/mdns: "^1.11.1"
   espressif/libsodium: "^1.0.21"
   espressif/esp_audio_codec: "^2.5.0"
@@ -15,3 +16,9 @@ dependencies:
     version: "^1.2.3"
     rules:
       - if: "idf_version >=5.0 && (target in [esp32s2, esp32s3, esp32p4])"
+  # The W5500 driver moved out of esp_eth into its own managed component in
+  # ESP-IDF 6.0; see main/network/ethernet.c.
+  espressif/w5500:
+    version: "^2.0.0"
+    rules:
+      - if: "idf_version >= 6.0"
