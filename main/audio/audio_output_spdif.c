@@ -85,7 +85,7 @@
  * wire: each 16-bit sample becomes a 64-bit BMC sub-frame.              */
 #define DMA_AUDIO_FRAMES (SPDIF_BLOCK / SPDIF_BUF_DIV)
 #define BMC_FRAME_BYTES  (I2S_CHANNELS * BMC_BITS / 8)
-#define RING_FRAMES      ((uint32_t)DMA_BUF_COUNT * DMA_AUDIO_FRAMES)
+#define RING_FRAMES      ((uint32_t)(DMA_BUF_COUNT * DMA_AUDIO_FRAMES))
 
 /* Encode buffer (uint32_t array) — one half-block                        */
 #define SPDIF_BUF_BYTES \
@@ -209,9 +209,12 @@ static uint32_t output_queued_frames(void) {
 }
 
 /* Frames encoded into spdif_buf but not yet handed to the DMA: they play
- * ahead of the next write, so they are part of its delay. */
+ * ahead of the next write, so they are part of its delay.  spdif_write()
+ * advances the pointer by one sub-frame (BMC_FACTOR words) per 16-bit
+ * sample, so a stereo frame is I2S_CHANNELS sub-frames. */
+#define WORDS_PER_FRAME (BMC_FACTOR * I2S_CHANNELS)
 static uint32_t staged_frames(void) {
-  return (uint32_t)((spdif_ptr - spdif_buf) / 2);
+  return (uint32_t)((spdif_ptr - spdif_buf) / WORDS_PER_FRAME);
 }
 
 /* ── Volume ────────────────────────────────────────────────────────────── */
