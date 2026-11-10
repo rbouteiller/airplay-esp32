@@ -34,7 +34,9 @@
 #include "audio_resample.h"
 #include "led.h"
 #include "driver/i2s_std.h"
+#include "esp_attr.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "soc/soc_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -68,9 +70,22 @@
 #define SPDIF_BUF_DIV 2   /* half-block buffering              */
 
 /* DMA: one DMA buffer = one half-block = 96 stereo frames = 192 I2S
- * "pseudo-frames" of 32-bit stereo.  Size = 192 × 8 = 1536 bytes.      */
-#define DMA_BUF_COUNT  2
+ * "pseudo-frames" of 32-bit stereo.  Size = 192 × 8 = 1536 bytes.
+ *
+ * The ring matches the I2S backend's depth (8 × 256 = 2048 frames, ~46 ms)
+ * as closely as whole SPDIF blocks allow: 22 half-blocks = 11 blocks = 2112
+ * frames, ~48 ms at 44.1 kHz, in 33 KB of internal RAM.  A whole number of
+ * blocks keeps the B preamble every 192 frames even when the DMA wraps over
+ * stale descriptors during an underrun.  Multi-room alignment does not
+ * depend on the depth being identical, only on it being reported honestly,
+ * which the live cursor below does.                                    */
+#define DMA_BUF_COUNT  22
 #define DMA_BUF_FRAMES (SPDIF_BLOCK * BMC_BITS / I2S_BITS / SPDIF_BUF_DIV)
+/* Audio (stereo) frames per DMA buffer, and bytes per audio frame on the
+ * wire: each 16-bit sample becomes a 64-bit BMC sub-frame.              */
+#define DMA_AUDIO_FRAMES (SPDIF_BLOCK / SPDIF_BUF_DIV)
+#define BMC_FRAME_BYTES  (I2S_CHANNELS * BMC_BITS / 8)
+#define RING_FRAMES      ((uint32_t)DMA_BUF_COUNT * DMA_AUDIO_FRAMES)
 
 /* Encode buffer (uint32_t array) — one half-block                        */
 #define SPDIF_BUF_BYTES \
@@ -83,6 +98,8 @@
 #define BMC_M      0x331d3333U /* left channel (M) */
 #define BMC_W      0x331b3333U /* right channel (W) */
 #define BMC_MW_DIF (BMC_M ^ BMC_W)
+/* Data word for a zero sample: what spdif_write() produces for silence. */
+#define BMC_SILENCE 0x33333333U
 
 /* Byte offset within the first preamble word where M↔B differs */
 #define SYNC_OFFSET 2
@@ -136,6 +153,66 @@ static volatile bool resample_reinit_needed = false;
 
 static uint32_t spdif_buf[SPDIF_BUF_WORDS];
 static uint32_t *spdif_ptr;
+
+/* ── Live output cursor ────────────────────────────────────────────────
+ * Same scheme as the I2S backend (audio_output.c): submitted advances after
+ * each half-block write, sent in the TX completion ISR, and their difference
+ * is the real queue depth.  When the writer stalls the DMA keeps clocking,
+ * sent overtakes submitted, and the excess is folded into lost so the depth
+ * stays non-negative.                                                   */
+static uint64_t output_submitted_frames;
+static uint64_t output_sent_frames;
+static uint64_t output_lost_frames;
+static uint32_t output_underruns;
+static int64_t output_sent_us;
+
+/* BMC's answer to auto_clear.  Zeros carry no transitions, so a cleared
+ * descriptor would drop the receiver's lock; instead overwrite just the
+ * audio words with encoded silence and keep the preambles.  An underrun then
+ * plays silence, as on I2S, rather than looping ~48 ms of stale audio.  The
+ * driver syncs the cache after this callback returns. */
+static bool IRAM_ATTR spdif_on_sent(i2s_chan_handle_t handle,
+                                    i2s_event_data_t *event, void *user_ctx) {
+  (void)handle;
+  (void)user_ctx;
+  if (event && event->size > 0) {
+    if (event->dma_buf) {
+      uint32_t *w = event->dma_buf;
+      const size_t words = event->size / sizeof(uint32_t);
+      for (size_t i = 1; i < words; i += 2) {
+        w[i] = BMC_SILENCE;
+      }
+    }
+    __atomic_add_fetch(&output_sent_frames,
+                       (uint64_t)(event->size / BMC_FRAME_BYTES),
+                       __ATOMIC_RELAXED);
+    __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
+  }
+  return false;
+}
+
+/* Frames queued in the DMA ring.  Playback task only (it is the sole writer
+ * of submitted and lost), so the rebase needs no lock. */
+static uint32_t output_queued_frames(void) {
+  uint64_t submitted =
+      __atomic_load_n(&output_submitted_frames, __ATOMIC_RELAXED);
+  uint64_t lost = __atomic_load_n(&output_lost_frames, __ATOMIC_RELAXED);
+  uint64_t sent = __atomic_load_n(&output_sent_frames, __ATOMIC_RELAXED);
+
+  if (sent > submitted + lost) {
+    __atomic_store_n(&output_lost_frames, sent - submitted, __ATOMIC_RELAXED);
+    output_underruns++;
+    return 0;
+  }
+  uint64_t queued = submitted + lost - sent;
+  return queued > RING_FRAMES ? RING_FRAMES : (uint32_t)queued;
+}
+
+/* Frames encoded into spdif_buf but not yet handed to the DMA: they play
+ * ahead of the next write, so they are part of its delay. */
+static uint32_t staged_frames(void) {
+  return (uint32_t)((spdif_ptr - spdif_buf) / 2);
+}
 
 /* ── Volume ────────────────────────────────────────────────────────────── */
 
@@ -210,8 +287,12 @@ static void spdif_write(const void *src, size_t size) {
        * M on odd ones → B appears once every 192 frames.               */
       ((uint8_t *)spdif_buf)[SYNC_OFFSET] ^= SYNC_FLIP;
 
-      i2s_channel_write(tx_handle, spdif_buf, sizeof(spdif_buf), &written,
-                        portMAX_DELAY);
+      if (i2s_channel_write(tx_handle, spdif_buf, sizeof(spdif_buf), &written,
+                            portMAX_DELAY) == ESP_OK) {
+        __atomic_add_fetch(&output_submitted_frames,
+                           (uint64_t)(written / BMC_FRAME_BYTES),
+                           __ATOMIC_RELAXED);
+      }
       spdif_ptr = spdif_buf;
     }
   }
@@ -240,10 +321,10 @@ static void playback_task(void *arg) {
     if (flush_requested) {
       flush_requested = false;
       audio_resample_reset();
-      i2s_channel_disable(tx_handle);
-      spdif_buf_init();
-      spdif_ptr = spdif_buf;
-      i2s_channel_enable(tx_handle);
+      // The DMA ring is left running, as on I2S.  Stopping it would drop
+      // the receiver's lock (it mutes and relocks, often audibly) and break
+      // the cursor's continuity.  By the time a flush arrives the render
+      // has gone quiet, so the ring already holds silence.
     }
     size_t samples = audio_output_read_source(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
@@ -310,18 +391,34 @@ esp_err_t audio_output_init(void) {
 
   ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx_handle, &std_cfg), TAG,
                       "std mode init failed");
+
+  const i2s_event_callbacks_t callbacks = {
+      .on_recv = NULL,
+      .on_recv_q_ovf = NULL,
+      .on_sent = spdif_on_sent,
+      .on_send_q_ovf = NULL,
+  };
+  ESP_RETURN_ON_ERROR(
+      i2s_channel_register_event_callback(tx_handle, &callbacks, NULL), TAG,
+      "event callback registration failed");
+
+  /* Fill the whole ring with encoded silence BEFORE enabling, so the line
+   * never carries the zeroed DMA buffers (no transitions, no lock) and every
+   * descriptor already has valid preambles. */
+  for (size_t i = 0; i < SPDIF_BUF_WORDS; i += 2) {
+    spdif_buf[i + 1] = BMC_SILENCE;
+  }
+  for (int i = 0; i < DMA_BUF_COUNT; i++) {
+    size_t loaded = 0;
+    ((uint8_t *)spdif_buf)[SYNC_OFFSET] ^= SYNC_FLIP;
+    ESP_RETURN_ON_ERROR(i2s_channel_preload_data(tx_handle, spdif_buf,
+                                                 sizeof(spdif_buf), &loaded),
+                        TAG, "preload failed");
+    output_submitted_frames += loaded / BMC_FRAME_BYTES;
+  }
+
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
-
-  /* Pre-fill DMA with SPDIF-encoded silence so the receiver can lock */
-  {
-    int16_t silence_pcm[SPDIF_BLOCK * 2];
-    memset(silence_pcm, 0, sizeof(silence_pcm));
-    for (int i = 0; i < DMA_BUF_COUNT; i++) {
-      spdif_write(silence_pcm,
-                  (size_t)(SPDIF_BLOCK / SPDIF_BUF_DIV) * 2 * sizeof(int16_t));
-    }
-  }
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 
@@ -347,20 +444,42 @@ void audio_output_set_source_rate(int rate) {
 }
 
 uint32_t audio_output_get_hardware_latency_us(void) {
-  // SPDIF DMA ring: DMA_BUF_COUNT half-blocks, each SPDIF_BLOCK/SPDIF_BUF_DIV
-  // audio samples (= 96 stereo frames per buffer).
-  const uint32_t audio_samples = DMA_BUF_COUNT * (SPDIF_BLOCK / SPDIF_BUF_DIV);
-  return (uint32_t)((uint64_t)audio_samples * 1000000ULL / OUTPUT_RATE);
+  // Steady-state delay ahead of the next write, modelled the same way as the
+  // I2S backend: after a blocking write the ring holds between (N-1) and N
+  // descriptors, (N - 0.5) on average, and spdif_buf holds 0..95 staged
+  // frames, 48 on average.  With 96-frame descriptors the two halves sum to
+  // exactly the full ring.
+  return (uint32_t)((uint64_t)RING_FRAMES * 1000000ULL / OUTPUT_RATE);
 }
 
-/* The BMC-encoded write path has no hardware completion cursor, so the timing
- * engine falls back to the modelled ring latency above. */
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
-  (void)now_us;
-  (void)pipeline_us;
-  return false;
+  // Depth first, then the completion timestamp: a completion landing between
+  // the two errs towards a fuller pipeline, as in audio_output.c.
+  uint32_t queued = output_queued_frames();
+  const int64_t sent_us = __atomic_load_n(&output_sent_us, __ATOMIC_RELAXED);
+  const int64_t sampled_us = esp_timer_get_time();
+
+  // The ISR fires once per 96-frame descriptor; interpolate the drain since
+  // then so the depth does not step by 2.2 ms at a time.
+  if (sent_us > 0 && sampled_us > sent_us) {
+    uint64_t drained =
+        ((uint64_t)(sampled_us - sent_us) * OUTPUT_RATE) / 1000000ULL;
+    if (drained > DMA_AUDIO_FRAMES) {
+      drained = DMA_AUDIO_FRAMES;
+    }
+    queued = drained < queued ? queued - (uint32_t)drained : 0U;
+  }
+  queued += staged_frames();
+
+  if (now_us) {
+    *now_us = sampled_us;
+  }
+  if (pipeline_us) {
+    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / OUTPUT_RATE);
+  }
+  return true;
 }
 
 uint32_t audio_output_get_underruns(void) {
-  return 0;
+  return __atomic_load_n(&output_underruns, __ATOMIC_RELAXED);
 }
