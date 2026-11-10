@@ -147,8 +147,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 static void scan_and_connect_task(void *arg) {
   wifi_config_t cfg;
   if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
-      strlen((char *)cfg.sta.ssid) > 0) {
-    wifi_select_best_ap((char *)cfg.sta.ssid);
+      cfg.sta.ssid[0] != '\0') {
+    // A 32-character name fills the field and has no terminator there.
+    char ssid[sizeof(cfg.sta.ssid) + 1] = {0};
+    memcpy(ssid, cfg.sta.ssid, sizeof(cfg.sta.ssid));
+    wifi_select_best_ap(ssid);
   }
   esp_wifi_connect();
   vTaskDelete(NULL);
@@ -312,9 +315,12 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   }
 
   wifi_config_t sta_config = {0};
-  strlcpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
-  strlcpy((char *)sta_config.sta.password, password,
-          sizeof(sta_config.sta.password));
+  // The driver takes a full field as it is, with no terminator: a
+  // 32-character name and a 64-character key are both valid, and a copy that
+  // kept room for a terminator cut the last character off each.
+  memcpy(sta_config.sta.ssid, ssid, strnlen(ssid, sizeof(sta_config.sta.ssid)));
+  memcpy(sta_config.sta.password, password,
+         strnlen(password, sizeof(sta_config.sta.password)));
   sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
   // Configure AP and save for later re-enable

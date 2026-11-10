@@ -26,8 +26,8 @@
 <button class='btn btn-secondary' onclick='scanWiFi()' id='scan-btn'>Scan for networks</button>
 <p class='hint'>Scanning interrupts playback for a moment.</p>
 <div id='wifi-list' class='wifi-list'></div>
-<div class='form-group' style='margin-top:14px'><label for='wifi-ssid'>Network name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select a network' autocomplete='off'></div>
-<div class='form-group'><label for='wifi-pass'>Password</label><input type='password' id='wifi-pass' placeholder='Password'></div>
+<div class='form-group' style='margin-top:14px'><label for='wifi-ssid'>Network name (SSID)</label><input type='text' id='wifi-ssid' maxlength='32' placeholder='Enter or select a network' autocomplete='off' autocapitalize='off' autocorrect='off' spellcheck='false'></div>
+<div class='form-group'><label for='wifi-pass'>Password</label><input type='password' id='wifi-pass' maxlength='64' placeholder='Password' autocomplete='off' autocapitalize='off' autocorrect='off' spellcheck='false'></div>
 <div class='row'><button class='btn btn-primary' id='wifi-save' onclick='saveWiFi()'>Save and restart</button></div>
 <div id='wifi-msg' class='msg'></div></div>
 <div class='card' id='speed'><h2>Speed test</h2>
