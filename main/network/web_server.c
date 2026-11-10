@@ -365,9 +365,9 @@ static esp_err_t speedtest_upload_handler(httpd_req_t *req) {
 // Captive portal detection handlers
 // These endpoints are requested by various OS to detect captive portals
 static esp_err_t captive_portal_redirect(httpd_req_t *req) {
-  // Redirect to the configuration page
+  // Straight to the Wi-Fi setup: it is what the setup network is for
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/network");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
