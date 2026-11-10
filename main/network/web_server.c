@@ -441,6 +441,7 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
   cJSON *password_json = cJSON_GetObjectItem(json, "password");
 
   cJSON *response = cJSON_CreateObject();
+  bool restart = false;
   if (ssid_json && cJSON_IsString(ssid_json)) {
     const char *ssid = cJSON_GetStringValue(ssid_json);
     const char *password = password_json && cJSON_IsString(password_json)
@@ -450,10 +451,7 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
     esp_err_t err = settings_set_wifi_credentials(ssid, password);
     if (err == ESP_OK) {
       cJSON_AddBoolToObject(response, "success", true);
-      ESP_LOGI(TAG, "WiFi credentials saved. We are restarting...");
-      // Schedule restart
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      esp_restart();
+      restart = true;
     } else {
       cJSON_AddBoolToObject(response, "success", false);
       cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
@@ -470,6 +468,13 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
 
+  if (restart) {
+    // Only after the reply has gone out: restarting first dropped the
+    // connection, so the page reported "Load failed" for a save that worked.
+    ESP_LOGI(TAG, "WiFi credentials saved. We are restarting...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+  }
   return ESP_OK;
 }
 
