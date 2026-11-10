@@ -26,10 +26,9 @@
 <button class='btn btn-secondary' onclick='scanWiFi()' id='scan-btn'>Scan for networks</button>
 <p class='hint'>Scanning interrupts playback for a moment.</p>
 <div id='wifi-list' class='wifi-list'></div>
-<div class='form-group' style='margin-top:14px'><label for='wifi-ssid'>Network name (SSID)</label><input type='text' id='wifi-ssid' placeholder='Enter or select a network' autocomplete='off'></div>
-<div class='form-group'><label for='wifi-pass'>Password</label><input type='password' id='wifi-pass' placeholder='Password'></div>
-<div class='row'><button class='btn btn-primary' id='wifi-save' onclick='saveWiFi()'>Save and restart</button>
-<button class='btn btn-secondary' id='wifi-cancel' onclick='cancelWiFi()' hidden>Cancel</button></div>
+<div class='form-group' style='margin-top:14px'><label for='wifi-ssid'>Network name (SSID)</label><input type='text' id='wifi-ssid' maxlength='32' placeholder='Enter or select a network' autocomplete='off' autocapitalize='off' autocorrect='off' spellcheck='false'></div>
+<div class='form-group'><label for='wifi-pass'>Password</label><input type='password' id='wifi-pass' maxlength='64' placeholder='Password' autocomplete='off' autocapitalize='off' autocorrect='off' spellcheck='false'></div>
+<div class='row'><button class='btn btn-primary' id='wifi-save' onclick='saveWiFi()'>Save and restart</button></div>
 <div id='wifi-msg' class='msg'></div></div>
 <div class='card' id='speed'><h2>Speed test</h2>
 <p class='hint' style='margin:0 0 12px'>Latency and throughput between this browser and the device.</p>
@@ -97,38 +96,21 @@ async function scanWiFi(){
   catch(e){l.textContent='';l.appendChild(Shell.el('div','msg err','Scan failed'));}
   finally{b.disabled=false;}
 }
-/* The save asks on the page, not with confirm(): iOS's captive-portal sheet
-   shows no dialogs and confirm() returns false there, so the button did
-   nothing during setup. The first press arms it, the second saves. */
-var wifiArmed=null;
-function cancelWiFi(){
-  if(wifiArmed==null)return;
-  wifiArmed=null;
-  $('wifi-save').textContent='Save and restart';
-  $('wifi-cancel').hidden=true;
-  msg('wifi-msg','','');
-}
-$('wifi-ssid').addEventListener('input',cancelWiFi);
-$('wifi-pass').addEventListener('input',cancelWiFi);
+/* One press saves. There is no confirm(): iOS's captive-portal sheet shows
+   no dialogs and confirm() returns false there. A wrong name or password
+   is not fatal: the device opens its setup network again. */
 async function saveWiFi(){
   var s=$('wifi-ssid').value.trim(),p=$('wifi-pass').value;
   if(!s){msg('wifi-msg','Enter a network name.','err');return;}
-  if(wifiArmed!==s){
-    wifiArmed=s;
-    $('wifi-save').textContent='Join "'+s+'" and restart';
-    $('wifi-cancel').hidden=false;
-    msg('wifi-msg','Press again to save. If it cannot join, the device '+
-      'opens its setup network again.','info');
-    return;
-  }
-  $('wifi-save').disabled=true;$('wifi-cancel').hidden=true;
+  $('wifi-save').disabled=true;
   try{var d=await Shell.post('/api/wifi/config',{ssid:s,password:p});
     if(!d.success)throw new Error(d.error);
     msg('wifi-msg','Saved. The device restarts and joins "'+s+
-      '"; find it there by its name or new address.','ok');
+      '"; find it there by its name or new address. If it cannot join, '+
+      'it opens its setup network again.','ok');
     Shell.waitForRestart('Restarting to join '+s+'…');}
   catch(e){
-    $('wifi-save').disabled=false;cancelWiFi();
+    $('wifi-save').disabled=false;
     msg('wifi-msg',e.message||'Could not save','err');}
 }
 

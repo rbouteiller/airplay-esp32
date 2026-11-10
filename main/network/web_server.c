@@ -365,9 +365,9 @@ static esp_err_t speedtest_upload_handler(httpd_req_t *req) {
 // Captive portal detection handlers
 // These endpoints are requested by various OS to detect captive portals
 static esp_err_t captive_portal_redirect(httpd_req_t *req) {
-  // Redirect to the configuration page
+  // Straight to the Wi-Fi setup: it is what the setup network is for
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/network");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
@@ -441,6 +441,7 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
   cJSON *password_json = cJSON_GetObjectItem(json, "password");
 
   cJSON *response = cJSON_CreateObject();
+  bool restart = false;
   if (ssid_json && cJSON_IsString(ssid_json)) {
     const char *ssid = cJSON_GetStringValue(ssid_json);
     const char *password = password_json && cJSON_IsString(password_json)
@@ -450,10 +451,7 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
     esp_err_t err = settings_set_wifi_credentials(ssid, password);
     if (err == ESP_OK) {
       cJSON_AddBoolToObject(response, "success", true);
-      ESP_LOGI(TAG, "WiFi credentials saved. We are restarting...");
-      // Schedule restart
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      esp_restart();
+      restart = true;
     } else {
       cJSON_AddBoolToObject(response, "success", false);
       cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
@@ -470,6 +468,13 @@ static esp_err_t wifi_config_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
 
+  if (restart) {
+    // Only after the reply has gone out: restarting first dropped the
+    // connection, so the page reported "Load failed" for a save that worked.
+    ESP_LOGI(TAG, "WiFi credentials saved. We are restarting...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+  }
   return ESP_OK;
 }
 
