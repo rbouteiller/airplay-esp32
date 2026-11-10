@@ -108,11 +108,13 @@ typedef struct audio_receiver_state {
   rtp_resend_t resend;
   uint32_t resend_generation;
   uint32_t resend_generation_seen;
-  // For the receive task's status line: when it last reported, the most bytes
-  // it found still queued on the socket after a read, and decoded packets the
-  // timeline turned away, since then.
+  // For the receive task's status line: when it last reported, and since
+  // then the most bytes it found still queued on the socket after a read, the
+  // time it spent sending resend requests, and decoded packets the timeline
+  // turned away.
   int64_t resend_report_us;
   uint32_t resend_queue_max;
+  uint32_t resend_send_us;
   uint32_t resend_rejected;
 
   // Post-seek RTP gates: together they form a window [discard_before_rtp,

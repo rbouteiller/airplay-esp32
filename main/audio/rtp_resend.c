@@ -10,7 +10,9 @@
 #define RETRY_TICKS \
   ((RTP_RESEND_RETRY_MS + (1U << TICK_SHIFT) - 1U) >> TICK_SHIFT)
 // The longest packet believed when learning rtp_step.
-#define MAX_RTP_STEP 8192U
+#define MAX_RTP_STEP    8192U
+#define BUDGET_MS       250U
+#define BUDGET_REQUESTS (RTP_RESEND_REQUESTS_PER_SECOND / (1000U / BUDGET_MS))
 
 _Static_assert((RTP_RESEND_WINDOW & WINDOW_MASK) == 0U,
                "RTP_RESEND_WINDOW must be a power of two");
@@ -72,6 +74,9 @@ rtp_resend_verdict_t rtp_resend_on_packet(rtp_resend_t *r, uint16_t seq,
       bit_clear(r->missing, seq);
       if (retransmit) {
         r->counts.resent++;
+        // The sender does answer.
+        r->unanswered = 0;
+        r->silent = false;
       } else {
         r->counts.late++;
       }
@@ -103,6 +108,7 @@ rtp_resend_verdict_t rtp_resend_on_packet(rtp_resend_t *r, uint16_t seq,
       if (i < (uint32_t)delta) {
         bit_set(r->missing, s);
         bit_clear(r->asked, s);
+        r->asks[slot(s)] = 0;
       } else {
         bit_clear(r->missing, s);
       }
@@ -123,6 +129,28 @@ size_t rtp_resend_collect(rtp_resend_t *r, uint32_t now_ms, bool cursor_valid,
   }
 
   const uint8_t tick = (uint8_t)(now_ms >> TICK_SHIFT);
+
+  const uint32_t window = now_ms / BUDGET_MS;
+  if (window != r->budget_window) {
+    r->budget_window = window;
+    r->budget_used = 0;
+  }
+  if (r->silent && (int32_t)(now_ms - r->silent_until_ms) >= 0) {
+    r->silent = false;
+    r->unanswered = RTP_RESEND_SILENT_REQUESTS - RTP_RESEND_PROBE_REQUESTS;
+  }
+  size_t allowed = 0;
+  if (!r->silent && r->budget_used < BUDGET_REQUESTS) {
+    allowed = BUDGET_REQUESTS - r->budget_used;
+    const size_t probe = RTP_RESEND_SILENT_REQUESTS - r->unanswered;
+    if (allowed > probe) {
+      allowed = probe;
+    }
+    if (allowed > max_ranges) {
+      allowed = max_ranges;
+    }
+  }
+
   size_t n = 0;
   bool extending = false;
 
@@ -146,15 +174,16 @@ size_t rtp_resend_collect(rtp_resend_t *r, uint32_t now_ms, bool cursor_valid,
     }
 
     const uint32_t i = slot(seq);
-    if (bit_get(r->asked, seq) &&
-        (uint8_t)(tick - r->asked_tick[i]) < RETRY_TICKS) {
+    if (r->asks[i] >= RTP_RESEND_MAX_ASKS ||
+        (bit_get(r->asked, seq) &&
+         (uint8_t)(tick - r->asked_tick[i]) < RETRY_TICKS)) {
       extending = false;
       continue;
     }
 
     if (extending) {
       ranges[n - 1].count++;
-    } else if (n < max_ranges) {
+    } else if (n < allowed) {
       ranges[n].first = seq;
       ranges[n].count = 1;
       n++;
@@ -165,8 +194,17 @@ size_t rtp_resend_collect(rtp_resend_t *r, uint32_t now_ms, bool cursor_valid,
     bit_set(r->asked, seq);
     r->asked_tick[i] = tick;
     r->counts.asked++;
+    if (++r->asks[i] == RTP_RESEND_MAX_ASKS) {
+      r->counts.gave_up++;
+    }
   }
 
   r->counts.requests += (uint32_t)n;
+  r->budget_used += (uint32_t)n;
+  r->unanswered += (uint32_t)n;
+  if (n > 0 && r->unanswered >= RTP_RESEND_SILENT_REQUESTS) {
+    r->silent = true;
+    r->silent_until_ms = now_ms + RTP_RESEND_SILENT_MS;
+  }
   return n;
 }
