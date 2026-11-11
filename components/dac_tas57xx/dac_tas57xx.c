@@ -2079,17 +2079,15 @@ const dac_ops_t dac_tas57xx_ops = {
 
 static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
                            ...) {
-  va_list args;
   esp_err_t err = ESP_OK;
-  va_start(args, cmd);
 
-  switch (cmd) {
-  case TAS57XX_SET_VOLUME_A:
-  case TAS57XX_SET_VOLUME_B:
+  if (cmd == TAS57XX_SET_VOLUME_A || cmd == TAS57XX_SET_VOLUME_B) {
+    va_list args;
+    va_start(args, cmd);
     uint8_t val = (uint8_t)va_arg(args, int);
+    va_end(args);
     err = board_i2c_write(handle, tas57xx_cmd[cmd].reg, &val, sizeof(uint8_t));
-    break;
-  default:
+  } else {
     err = board_i2c_write(handle, tas57xx_cmd[cmd].reg,
                           &(tas57xx_cmd[cmd].value), sizeof(uint8_t));
   }
@@ -2097,8 +2095,6 @@ static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed i2c write to TAS57xx: %s", esp_err_to_name(err));
   }
-
-  va_end(args);
   return err;
 }
 

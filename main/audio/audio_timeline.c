@@ -526,33 +526,36 @@ void audio_timeline_cancel(audio_timeline_t *t,
   portEXIT_CRITICAL(&t->lock);
 }
 
-bool audio_timeline_find_contiguous_from(audio_timeline_t *t, uint32_t epoch,
-                                         uint32_t target, uint32_t required,
-                                         uint32_t max_future, uint32_t *out) {
-  if (!t || !t->desc || !out || required == 0U) {
+bool audio_timeline_find_contiguous_from(audio_timeline_t *timeline,
+                                         uint32_t epoch, uint32_t target_rtp,
+                                         uint32_t required_samples,
+                                         uint32_t max_future_samples,
+                                         uint32_t *start_rtp) {
+  if (!timeline || !timeline->desc || !start_rtp || required_samples == 0U) {
     return false;
   }
   bool ok = false;
 
-  portENTER_CRITICAL(&t->lock);
+  portENTER_CRITICAL(&timeline->lock);
   uint32_t start = 0U;
-  if (!find_covering_or_next_locked(t, epoch, target, &start)) {
+  if (!find_covering_or_next_locked(timeline, epoch, target_rtp, &start)) {
     goto done;
   }
 
-  if (rtp_diff(start, target) >= 0 && (uint32_t)(start - target) > max_future) {
+  if (rtp_diff(start, target_rtp) >= 0 &&
+      (uint32_t)(start - target_rtp) > max_future_samples) {
     goto done;
   }
 
   uint32_t cursor = start;
-  uint32_t remaining = required;
+  uint32_t remaining = required_samples;
   while (remaining > 0U) {
-    const uint32_t block_start = block_start_for_cursor(t, cursor);
-    if (ready_index_for_start(t, epoch, block_start) == UINT16_MAX) {
+    const uint32_t block_start = block_start_for_cursor(timeline, cursor);
+    if (ready_index_for_start(timeline, epoch, block_start) == UINT16_MAX) {
       break;
     }
 
-    const uint32_t block_end = block_start + t->frame_samples;
+    const uint32_t block_end = block_start + timeline->frame_samples;
     if (rtp_diff(cursor, block_start) < 0 || rtp_diff(block_end, cursor) <= 0) {
       break;
     }
@@ -569,12 +572,12 @@ bool audio_timeline_find_contiguous_from(audio_timeline_t *t, uint32_t epoch,
   }
 
   if (remaining == 0U) {
-    *out = start;
+    *start_rtp = start;
     ok = true;
   }
 
 done:
-  portEXIT_CRITICAL(&t->lock);
+  portEXIT_CRITICAL(&timeline->lock);
   return ok;
 }
 
