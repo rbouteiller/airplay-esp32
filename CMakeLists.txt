@@ -48,12 +48,10 @@ endif()
 set(EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")
 
 include($ENV{IDF_PATH}/tools/cmake/version.cmake)
-if(IDF_VERSION_MAJOR LESS 5 OR (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR LESS 5))
-    message(WARNING
-        "ESP-IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH} detected. "
-        "This project is developed and tested against ESP-IDF >= 5.5. "
-        "Older versions may require workarounds (e.g. for hosted-WiFi Kconfig symbols on ESP32-P4). "
-        "Please upgrade with: cd $ENV{IDF_PATH} && git fetch && git checkout v5.5.2 && ./install.sh")
+if(IDF_VERSION_MAJOR LESS 6 OR (IDF_VERSION_MAJOR EQUAL 6 AND IDF_VERSION_MINOR LESS 1))
+    message(FATAL_ERROR
+        "ESP-IDF 6.1 or newer is required; found "
+        "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH}.")
 endif()
 
 # Board configs live in config/, so ESP-IDF no longer finds sdkconfig.defaults

@@ -31,7 +31,8 @@ LVGL 9 + the AirPlay audio pipeline + WiFi together exceed the internal SRAM bud
 
 The `idf_component.yml` enforces this — LVGL and `esp_lvgl_port` are only declared as dependencies when `target == esp32s3`. Non-S3 builds are completely unaffected: the managed components are not downloaded, not compiled, and the OLED driver continues to work unchanged.
 
-**Tested on:** ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM) with IDF 5.5.3.
+**Hardware validated on:** ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM). Current project
+builds require ESP-IDF 6.1 or newer.
 
 ---
 

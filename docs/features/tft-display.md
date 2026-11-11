@@ -18,7 +18,7 @@ background, with a progress bar and elapsed/remaining time. Rendering uses
     dependencies when the target is `esp32s3`. Non-S3 builds are unaffected — the managed
     components are never downloaded and the OLED driver keeps working.
 
-    Tested on an ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM) with ESP-IDF 5.5.3.
+    Hardware validated on an ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM); current builds require ESP-IDF 6.1 or newer.
 
 ## Wiring
 

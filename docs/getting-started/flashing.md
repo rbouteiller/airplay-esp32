@@ -7,7 +7,7 @@ another, use the browser installer.
 | --- | --- | --- |
 | **[A — Browser](#option-a-install-from-your-browser)** | You just want a working speaker | Chrome, Edge or Opera |
 | **[B — PlatformIO](#option-b-platformio)** | You want to change build settings, or your board has no prebuilt binary | Python, a clone of the repo |
-| **[C — ESP-IDF](#option-c-esp-idf)** | You already work with ESP-IDF | ESP-IDF v5.5.5+ |
+| **[C — ESP-IDF](#option-c-esp-idf)** | You already work with ESP-IDF | ESP-IDF v6.1+ |
 
 ## Option A — Install from your browser
 
@@ -50,6 +50,20 @@ Each board has an **Install** button for the latest release and, beside it, a da
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
     </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esp32s2.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Seeed XIAO ESP32-C5__
+
+    ESP32-C5 with an external I2S DAC such as a PCM5102A.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esp32c5-xiao.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esp32c5-xiao.json">
       <button slot="activate" class="md-button md-button--beta">Install beta</button>
       <span slot="unsupported"></span>
       <span slot="not-allowed"></span>
@@ -611,7 +625,7 @@ Replace `esp32s3` with whichever environment matches your hardware — see
 ## Option C — ESP-IDF
 
 ```bash
-# 1. Install ESP-IDF v5.5.5 or newer:
+# 1. Install ESP-IDF v6.1 or newer:
 #    https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/
 
 # 2. Clone the project, including submodules

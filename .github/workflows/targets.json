@@ -18,6 +18,12 @@
     "core": true
   },
   {
+    "name": "esp32c5-xiao",
+    "target": "esp32c5",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32c5",
+    "core": true
+  },
+  {
     "name": "squeezeamp-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt",
