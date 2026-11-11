@@ -39,7 +39,7 @@
     "name": "smartamp",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp",
-    "core": true
+    "core": false
   },
   {
     "name": "esparagus-audio-brick-bt",
@@ -87,13 +87,13 @@
     "name": "hifi-esp32-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32;config/sdkconfig.defaults.bt",
-    "core": true
+    "core": false
   },
   {
     "name": "hifi-esp32-plus-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-plus;config/sdkconfig.defaults.bt",
-    "core": true
+    "core": false
   },
   {
     "name": "hifi-esparagus-bt",
@@ -105,7 +105,7 @@
     "name": "hifi-esp32-s3",
     "target": "esp32s3",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-s3",
-    "core": true
+    "core": false
   },
   {
     "name": "hifi-esp32-s3-plus",
@@ -123,7 +123,7 @@
     "name": "loud-esp32-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32;config/sdkconfig.defaults.bt",
-    "core": true
+    "core": false
   },
   {
     "name": "loud-esparagus-bt",
@@ -135,7 +135,7 @@
     "name": "loud-esp32-s3",
     "target": "esp32s3",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32-s3",
-    "core": true
+    "core": false
   },
   {
     "name": "amped-esp32-bt",
