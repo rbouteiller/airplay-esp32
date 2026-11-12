@@ -4,10 +4,11 @@ idf_component_register(
 )
 
 # Optimise for ESP32/Xtensa: single-precision float, fast math, max optimisation
+# (GCC-only flags skipped under clang, i.e. the lint build).
 target_compile_options(${COMPONENT_LIB} PRIVATE
-    -Wno-calloc-transposed-args
+    $<$<C_COMPILER_ID:GNU>:-Wno-calloc-transposed-args>
     -O3
     -ffast-math
-    -fsingle-precision-constant
+    $<$<C_COMPILER_ID:GNU>:-fsingle-precision-constant>
     -fno-math-errno
 )

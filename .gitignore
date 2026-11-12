@@ -28,3 +28,12 @@ user_platformio.ini
 # macOS metadata
 .DS_Store
 **/.DS_Store
+
+# 8.8 MB reference doc — download from ti.com rather than tracking it
+components/dac_tas58xx/TAS58xx Tuning Guide.pdf
+
+# 106 KB of SPIFFS for a cosmetic image, on boards that mostly have no display
+# at all — it does not fit alongside the web UI in a 4 MB layout. Generate one
+# with components/display/make_background.py; the driver renders a blank
+# background without it. See docs/features/tft-display.md.
+data/bg/

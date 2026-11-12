@@ -115,7 +115,6 @@ a Bluetooth speaker can play to them when AirPlay is idle.
 ### Limitations
 
 - Audio only — no AirPlay video or photos
-- One speaker per ESP32 board
 - Needs a decent WiFi signal for stable streaming
 
 ## Acknowledgements
@@ -124,10 +123,23 @@ a Bluetooth speaker can play to them when AirPlay is idle.
 - [openairplay/airplay2-receiver](https://github.com/openairplay/airplay2-receiver) — Python AirPlay 2 implementation
 - [Espressif](https://github.com/espressif) — ESP-IDF framework and codec libraries
 
-## Legal
+## License
 
-**Non-commercial use only.** Commercial use requires explicit permission — see
-[LICENSE](https://github.com/rbouteiller/airplay-esp32/blob/main/LICENSE).
+Copyright © 2026 Rémi Bouteiller and the airplay-esp32 contributors.
+
+airplay-esp32 is free software, licensed under
+**[GPL-3.0-or-later](https://github.com/rbouteiller/airplay-esp32/blob/main/LICENSE)**. You
+may use, modify and redistribute it, including commercially, provided you release your
+source under the GPL as well.
+
+An
+[additional permission](https://github.com/rbouteiller/airplay-esp32/blob/main/LICENSE-EXCEPTION)
+allows the firmware to be linked against Espressif's closed binary components, such as the
+`esp_audio_codec` ALAC and AAC decoders. The licenses of everything else that ends up in
+the firmware are listed in
+[THIRD-PARTY-NOTICES.md](https://github.com/rbouteiller/airplay-esp32/blob/main/THIRD-PARTY-NOTICES.md).
+
+## Legal
 
 This is an independent project based on protocol analysis. It is not affiliated with
 Apple Inc., is not guaranteed to work with future iOS or macOS versions, and is provided

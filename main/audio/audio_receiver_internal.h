@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 
 #include <stdbool.h>
@@ -6,18 +9,32 @@
 
 #include "lwip/sockets.h"
 
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "audio_buffer.h"
+#include "audio_decode_worker.h"
 #include "audio_decoder.h"
+#include "audio_engine_v2.h"
+#include "audio_packet.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
+#include "rtp_resend.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
 
-typedef struct {
+/* Task stacks and ordinary malloc() need byte-addressable internal RAM.
+ * MALLOC_CAP_INTERNAL on its own also counts the leftover IRAM that is added
+ * to the heap, which is 32-bit access only, so it reports headroom no stack
+ * can ever use. */
+#define AUDIO_DRAM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+
+// Singleton; fields are grouped by purpose, not size.
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding)
+typedef struct audio_receiver_state {
   audio_stream_t *stream;
   audio_stream_t *realtime_stream;
   audio_stream_t *buffered_stream;
@@ -25,6 +42,40 @@ typedef struct {
   audio_decoder_t *decoder;
   audio_buffer_t buffer;
   audio_timing_t timing;
+
+  // AirPlay 2 buffered path only.  Realtime (AirPlay 1) keeps using
+  // buffer + timing above; the two are mutually exclusive at runtime.
+  //
+  // The engine owns ~790 KB of PSRAM, so it is created lazily on the first
+  // buffered SETUP and then kept: tearing it down would race the playback
+  // task that calls audio_engine_v2_render() on every I2S refill, and a
+  // device that only ever serves AirPlay 1 never pays for it.
+  audio_engine_v2_t engine_v2;
+  bool engine_v2_ready;
+  audio_decode_worker_t *decode_worker;
+  // Serialises the stateful AAC decoder between the decode worker task and
+  // audio_receiver_set_format()/stop(), which destroy and recreate it.
+  SemaphoreHandle_t decoder_mutex;
+
+  // AAC RTP continuity diagnostic for the buffered path: consecutive frames
+  // must advance by exactly AUDIO_TIMELINE_FRAME_SAMPLES.
+  uint32_t aac_diag_epoch;
+  uint32_t aac_diag_last_rtp;
+  bool aac_diag_rtp_valid;
+  // Buffered frames still to be silenced after a break in the RTP sequence.
+  uint8_t aac_prime_left;
+
+  // Last SETRATEANCHORTIME, kept in the sender's PTP domain so it can be
+  // re-armed once the PTP clock locks.  An anchor that arrives while the
+  // offset is still 0 maps to a wrapped RTP position and must not be used.
+  bool engine_v2_anchor_pending;
+  // Which clock the anchor above is expressed in, taken from the timeline ID
+  // the sender supplied.  PTP and NTP are unrelated absolute timelines, so
+  // reading the offset from the other one puts the anchor decades away.
+  bool engine_v2_anchor_uses_ptp;
+  uint32_t engine_v2_anchor_rtp;
+  uint64_t engine_v2_anchor_network_ns;
+  int64_t engine_v2_playout_offset_ns;
 
   audio_stats_t stats;
 
@@ -51,10 +102,20 @@ typedef struct {
   struct sockaddr_in client_control_addr; // Client's control address for NACKs
   bool retransmit_enabled;                // True when client address is set
   int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
-  bool rtp_sequence_valid;
-  uint16_t resend_window_first;
-  uint64_t resend_missing_mask;
-  int64_t resend_last_request_time_us;
+  // The realtime stream's missing packets, owned by its receive task.  Other
+  // tasks reset it by bumping resend_generation, and the receive task does
+  // the reset itself before it next touches the tracker.
+  rtp_resend_t resend;
+  uint32_t resend_generation;
+  uint32_t resend_generation_seen;
+  // For the receive task's status line: when it last reported, and since
+  // then the most bytes it found still queued on the socket after a read, the
+  // time it spent sending resend requests, and decoded packets the timeline
+  // turned away.
+  int64_t resend_report_us;
+  uint32_t resend_queue_max;
+  uint32_t resend_send_us;
+  uint32_t resend_rejected;
 
   // Post-seek RTP gates: together they form a window [discard_before_rtp,
   // discard_above_rtp] around the new anchor.  Frames outside the window are
@@ -80,12 +141,17 @@ typedef struct {
   // seek: flush empties buffer before anchor arrives, so seek detection in
   // set_anchor_time would otherwise find no oldest_rtp and skip arming).
   bool arm_gate_on_next_anchor;
-  // Set by audio_receiver_seek_flush() to reject ALL incoming frames until
-  // the next SETRATEANCHORTIME provides a valid anchor.  Without this, stale
-  // TCP data (from the old track still draining the socket buffer) fills the
-  // ring buffer between FLUSHBUFFERED and the anchor, causing a second flush
-  // and doubling the startup delay.
-  bool discard_all_until_anchor;
+  // Set by audio_receiver_seek_flush(): after an immediate FLUSHBUFFERED an
+  // iPhone first drains several seconds of the old position from its own send
+  // queue, then starts the new position.  The backlog carries on the RTP
+  // sequence from the last frame before the flush, so it is dropped frame by
+  // frame until the sequence breaks, before it is decrypted or decoded.
+  bool seek_backlog_valid;
+  uint32_t seek_backlog_next_rtp;
+  uint32_t seek_backlog_dropped;
+  // Set when that gate saw the sequence break, so the newest frame read is on
+  // the new position.  A realtime flush clears seek_backlog_valid without one.
+  bool seek_backlog_ended;
 
   // Snapshot of the expected RTP position taken the moment the sender signals
   // PAUSE (SETRATEANCHORTIME rate=0).  Path B in audio_receiver_set_anchor_time
@@ -107,6 +173,16 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
                                          uint32_t timestamp,
                                          const uint8_t *audio_data,
                                          size_t audio_len);
+
+// True when the next decoded AAC frame is a post-seek/resume priming frame and
+// must be silenced.  Read where the block counters are advanced, because the
+// buffered path advances them on the TCP reader and decodes elsewhere.
+bool audio_stream_aac_prime_mute_wanted(const audio_receiver_state_t *state);
+
+// Buffered path: decode one encoded access unit and publish the PCM into the
+// engine timeline.  Runs on the decode worker task.
+bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
+                                        const audio_encoded_packet_t *packet);
 
 // Convenience entry point for realtime paths: gate, then decode and queue.
 bool audio_stream_process_frame(audio_receiver_state_t *state,

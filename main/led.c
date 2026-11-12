@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "led.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 
 #if CONFIG_LED_STATUS_GPIO >= 0 || CONFIG_LED_ERROR_GPIO >= 0
@@ -374,7 +377,7 @@ static void rgb_led_set_mode(led_mode_t mode) {
     rgb_led_clear();
     break;
   case LED_STEADY: {
-    // Color depends on current state - handled by on_rtsp_event
+    // Color depends on current state - handled by on_playback_event
     break;
   }
   case LED_VU:
@@ -518,23 +521,25 @@ static void apply_state(led_state_t state) {
   render_state(state);
 }
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
-  ESP_LOGD(TAG, "RTSP event: %d", event);
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
+  ESP_LOGD(TAG, "Playback event: %d", event);
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     apply_state(STATE_PAUSED);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     apply_state(STATE_PLAYING);
     break;
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     apply_state(STATE_PAUSED);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     apply_state(STATE_STANDBY);
     break;
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     break;
   }
 }
@@ -548,7 +553,14 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
 static int64_t s_last_update_us = 0;
 
-void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
+// Sample @p i on the int16 scale, from whichever of the two buffers is set.
+static inline int32_t level_at(const int16_t *pcm16, const int32_t *pcm32,
+                               size_t i) {
+  return pcm16 != NULL ? pcm16[i] : pcm32[i] >> 16;
+}
+
+static void audio_feed(const int16_t *pcm16, const int32_t *pcm32,
+                       size_t stereo_samples) {
   if (stereo_samples == 0 || s_current_state != STATE_PLAYING) {
     return;
   }
@@ -565,7 +577,7 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
   // Compute RMS energy
   uint64_t sum_sq = 0;
   for (size_t i = 0; i < total; i++) {
-    int32_t s = pcm[i];
+    int32_t s = level_at(pcm16, pcm32, i);
     sum_sq += (uint64_t)(s * s);
   }
   float rms = sqrtf((float)sum_sq / (float)total);
@@ -573,7 +585,7 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
   // Simple bass energy estimate
   uint64_t diff_sum = 0;
   for (size_t i = 2; i < total; i += 2) {
-    int32_t d = (int32_t)pcm[i] - (int32_t)pcm[i - 2];
+    int32_t d = level_at(pcm16, pcm32, i) - level_at(pcm16, pcm32, i - 2);
     diff_sum += (uint64_t)(d < 0 ? -d : d);
   }
   float high_energy = (float)diff_sum / ((float)total / 2.0f);
@@ -601,6 +613,14 @@ void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
   rgb_led_set_vu(norm, bass_ratio);
 }
 
+void led_audio_feed(const int16_t *pcm, size_t stereo_samples) {
+  audio_feed(pcm, NULL, stereo_samples);
+}
+
+void led_audio_feed_q31(const int32_t *pcm, size_t stereo_samples) {
+  audio_feed(NULL, pcm, stereo_samples);
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -621,7 +641,7 @@ void led_init(void) {
   error_led_init();
   rgb_led_init();
 
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Start in standby
   ESP_LOGI(TAG, "Starting in STANDBY state");

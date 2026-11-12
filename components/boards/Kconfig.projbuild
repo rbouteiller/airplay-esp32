@@ -43,6 +43,18 @@ menu "Board Configuration"
             bool "Esparagus Audio Brick Dual DAC (ESP32-S3, 2x TAS5825M)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_LOUDER_ESP32_PLUS
+            bool "Louder-ESP32-Plus (ESP32, TAS5825M)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUDER_ESP32_S3_PLUS
+            bool "Louder-ESP32-S3-Plus (ESP32-S3, TAS5825M)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_LOUDER_ESP32_S3_PRO
+            bool "Louder-ESP32-S3-Pro (ESP32-S3, TAS5825M)"
+            depends on IDF_TARGET_ESP32S3
+
         config BOARD_WAVESHARE_ESP32P4
             bool "Waveshare ESP32-P4 Module Dev Kit"
             depends on IDF_TARGET_ESP32P4
@@ -59,6 +71,82 @@ menu "Board Configuration"
             bool "Louder Esparagus S3 / Louder-ESP32-S3 (ESP32-S3, TAS58xx)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_LOUDER_ESP32
+            bool "Louder-ESP32 (ESP32, TAS5805M)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUDER_ESP32_S3
+            bool "Louder-ESP32-S3 (ESP32-S3, TAS5805M)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_HIFI_ESP32
+            bool "HiFi-ESP32 (ESP32, PCM5100)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_HIFI_ESPARAGUS
+            bool "HiFi-Esparagus (ESP32, PCM5100)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_HIFI_ESP32_PLUS
+            bool "HiFi-ESP32-Plus (ESP32, PCM5122)"
+            depends on IDF_TARGET_ESP32
+            select DAC_PCM51XX
+
+        config BOARD_HIFI_ESP32_S3
+            bool "HiFi-ESP32-S3 (ESP32-S3, PCM5100)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_HIFI_ESP32_S3_PLUS
+            bool "HiFi-ESP32-S3-Plus (ESP32-S3, PCM5122)"
+            depends on IDF_TARGET_ESP32S3
+            select DAC_PCM51XX
+
+        config BOARD_HIFI_ESPARAGUS_S3
+            bool "HiFi-Esparagus-S3 (ESP32-S3, PCM5100)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_LOUD_ESP32
+            bool "Loud-ESP32 (ESP32, MAX98357A)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUD_ESP32_S3
+            bool "Loud-ESP32-S3 (ESP32-S3, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_LOUD_ESPARAGUS
+            bool "Loud-Esparagus (ESP32, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_ESPARAGUS_ECHO
+            bool "Esparagus-Echo (ESP32-S3, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_AMPED_ESP32
+            bool "Amped-ESP32 (ESP32, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_AMPED_ESP32_S3
+            bool "Amped-ESP32-S3 (ESP32-S3, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_AMPED_ESPARAGUS
+            bool "Amped-Esparagus rev M (ESP32, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_AMPED_ESPARAGUS_PLUS_S3
+            bool "Amped-Esparagus-Plus-S3 (ESP32-S3, PCM5122 + TPA3118)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_AMPED_ESP32_PLUS
+            bool "Amped-ESP32-Plus (ESP32, PCM5122 + TPA3118)"
+            depends on IDF_TARGET_ESP32
+            select DAC_PCM51XX
+
+        config BOARD_AMPED_ESP32_S3_PLUS
+            bool "Amped-ESP32-S3-Plus (ESP32-S3, PCM5122 + TPA3118)"
+            depends on IDF_TARGET_ESP32S3
+            select DAC_PCM51XX
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -72,10 +160,31 @@ menu "Board Configuration"
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_S3
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_DUAL_DAC
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_PLUS
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3_PLUS
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3_PRO
         default "waveshare-esp32p4" if BOARD_WAVESHARE_ESP32P4
         default "waveshare-esp32s3" if BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER_S3
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3
+        default "hifi-esp32" if BOARD_HIFI_ESP32
+        default "esp32-generic" if BOARD_HIFI_ESPARAGUS
+        default "hifi-esp32-plus" if BOARD_HIFI_ESP32_PLUS
+        default "hifi-esp32-plus" if BOARD_HIFI_ESP32_S3_PLUS
+        default "hifi-esp32-plus" if BOARD_AMPED_ESP32_PLUS
+        default "hifi-esp32-plus" if BOARD_AMPED_ESP32_S3_PLUS
+        default "hifi-esp32" if BOARD_HIFI_ESP32_S3
+        default "hifi-esp32" if BOARD_HIFI_ESPARAGUS_S3
+        default "loud-esp32" if BOARD_LOUD_ESP32
+        default "loud-esp32" if BOARD_LOUD_ESP32_S3
+        default "loud-esp32" if BOARD_LOUD_ESPARAGUS
+        default "loud-esp32" if BOARD_ESPARAGUS_ECHO
+        default "loud-esp32" if BOARD_AMPED_ESP32
+        default "loud-esp32" if BOARD_AMPED_ESP32_S3
+        default "loud-esp32" if BOARD_AMPED_ESPARAGUS
+        default "amped-esparagus-plus-s3" if BOARD_AMPED_ESPARAGUS_PLUS_S3
 
     config BOARD_SQUEEZEAMP_COMMON
         bool
@@ -181,6 +290,16 @@ menu "Board Configuration"
                 help
                     Same as DAC_PDN_GPIO but for the second DAC on dual-DAC
                     boards. Set to -1 if there is no second DAC.
+
+            config DAC_ENABLE_GPIO
+                int "DAC/amp enable GPIO"
+                default -1
+                help
+                    Active-high enable pin of a DAC/amp with no I2C control
+                    (e.g. the MAX98357A's SD_MODE pin). Unlike DAC_PDN_GPIO,
+                    which is driven high once at boot, this pin is toggled
+                    dynamically from RTSP playback events: high while
+                    playing, low otherwise. Set to -1 if not used.
 
             config JACK_GPIO
                 int "Headphone Jack Detection GPIO"

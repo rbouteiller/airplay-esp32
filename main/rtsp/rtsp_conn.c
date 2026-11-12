@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "rtsp_conn.h"
 
 #include <stdlib.h>
@@ -5,8 +8,11 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
+#include "esp_log.h"
 #include "ptp_clock.h"
 #include "settings.h"
+
+static const char *TAG = "rtsp_conn";
 
 rtsp_conn_t *rtsp_conn_create(void) {
   rtsp_conn_t *conn = calloc(1, sizeof(rtsp_conn_t));
@@ -16,22 +22,20 @@ rtsp_conn_t *rtsp_conn_create(void) {
 
   // Load saved volume or use default
   float saved_volume;
-  if (settings_get_volume(&saved_volume) == ESP_OK) {
-    conn->volume_db = saved_volume;
-    // Apply volume curve
-    if (saved_volume <= -30.0f) {
-      conn->volume_q15 = 0;
-    } else if (saved_volume >= 0.0f) {
-      conn->volume_q15 = 32768;
-    } else {
-      float normalized = (saved_volume + 30.0f) / 30.0f;
-      conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
-    }
+  (void)settings_get_volume(&saved_volume);
+  conn->volume_db = saved_volume;
+  // Apply volume curve
+  if (saved_volume <= -30.0f) {
+    conn->volume_q15 = 0;
+  } else if (saved_volume >= 0.0f) {
+    conn->volume_q15 = 32768;
   } else {
-    conn->volume_db = -15.0f; // Half volume (midpoint of -30..0 dB range)
-    float normalized = (conn->volume_db + 30.0f) / 30.0f;
+    float normalized = (saved_volume + 30.0f) / 30.0f;
     conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
   }
+
+  ESP_LOGI(TAG, "New conn: starting volume=%.2f dB (q15=%ld)", conn->volume_db,
+           (long)conn->volume_q15);
 
   conn->data_socket = -1;
   conn->control_socket = -1;

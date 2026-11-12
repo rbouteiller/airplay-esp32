@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "settings.h"
 
 #include "dac.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -17,32 +21,48 @@ static const char *TAG = "settings";
 #define NVS_KEY_WIFI_SSID      "wifi_ssid"
 #define NVS_KEY_WIFI_PASSWORD  "wifi_pass"
 #define NVS_KEY_DEVICE_NAME    "device_name"
-#define NVS_KEY_EQ_GAINS       "eq_gains"
 #define NVS_KEY_LED_BRIGHTNESS "led_bright"
 #define NVS_KEY_CHANNEL_MODE   "chan_mode"
 #define NVS_KEY_SUB_OFFSET     "sub_off"
-#define NVS_KEY_SUB_XOVER      "sub_xo"
-#define NVS_KEY_SUB_EQ         "sub_eq"
-#define NVS_KEY_BIAMP_XOVER    "ba_xo"
-#define NVS_KEY_BIAMP_SWAP     "ba_swap"
-#define NVS_KEY_BIAMP_EQ       "ba_eq"
-#define NVS_KEY_DUAL_MODE      "dual_mode"
+#define NVS_KEY_AMP_GAIN       "amp_gain"
+#define NVS_KEY_AMP_MUTE       "amp_mute"
+#define NVS_KEY_AMP_MIX        "amp_mix"
+#define NVS_KEY_OUT_DELAY      "out_delay"
+#define NVS_KEY_FIRST_PBTL     "amp1_pbtl"
+#define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
+#define NVS_KEY_USB_PD_VOLTS   "pd_volts"
+#define NVS_KEY_FULL_VOLUME    "full_vol"
+#define NVS_KEY_ANALOG_GAIN    "analog_gain"
+#define NVS_KEY_USB_PD_AUTO    "pd_auto"
+#define NVS_KEY_ANALOG_AUTO    "again_auto"
+#define NVS_KEY_SOFTWARE_EQ_AB "sw_eq_ab"
+#define NVS_KEY_AIRPLAY_V1     "ap_v1"
+#define NVS_KEY_CH_TRIM        "ch_trim"
+#define NVS_KEY_SENDSPIN       "ss_en"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
 #define MAX_DEVICE_NAME_LEN   64
 
-// Cached values  (defaults = 50 %)
-static float g_volume_db = -15.0f;
+// Cached values. Only ever used on a board that has never stored a volume,
+// so err quiet: an amplified board at half scale is startlingly loud, and a
+// sender that already agrees with the level we report never corrects it.
+static float g_volume_db = -24.0f; /* default: 20 % */
 static bool g_volume_loaded = false;
+static bool g_volume_dirty = false;
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-static uint8_t g_bt_volume = 64; /* default: 50 % */
+static uint8_t g_bt_volume = 25; /* default: 20 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
-static float g_eq_gains[SETTINGS_EQ_BANDS];
-static bool g_eq_loaded = false;
+static bool g_airplay_v1;
+static bool g_airplay_v1_configured;
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+static bool g_sendspin_enabled;
+static bool g_sendspin_enabled_configured;
+#endif
 
 esp_err_t settings_init(void) {
   // Load volume on init
@@ -57,16 +77,29 @@ esp_err_t settings_init(void) {
       ESP_LOGI(TAG, "Loaded volume: %.2f dB", g_volume_db);
     }
 
-    /* Load EQ gains blob */
-    size_t eq_size = sizeof(g_eq_gains);
-    err = nvs_get_blob(nvs, NVS_KEY_EQ_GAINS, g_eq_gains, &eq_size);
-    if (err == ESP_OK && eq_size == sizeof(g_eq_gains)) {
-      g_eq_loaded = true;
-      ESP_LOGI(TAG, "Loaded EQ gains (%d bands)", SETTINGS_EQ_BANDS);
+    uint8_t airplay_v1;
+    if (nvs_get_u8(nvs, NVS_KEY_AIRPLAY_V1, &airplay_v1) == ESP_OK) {
+      g_airplay_v1 = airplay_v1 != 0;
+      ESP_LOGI(TAG, "Loaded AirPlay mode: %s",
+               g_airplay_v1 ? "v1 (classic RAOP)" : "v2");
     }
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+    uint8_t sendspin;
+    if (nvs_get_u8(nvs, NVS_KEY_SENDSPIN, &sendspin) == ESP_OK) {
+      g_sendspin_enabled = sendspin != 0;
+      ESP_LOGI(TAG, "Loaded Sendspin: %s",
+               g_sendspin_enabled ? "enabled" : "disabled");
+    }
+#endif
 
     nvs_close(nvs);
   }
+
+  g_airplay_v1_configured = g_airplay_v1;
+#ifdef CONFIG_SENDSPIN_ENABLE
+  g_sendspin_enabled_configured = g_sendspin_enabled;
+#endif
 
   return ESP_OK;
 }
@@ -76,10 +109,10 @@ esp_err_t settings_get_volume(float *volume_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  if (!g_volume_loaded) {
-    return ESP_ERR_NOT_FOUND;
-  }
-
+  /* Hand back the default rather than failing, so a board that has never
+   * stored a volume still applies one. Reporting not-found left every caller
+   * to skip the DAC write entirely, which left the amplifier at its own
+   * register default of full scale. */
   *volume_db = g_volume_db;
   return ESP_OK;
 }
@@ -94,11 +127,12 @@ esp_err_t settings_set_volume(float volume_db) {
 
   g_volume_db = volume_db;
   g_volume_loaded = true;
+  g_volume_dirty = true;
   return ESP_OK;
 }
 
 esp_err_t settings_persist_volume(void) {
-  if (!g_volume_loaded) {
+  if (!g_volume_loaded || !g_volume_dirty) {
     return ESP_OK;
   }
 
@@ -118,6 +152,7 @@ esp_err_t settings_persist_volume(void) {
   nvs_close(nvs);
 
   if (err == ESP_OK) {
+    g_volume_dirty = false;
     ESP_LOGI(TAG, "Persisted volume: %.2f dB", g_volume_db);
   } else {
     ESP_LOGE(TAG, "Failed to persist volume: %s", esp_err_to_name(err));
@@ -396,93 +431,6 @@ esp_err_t settings_set_led_brightness(uint8_t brightness) {
 }
 
 /* ================================================================== */
-/*  EQ Gains                                                           */
-/* ================================================================== */
-
-esp_err_t settings_get_eq_gains(float gains_db[SETTINGS_EQ_BANDS]) {
-  if (!gains_db) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  if (!g_eq_loaded) {
-    return ESP_ERR_NOT_FOUND;
-  }
-
-  memcpy(gains_db, g_eq_gains, sizeof(g_eq_gains));
-  return ESP_OK;
-}
-
-esp_err_t settings_set_eq_gains(const float gains_db[SETTINGS_EQ_BANDS]) {
-  if (!gains_db) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  /* Skip write if unchanged (compare element-by-element to avoid
-     memcmp on floats, which is flagged by
-     bugprone-suspicious-memory-comparison) */
-  if (g_eq_loaded) {
-    bool unchanged = true;
-    for (int i = 0; i < SETTINGS_EQ_BANDS; i++) {
-      if (gains_db[i] != g_eq_gains[i]) {
-        unchanged = false;
-        break;
-      }
-    }
-    if (unchanged) {
-      return ESP_OK;
-    }
-  }
-
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
-    return err;
-  }
-
-  err = nvs_set_blob(nvs, NVS_KEY_EQ_GAINS, gains_db,
-                     sizeof(float) * SETTINGS_EQ_BANDS);
-  if (err == ESP_OK) {
-    err = nvs_commit(nvs);
-  }
-
-  nvs_close(nvs);
-
-  if (err == ESP_OK) {
-    memcpy(g_eq_gains, gains_db, sizeof(g_eq_gains));
-    g_eq_loaded = true;
-    ESP_LOGI(TAG, "Saved EQ gains (%d bands)", SETTINGS_EQ_BANDS);
-  } else {
-    ESP_LOGE(TAG, "Failed to save EQ gains: %s", esp_err_to_name(err));
-  }
-
-  return err;
-}
-
-esp_err_t settings_clear_eq(void) {
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (err != ESP_OK) {
-    return err;
-  }
-
-  err = nvs_erase_key(nvs, NVS_KEY_EQ_GAINS);
-  if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
-    nvs_commit(nvs);
-    memset(g_eq_gains, 0, sizeof(g_eq_gains));
-    g_eq_loaded = false;
-    err = ESP_OK;
-  }
-
-  nvs_close(nvs);
-  return err;
-}
-
-bool settings_has_eq(void) {
-  return g_eq_loaded;
-}
-
-/* ================================================================== */
 /*  Output channel mode                                                */
 /* ================================================================== */
 
@@ -570,8 +518,12 @@ esp_err_t settings_set_sub_offset(float offset_db) {
   return err;
 }
 
-esp_err_t settings_get_sub_crossover(float *hz) {
-  if (!hz) {
+/* ================================================================== */
+/*  Level trim                                                         */
+/* ================================================================== */
+
+esp_err_t settings_get_amp_gain(float gain_db[SETTINGS_AMP_OUTPUTS]) {
+  if (!gain_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -581,107 +533,17 @@ esp_err_t settings_get_sub_crossover(float *hz) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  int32_t stored;
-  err = nvs_get_i32(nvs, NVS_KEY_SUB_XOVER, &stored);
+  size_t len = sizeof(float) * SETTINGS_AMP_OUTPUTS;
+  err = nvs_get_blob(nvs, NVS_KEY_AMP_GAIN, gain_db, &len);
   nvs_close(nvs);
-  if (err == ESP_OK) {
-    *hz = (float)stored;
-  }
-  return err;
-}
-
-esp_err_t settings_set_sub_crossover(float hz) {
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
-    return err;
-  }
-
-  err = nvs_set_i32(nvs, NVS_KEY_SUB_XOVER, (int32_t)hz);
-  if (err == ESP_OK) {
-    err = nvs_commit(nvs);
-  }
-  nvs_close(nvs);
-
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved sub crossover: %.0f Hz", hz);
-  } else {
-    ESP_LOGE(TAG, "Failed to save sub crossover: %s", esp_err_to_name(err));
-  }
-  return err;
-}
-
-/* ================================================================== */
-/*  Dual DAC (second amplifier) role                                   */
-/* ================================================================== */
-
-esp_err_t settings_get_dual_mode(uint8_t *mode) {
-  if (!mode) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-  if (err != ESP_OK) {
-    return ESP_ERR_NOT_FOUND;
-  }
-
-  err = nvs_get_u8(nvs, NVS_KEY_DUAL_MODE, mode);
-  nvs_close(nvs);
-  return err;
-}
-
-esp_err_t settings_set_dual_mode(uint8_t mode) {
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
-    return err;
-  }
-
-  err = nvs_set_u8(nvs, NVS_KEY_DUAL_MODE, mode);
-  if (err == ESP_OK) {
-    err = nvs_commit(nvs);
-  }
-  nvs_close(nvs);
-
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved dual DAC mode: %d", mode);
-  } else {
-    ESP_LOGE(TAG, "Failed to save dual DAC mode: %s", esp_err_to_name(err));
-  }
-  return err;
-}
-
-/* ================================================================== */
-/*  Bi-amp (two-way active crossover)                                  */
-/* ================================================================== */
-
-#define SUB_EQ_FLOATS (2 * SETTINGS_WAY_BANDS)
-
-esp_err_t settings_get_sub_eq(float gains_db[2][SETTINGS_WAY_BANDS]) {
-  if (!gains_db) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-  if (err != ESP_OK) {
-    return ESP_ERR_NOT_FOUND;
-  }
-
-  size_t len = sizeof(float) * SUB_EQ_FLOATS;
-  err = nvs_get_blob(nvs, NVS_KEY_SUB_EQ, gains_db, &len);
-  nvs_close(nvs);
-  if (err == ESP_OK && len != sizeof(float) * SUB_EQ_FLOATS) {
+  if (err == ESP_OK && len != sizeof(float) * SETTINGS_AMP_OUTPUTS) {
     return ESP_ERR_INVALID_SIZE;
   }
   return err;
 }
 
-esp_err_t settings_set_sub_eq(const float gains_db[2][SETTINGS_WAY_BANDS]) {
-  if (!gains_db) {
+esp_err_t settings_set_amp_gain(const float gain_db[SETTINGS_AMP_OUTPUTS]) {
+  if (!gain_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -692,23 +554,24 @@ esp_err_t settings_set_sub_eq(const float gains_db[2][SETTINGS_WAY_BANDS]) {
     return err;
   }
 
-  err = nvs_set_blob(nvs, NVS_KEY_SUB_EQ, gains_db,
-                     sizeof(float) * SUB_EQ_FLOATS);
+  err = nvs_set_blob(nvs, NVS_KEY_AMP_GAIN, gain_db,
+                     sizeof(float) * SETTINGS_AMP_OUTPUTS);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved 2.1 per-way EQ gains");
+    ESP_LOGI(TAG, "Saved amp levels: %+.1f %+.1f %+.1f %+.1f dB", gain_db[0],
+             gain_db[1], gain_db[2], gain_db[3]);
   } else {
-    ESP_LOGE(TAG, "Failed to save 2.1 EQ: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to save amp levels: %s", esp_err_to_name(err));
   }
   return err;
 }
 
-esp_err_t settings_get_biamp_crossover(float *hz) {
-  if (!hz) {
+esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]) {
+  if (!trim_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -718,16 +581,20 @@ esp_err_t settings_get_biamp_crossover(float *hz) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  int32_t stored;
-  err = nvs_get_i32(nvs, NVS_KEY_BIAMP_XOVER, &stored);
+  size_t len = sizeof(float) * SETTINGS_CHANNELS;
+  err = nvs_get_blob(nvs, NVS_KEY_CH_TRIM, trim_db, &len);
   nvs_close(nvs);
-  if (err == ESP_OK) {
-    *hz = (float)stored;
+  if (err == ESP_OK && len != sizeof(float) * SETTINGS_CHANNELS) {
+    return ESP_ERR_INVALID_SIZE;
   }
   return err;
 }
 
-esp_err_t settings_set_biamp_crossover(float hz) {
+esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]) {
+  if (!trim_db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
@@ -735,22 +602,164 @@ esp_err_t settings_set_biamp_crossover(float hz) {
     return err;
   }
 
-  err = nvs_set_i32(nvs, NVS_KEY_BIAMP_XOVER, (int32_t)hz);
+  err = nvs_set_blob(nvs, NVS_KEY_CH_TRIM, trim_db,
+                     sizeof(float) * SETTINGS_CHANNELS);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved bi-amp crossover: %.0f Hz", hz);
+    ESP_LOGI(TAG, "Saved channel trim: A %+.1f dB, B %+.1f dB", trim_db[0],
+             trim_db[1]);
   } else {
-    ESP_LOGE(TAG, "Failed to save bi-amp crossover: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to save channel trim: %s", esp_err_to_name(err));
   }
   return err;
 }
 
-esp_err_t settings_get_biamp_swap(bool *swap) {
-  if (!swap) {
+esp_err_t settings_get_amp_mute(uint8_t mute[SETTINGS_AMP_OUTPUTS]) {
+  if (!mute) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_AMP_OUTPUTS;
+  err = nvs_get_blob(nvs, NVS_KEY_AMP_MUTE, mute, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_AMP_OUTPUTS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t settings_set_amp_mute(const uint8_t mute[SETTINGS_AMP_OUTPUTS]) {
+  if (!mute) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_AMP_MUTE, mute, SETTINGS_AMP_OUTPUTS);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save amp mutes: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_amp_mix(uint8_t mix[SETTINGS_AMPS]) {
+  if (!mix) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_AMPS;
+  err = nvs_get_blob(nvs, NVS_KEY_AMP_MIX, mix, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_AMPS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]) {
+  if (!mix) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_AMP_MIX, mix, SETTINGS_AMPS);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved amp input routing: 1 %u, 2 %u", mix[0], mix[1]);
+  } else {
+    ESP_LOGE(TAG, "Failed to save amp input routing: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_output_delay_us(uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t);
+  err = nvs_get_blob(nvs, NVS_KEY_OUT_DELAY, us, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t
+settings_set_output_delay_us(const uint16_t us[SETTINGS_DELAY_OUTPUTS]) {
+  if (!us) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_OUT_DELAY, us,
+                     SETTINGS_DELAY_OUTPUTS * sizeof(uint16_t));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save output delays: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* ================================================================== */
+/*  Primary amplifier wiring                                           */
+/* ================================================================== */
+
+esp_err_t settings_get_first_pbtl(bool *pbtl) {
+  if (!pbtl) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -761,15 +770,15 @@ esp_err_t settings_get_biamp_swap(bool *swap) {
   }
 
   uint8_t stored;
-  err = nvs_get_u8(nvs, NVS_KEY_BIAMP_SWAP, &stored);
+  err = nvs_get_u8(nvs, NVS_KEY_FIRST_PBTL, &stored);
   nvs_close(nvs);
   if (err == ESP_OK) {
-    *swap = stored != 0;
+    *pbtl = stored != 0;
   }
   return err;
 }
 
-esp_err_t settings_set_biamp_swap(bool swap) {
+esp_err_t settings_set_first_pbtl(bool pbtl) {
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
@@ -777,22 +786,27 @@ esp_err_t settings_set_biamp_swap(bool swap) {
     return err;
   }
 
-  err = nvs_set_u8(nvs, NVS_KEY_BIAMP_SWAP, swap ? 1 : 0);
+  err = nvs_set_u8(nvs, NVS_KEY_FIRST_PBTL, pbtl ? 1 : 0);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved bi-amp woofer output: %s", swap ? "second" : "first");
+    ESP_LOGI(TAG, "Saved primary amplifier: %s", pbtl ? "PBTL mono" : "stereo");
+  } else {
+    ESP_LOGE(TAG, "Failed to save primary amplifier wiring: %s",
+             esp_err_to_name(err));
   }
   return err;
 }
 
-#define BIAMP_EQ_FLOATS (2 * 2 * SETTINGS_WAY_BANDS)
+/* ================================================================== */
+/*  Dual DAC (second amplifier) wiring                                 */
+/* ================================================================== */
 
-esp_err_t settings_get_biamp_eq(float gains_db[2][2][SETTINGS_WAY_BANDS]) {
-  if (!gains_db) {
+esp_err_t settings_get_second_pbtl(bool *pbtl) {
+  if (!pbtl) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -802,18 +816,61 @@ esp_err_t settings_get_biamp_eq(float gains_db[2][2][SETTINGS_WAY_BANDS]) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  size_t len = sizeof(float) * BIAMP_EQ_FLOATS;
-  err = nvs_get_blob(nvs, NVS_KEY_BIAMP_EQ, gains_db, &len);
+  uint8_t stored;
+  err = nvs_get_u8(nvs, NVS_KEY_SECOND_PBTL, &stored);
   nvs_close(nvs);
-  if (err == ESP_OK && len != sizeof(float) * BIAMP_EQ_FLOATS) {
-    return ESP_ERR_INVALID_SIZE;
+  if (err == ESP_OK) {
+    *pbtl = stored != 0;
   }
   return err;
 }
 
-esp_err_t
-settings_set_biamp_eq(const float gains_db[2][2][SETTINGS_WAY_BANDS]) {
-  if (!gains_db) {
+esp_err_t settings_set_second_pbtl(bool pbtl) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_SECOND_PBTL, pbtl ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved second amplifier: %s", pbtl ? "PBTL mono" : "stereo");
+  } else {
+    ESP_LOGE(TAG, "Failed to save second amplifier wiring: %s",
+             esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* Held in half-dB steps. */
+static esp_err_t get_half_db(const char *key, float *db) {
+  if (!db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  int8_t half_db;
+  err = nvs_get_i8(nvs, key, &half_db);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    *db = (float)half_db / 2.0f;
+  }
+  return err;
+}
+
+static esp_err_t set_half_db(const char *key, const char *what, float db) {
+  if (!(db >= -60.0f && db <= 0.0f)) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -824,17 +881,242 @@ settings_set_biamp_eq(const float gains_db[2][2][SETTINGS_WAY_BANDS]) {
     return err;
   }
 
-  err = nvs_set_blob(nvs, NVS_KEY_BIAMP_EQ, gains_db,
-                     sizeof(float) * BIAMP_EQ_FLOATS);
+  err = nvs_set_i8(nvs, key, (int8_t)lroundf(db * 2.0f));
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved bi-amp EQ gains");
+    ESP_LOGI(TAG, "Saved %s: %.1f dB", what, db);
   } else {
-    ESP_LOGE(TAG, "Failed to save bi-amp EQ: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to save %s: %s", what, esp_err_to_name(err));
   }
   return err;
 }
+
+esp_err_t settings_get_full_volume_db(float *db) {
+  return get_half_db(NVS_KEY_FULL_VOLUME, db);
+}
+
+esp_err_t settings_set_full_volume_db(float db) {
+  return set_half_db(NVS_KEY_FULL_VOLUME, "digital gain", db);
+}
+
+esp_err_t settings_get_analog_gain_db(float *db) {
+  return get_half_db(NVS_KEY_ANALOG_GAIN, db);
+}
+
+esp_err_t settings_set_analog_gain_db(float db) {
+  return set_half_db(NVS_KEY_ANALOG_GAIN, "analog gain", db);
+}
+
+esp_err_t settings_get_usb_pd_volts(int *volts) {
+  if (!volts) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  uint8_t stored;
+  err = nvs_get_u8(nvs, NVS_KEY_USB_PD_VOLTS, &stored);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    *volts = stored;
+  }
+  return err;
+}
+
+esp_err_t settings_set_usb_pd_volts(int volts) {
+  if (volts < 0 || volts > UINT8_MAX) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_USB_PD_VOLTS, (uint8_t)volts);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved USB-PD voltage: %d V", volts);
+  } else {
+    ESP_LOGE(TAG, "Failed to save USB-PD voltage: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* Both automatic choices default to on: a board that has never been told
+ * otherwise picks its own supply and gain. One that saved a value by hand
+ * before the choice existed keeps it. */
+static bool get_auto(const char *key, const char *manual_key) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    return true;
+  }
+  uint8_t stored;
+  bool on;
+  if (nvs_get_u8(nvs, key, &stored) == ESP_OK) {
+    on = stored != 0;
+  } else {
+    on = nvs_find_key(nvs, manual_key, NULL) != ESP_OK;
+  }
+  nvs_close(nvs);
+  return on;
+}
+
+static esp_err_t set_auto(const char *key, const char *what, bool on) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, key, on ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved %s: %s", what, on ? "automatic" : "set by hand");
+  } else {
+    ESP_LOGE(TAG, "Failed to save %s: %s", what, esp_err_to_name(err));
+  }
+  return err;
+}
+
+bool settings_get_usb_pd_auto(void) {
+  return get_auto(NVS_KEY_USB_PD_AUTO, NVS_KEY_USB_PD_VOLTS);
+}
+
+esp_err_t settings_set_usb_pd_auto(bool on) {
+  return set_auto(NVS_KEY_USB_PD_AUTO, "USB-PD voltage", on);
+}
+
+bool settings_get_analog_auto(void) {
+  return get_auto(NVS_KEY_ANALOG_AUTO, NVS_KEY_ANALOG_GAIN);
+}
+
+esp_err_t settings_set_analog_auto(bool on) {
+  return set_auto(NVS_KEY_ANALOG_AUTO, "analog gain", on);
+}
+
+bool settings_get_software_eq_ab(void) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    return false;
+  }
+  uint8_t stored = 0;
+  nvs_get_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, &stored);
+  nvs_close(nvs);
+  return stored != 0;
+}
+
+esp_err_t settings_set_software_eq_ab(bool on) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+  err = nvs_set_u8(nvs, NVS_KEY_SOFTWARE_EQ_AB, on ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved EQ engine: %s", on ? "ESP32" : "amplifier DSP");
+  } else {
+    ESP_LOGE(TAG, "Failed to save EQ engine: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* ================================================================== */
+/*  AirPlay protocol mode                                             */
+/* ================================================================== */
+
+bool settings_airplay_v1(void) {
+  return g_airplay_v1;
+}
+
+bool settings_airplay_v1_configured(void) {
+  return g_airplay_v1_configured;
+}
+
+esp_err_t settings_set_airplay_v1(bool v1) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_AIRPLAY_V1, v1 ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    // Deliberately not applied to g_airplay_v1: the running services were
+    // built around the old value and only a restart can rebuild them.
+    g_airplay_v1_configured = v1;
+    ESP_LOGI(TAG, "Saved AirPlay mode: %s", v1 ? "v1 (classic RAOP)" : "v2");
+  } else {
+    ESP_LOGE(TAG, "Failed to save AirPlay mode: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+/* ================================================================== */
+/*  Sendspin                                                          */
+/* ================================================================== */
+
+bool settings_sendspin_enabled(void) {
+  return g_sendspin_enabled;
+}
+
+bool settings_sendspin_enabled_configured(void) {
+  return g_sendspin_enabled_configured;
+}
+
+esp_err_t settings_set_sendspin_enabled(bool enabled) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_SENDSPIN, enabled ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    // Not applied to g_sendspin_enabled: the endpoint, the mDNS record and
+    // the timeline are all built at startup.
+    g_sendspin_enabled_configured = enabled;
+    ESP_LOGI(TAG, "Saved Sendspin: %s", enabled ? "enabled" : "disabled");
+  } else {
+    ESP_LOGE(TAG, "Failed to save Sendspin: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+#endif

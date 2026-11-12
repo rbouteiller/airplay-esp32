@@ -1,5 +1,8 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "display.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
@@ -40,6 +43,7 @@ static struct {
   display_state_t state;
   bool dirty;           // set by event callback, cleared by render
   int64_t sync_time_us; // esp_timer_get_time() when position was last synced
+  int64_t standby_since_us; // esp_timer_get_time() when STANDBY was entered
 } s_display;
 
 // Consistent copy of s_display taken once per frame, so widths measured for a
@@ -81,10 +85,11 @@ static void scroll_tick(void) {
   static int carry_subpx;
 
   const int64_t now = esp_timer_get_time();
-  int64_t dt = (last_us == 0) ? (SCROLL_INTERVAL_MS * 1000) : (now - last_us);
+  const int64_t interval_us = (int64_t)SCROLL_INTERVAL_MS * 1000;
+  int64_t dt = (last_us == 0) ? interval_us : (now - last_us);
   last_us = now;
-  if (dt > (4 * SCROLL_INTERVAL_MS * 1000)) {
-    dt = 4 * SCROLL_INTERVAL_MS * 1000; // resuming, not catching up
+  if (dt > 4 * interval_us) {
+    dt = 4 * interval_us; // resuming, not catching up
   }
   carry_subpx += (int)((dt * SCROLL_PX_PER_SEC * 256) / 1000000);
   s_scroll.step = carry_subpx / 256;
@@ -186,8 +191,8 @@ static uint32_t estimated_position_locked(void) {
 
 static void draw_progress(u8g2_t *u8g2, int y, uint32_t pos, uint32_t dur) {
   char pos_str[8], dur_str[8];
-  rtsp_format_time_mmss(pos, pos_str, sizeof(pos_str));
-  rtsp_format_time_mmss(dur, dur_str, sizeof(dur_str));
+  playback_format_time_mmss(pos, pos_str, sizeof(pos_str));
+  playback_format_time_mmss(dur, dur_str, sizeof(dur_str));
 
   // Measure time string widths
   int pos_w = u8g2_GetUTF8Width(u8g2, pos_str);
@@ -368,17 +373,19 @@ static void display_render(void) {
 }
 
 // ============================================================================
-// RTSP event callback
+// Playback event callback
 // ============================================================================
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)user_data;
 
   taskENTER_CRITICAL(&s_display_mux);
 
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     s_display.state = DISPLAY_STATE_CONNECTED;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -390,13 +397,13 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     scroll_reset();
     break;
 
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     s_display.state = DISPLAY_STATE_PLAYING;
     s_display.sync_time_us = esp_timer_get_time();
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     // Freeze position at current estimate before pausing
     s_display.position_secs = estimated_position_locked();
     s_display.sync_time_us = 0;
@@ -404,7 +411,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     s_display.state = DISPLAY_STATE_STANDBY;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -412,11 +419,12 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
     s_display.sync_time_us = 0;
+    s_display.standby_since_us = esp_timer_get_time();
     s_display.dirty = true;
     scroll_reset();
     break;
 
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     if (data) {
       // Detect a real track change so we know when position=0 is legitimate
       // (start of a new track) vs. a spurious mid-song reset from AirPlay.
@@ -467,13 +475,24 @@ static void display_task(void *pvParameters) {
   const TickType_t interval = pdMS_TO_TICKS(CONFIG_DISPLAY_UPDATE_MS);
   const TickType_t one_sec = pdMS_TO_TICKS(1000);
   const TickType_t scroll_interval = pdMS_TO_TICKS(SCROLL_INTERVAL_MS);
+  const int64_t blank_timeout_us =
+      (int64_t)CONFIG_DISPLAY_BLANK_TIMEOUT_MS * 1000;
   TickType_t last_wake = xTaskGetTickCount();
+  bool blanked = false;
 
   // Initial render
   display_render();
 
   while (1) {
     bool is_playing = (s_display.state == DISPLAY_STATE_PLAYING);
+
+    // Any state other than idle standby means the panel must be showing
+    // something, regardless of which branch below ends up rendering it.
+    if (blanked && s_display.state != DISPLAY_STATE_STANDBY) {
+      u8g2_SetPowerSave(&s_u8g2, 0);
+      blanked = false;
+    }
+
     if (s_scroll.active) {
       // A plain delay would add each render to the frame period, tying the
       // scroll speed to I2C timing rather than to the clock.
@@ -501,6 +520,12 @@ static void display_task(void *pvParameters) {
     if (s_display.dirty) {
       s_display.dirty = false;
       display_render();
+    } else if (blank_timeout_us > 0 && !blanked &&
+               s_display.state == DISPLAY_STATE_STANDBY &&
+               esp_timer_get_time() - s_display.standby_since_us >=
+                   blank_timeout_us) {
+      u8g2_SetPowerSave(&s_u8g2, 1);
+      blanked = true;
     }
   }
 }
@@ -648,10 +673,11 @@ void display_init(void *bus) {
 
   // Initialize state
   s_display.state = DISPLAY_STATE_STANDBY;
+  s_display.standby_since_us = esp_timer_get_time();
   s_display.dirty = true;
 
   // Register for RTSP events
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Start display refresh task. Left unpinned: SendBuffer blocks eight times a
   // frame, and the audio core wakes every 5.8 ms, so affinity there is costly.

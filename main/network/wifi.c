@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -144,8 +148,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 static void scan_and_connect_task(void *arg) {
   wifi_config_t cfg;
   if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK &&
-      strlen((char *)cfg.sta.ssid) > 0) {
-    wifi_select_best_ap((char *)cfg.sta.ssid);
+      cfg.sta.ssid[0] != '\0') {
+    // A 32-character name fills the field and has no terminator there.
+    char ssid[sizeof(cfg.sta.ssid) + 1] = {0};
+    memcpy(ssid, cfg.sta.ssid, sizeof(cfg.sta.ssid));
+    wifi_select_best_ap(ssid);
   }
   esp_wifi_connect();
   vTaskDelete(NULL);
@@ -309,9 +316,12 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   }
 
   wifi_config_t sta_config = {0};
-  strlcpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
-  strlcpy((char *)sta_config.sta.password, password,
-          sizeof(sta_config.sta.password));
+  // The driver takes a full field as it is, with no terminator: a
+  // 32-character name and a 64-character key are both valid, and a copy that
+  // kept room for a terminator cut the last character off each.
+  memcpy(sta_config.sta.ssid, ssid, strnlen(ssid, sizeof(sta_config.sta.ssid)));
+  memcpy(sta_config.sta.password, password,
+         strnlen(password, sizeof(sta_config.sta.password)));
   sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
   // Configure AP and save for later re-enable
@@ -326,11 +336,30 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   s_ap_config.ap.channel = 1;
   s_ap_config.ap.max_connection = 4;
 
-  if (strlen(default_password) == 0) {
+  // WPA2 takes an 8-63 character passphrase or a 64-digit hex key; anything
+  // else makes esp_wifi_set_config() fail with ESP_ERR_WIFI_PASSWORD. The AP
+  // is the setup and recovery path, so a bad configured password must not
+  // abort boot: fall back to an open AP and say why.
+  size_t pw_len = strlen(default_password);
+  bool pw_valid = pw_len >= 8 && pw_len <= 64;
+  if (pw_len == 64) {
+    for (size_t i = 0; i < pw_len && pw_valid; i++) {
+      pw_valid = isxdigit((unsigned char)default_password[i]) != 0;
+    }
+  }
+  if (pw_len > 0 && !pw_valid) {
+    ESP_LOGE(TAG,
+             "AP password must be 8-63 characters or 64 hex digits (got %u "
+             "characters); starting an open AP instead",
+             (unsigned)pw_len);
+  }
+
+  if (!pw_valid) {
     s_ap_config.ap.authmode = WIFI_AUTH_OPEN;
   } else {
-    strncpy((char *)s_ap_config.ap.password, default_password,
-            sizeof(s_ap_config.ap.password) - 1);
+    // Like the STA key above, the field is taken without a terminator, so a
+    // 64-digit hex key needs all 64 bytes.
+    memcpy(s_ap_config.ap.password, default_password, pw_len);
     s_ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
   }
 

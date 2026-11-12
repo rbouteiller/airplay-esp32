@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * Hardware button driver — interrupt-driven with timer-based debounce.
  *
@@ -8,6 +11,9 @@
  *
  * Volume buttons support auto-repeat: after REPEAT_DELAY_MS held,
  * the action repeats every REPEAT_INTERVAL_MS.
+ *
+ * An optional quadrature rotary encoder is decoded in the GPIO ISR and
+ * mapped onto the same volume actions: clockwise up, anti-clockwise down.
  *
  * Button actions are dispatched to a dedicated task via a queue so that
  * playback_control functions (which may do mDNS + HTTP) never block
@@ -35,6 +41,18 @@ static const char *TAG = "buttons";
 #define LONG_PRESS_MS    3000 // Play/pause long press for deep sleep
 #define DOUBLE_CLICK_MS  350  // Window to detect a second play/pause press
 #define ACTION_QUEUE_LEN 8
+
+#define BTN_ROTARY_ENABLED 0
+// defined() is required: an undefined int Kconfig reads as 0 in #if, which
+// would sail past the >= 0 test and enable the encoder on GPIO 0.
+#if defined(CONFIG_BTN_ROTARY_A_GPIO) && defined(CONFIG_BTN_ROTARY_B_GPIO)
+#if CONFIG_BTN_ROTARY_A_GPIO >= 0 && CONFIG_BTN_ROTARY_B_GPIO >= 0
+#undef BTN_ROTARY_ENABLED
+#define BTN_ROTARY_ENABLED 1
+#endif
+#endif
+// A detent on a common encoder (e.g. EC11) is one full quadrature cycle
+#define ROTARY_STEPS_PER_DETENT 4
 
 typedef enum {
   BTN_PLAY_PAUSE,
@@ -71,6 +89,17 @@ static void post_button_action(button_id_t id) {
   // Non-blocking: drop if queue is full (better than blocking the timer task)
   xQueueSend(s_action_queue, &action, 0);
 }
+
+#if BTN_ROTARY_ENABLED
+static void IRAM_ATTR post_button_action_from_isr(button_id_t id,
+                                                  BaseType_t *woken) {
+  int action = (int)id;
+  if (s_action_queue == NULL) {
+    return;
+  }
+  xQueueSendFromISR(s_action_queue, &action, woken);
+}
+#endif
 
 // Dedicated task that processes button actions — has enough stack for
 // mDNS discovery + HTTP requests that DACP requires.
@@ -233,6 +262,96 @@ static void IRAM_ATTR gpio_isr_handler(void *arg) {
   }
 }
 
+#if BTN_ROTARY_ENABLED
+// Quadrature transition table indexed by (previous << 2) | current, where a
+// state is (A << 1) | B. Valid single-line changes give +/-1; an entry of 0 is
+// either no movement or an impossible both-lines-changed transition (contact
+// bounce or a missed edge), which is discarded. Positive is the direction in
+// which A leads B, i.e. clockwise on a standard encoder.
+static const int8_t rotary_delta[16] = {0,  -1, 1, 0, 1, 0, 0,  -1,
+                                        -1, 0,  0, 1, 0, 1, -1, 0};
+
+// Touched only by the ISR, so no locking is needed.
+static uint8_t s_rotary_state;
+static int8_t s_rotary_accum;
+
+// Feeds one new (A << 1) | B reading in. Returns +1 for a clockwise detent,
+// -1 for anti-clockwise, 0 while still mid-detent.
+static int IRAM_ATTR rotary_feed(uint8_t state) {
+  int8_t delta = rotary_delta[(s_rotary_state << 2) | state];
+  s_rotary_state = state;
+  if (delta == 0) {
+    return 0;
+  }
+
+  // Signed accumulation, so bouncing back and forth cancels itself out.
+  s_rotary_accum += delta;
+  if (s_rotary_accum >= ROTARY_STEPS_PER_DETENT) {
+    s_rotary_accum = 0;
+    return 1;
+  }
+  if (s_rotary_accum <= -ROTARY_STEPS_PER_DETENT) {
+    s_rotary_accum = 0;
+    return -1;
+  }
+  return 0;
+}
+
+static void IRAM_ATTR rotary_isr_handler(void *arg) {
+  (void)arg;
+  uint8_t state = (uint8_t)((gpio_get_level(CONFIG_BTN_ROTARY_A_GPIO) << 1) |
+                            gpio_get_level(CONFIG_BTN_ROTARY_B_GPIO));
+  int step = rotary_feed(state);
+  if (step == 0) {
+    return;
+  }
+
+  BaseType_t woken = pdFALSE;
+  post_button_action_from_isr(step > 0 ? BTN_VOLUME_UP : BTN_VOLUME_DOWN,
+                              &woken);
+  if (woken) {
+    portYIELD_FROM_ISR();
+  }
+}
+
+// Configured a pin at a time, since the two channels may not agree on whether
+// an internal pull-up is available.
+static void configure_rotary_pin(int gpio) {
+  bool has_internal_pullup = (gpio < 34);
+  gpio_config_t io_conf = {
+      .pin_bit_mask = (1ULL << gpio),
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en =
+          has_internal_pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_ANYEDGE,
+  };
+  gpio_config(&io_conf);
+  gpio_isr_handler_add(gpio, rotary_isr_handler, NULL);
+
+  if (!has_internal_pullup) {
+    ESP_LOGW(TAG,
+             "Rotary encoder on GPIO %d: no internal pull-up, needs "
+             "external",
+             gpio);
+  }
+}
+
+static void configure_rotary(void) {
+  configure_rotary_pin(CONFIG_BTN_ROTARY_A_GPIO);
+  configure_rotary_pin(CONFIG_BTN_ROTARY_B_GPIO);
+
+  // Seed the state machine from the resting position, or the first edge
+  // decodes against a phantom transition.
+  s_rotary_state = (uint8_t)((gpio_get_level(CONFIG_BTN_ROTARY_A_GPIO) << 1) |
+                             gpio_get_level(CONFIG_BTN_ROTARY_B_GPIO));
+  s_rotary_accum = 0;
+
+  ESP_LOGI(TAG, "Rotary encoder on GPIO %d (A) / %d (B)",
+           CONFIG_BTN_ROTARY_A_GPIO, CONFIG_BTN_ROTARY_B_GPIO);
+}
+#endif // BTN_ROTARY_ENABLED
+
 static void configure_button(button_id_t id, int gpio, bool repeatable) {
   buttons[id].gpio = gpio;
   buttons[id].repeatable = repeatable;
@@ -299,7 +418,7 @@ esp_err_t buttons_init(void) {
 
   if (CONFIG_BTN_PLAY_PAUSE_GPIO < 0 && CONFIG_BTN_VOLUME_UP_GPIO < 0 &&
       CONFIG_BTN_VOLUME_DOWN_GPIO < 0 && CONFIG_BTN_NEXT_GPIO < 0 &&
-      CONFIG_BTN_PREV_GPIO < 0) {
+      CONFIG_BTN_PREV_GPIO < 0 && !BTN_ROTARY_ENABLED) {
     ESP_LOGI(TAG, "No buttons configured");
     return ESP_OK;
   }
@@ -325,6 +444,10 @@ esp_err_t buttons_init(void) {
   configure_button(BTN_VOLUME_DOWN, CONFIG_BTN_VOLUME_DOWN_GPIO, true);
   configure_button(BTN_NEXT, CONFIG_BTN_NEXT_GPIO, false);
   configure_button(BTN_PREV, CONFIG_BTN_PREV_GPIO, false);
+
+#if BTN_ROTARY_ENABLED
+  configure_rotary();
+#endif
 
   ESP_LOGI(TAG, "Buttons initialized (interrupt-driven)");
   return ESP_OK;

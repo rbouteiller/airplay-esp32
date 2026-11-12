@@ -1,0 +1,438 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+/**
+ * USB Audio Class (UAC) sink — ESP32 as a USB speaker.
+ *
+ * The board enumerates on the attached computer as a stereo USB audio
+ * output device.  PCM arriving from the host is buffered and written to
+ * the same I2S path AirPlay uses, so both sources share the DAC, its DSP
+ * and its volume control.
+ *
+ * Only one source may drive I2S at a time: the state callback lets the
+ * application suspend AirPlay while the host is streaming and resume it
+ * once the stream has been idle for CONFIG_USB_AUDIO_SINK_IDLE_MS.
+ *
+ * Note this is the opposite direction to audio_output_usb.c, which
+ * presents the board as a USB *microphone* fed by AirPlay.  The two are
+ * mutually exclusive.
+ */
+
+#include "usb_audio_sink.h"
+
+#include "audio_output.h"
+#include "dac.h"
+#include "playback_events.h"
+#include "settings.h"
+
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/ringbuf.h"
+#include "freertos/task.h"
+#include "usb_device_uac.h"
+
+#if CONFIG_USB_DEVICE_UAC_AS_PART
+#include "usb_desc_itf.h"
+#include "usb_descriptors.h"
+#endif
+
+#include <inttypes.h>
+#include <math.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+
+static const char *TAG = "usb_sink";
+
+#if CONFIG_UAC_SAMPLE_RATE != CONFIG_OUTPUT_SAMPLE_RATE_HZ
+#error \
+    "CONFIG_UAC_SAMPLE_RATE must match CONFIG_OUTPUT_SAMPLE_RATE_HZ — the UAC descriptor advertises one fixed rate and the sink does not resample"
+#endif
+
+#if CONFIG_UAC_SPEAKER_CHANNEL_NUM != 2
+#error "CONFIG_USB_AUDIO_SINK requires CONFIG_UAC_SPEAKER_CHANNEL_NUM=2"
+#endif
+
+#if !defined(CONFIG_UAC_BIT_RESOLUTION_16)
+#error "CONFIG_USB_AUDIO_SINK requires CONFIG_UAC_BIT_RESOLUTION_16"
+#endif
+
+#define BYTES_PER_FRAME 4 // 16-bit stereo
+
+// ~50 ms of slack between the USB stack and I2S, primed with ~20 ms so
+// the first writes don't immediately underrun.
+#define RINGBUF_SIZE \
+  ((size_t)(CONFIG_OUTPUT_SAMPLE_RATE_HZ / 20) * BYTES_PER_FRAME)
+#define RINGBUF_PREFETCH \
+  ((size_t)(CONFIG_OUTPUT_SAMPLE_RATE_HZ / 50) * BYTES_PER_FRAME)
+
+#define IDLE_TIMEOUT_US ((int64_t)CONFIG_USB_AUDIO_SINK_IDLE_MS * 1000)
+
+// usb_device_uac reads each 1 ms packet into a single buffer from the USB
+// interrupt and wakes its speaker task, which calls uac_output_cb(); a packet
+// that comes before the task has run overwrites the one before it, and only
+// the gap between our callbacks shows it.  Each callback runs less than 1 ms
+// after its packet, or a later one would have been delivered instead, so a
+// gap of g ms means at least floor(g) - 1 ms of audio never reached us.  The
+// task may have run late, the interrupt may have been held off, or the host
+// may have sent nothing; the gap alone does not say which.  The first
+// delivery after the host starts is the component's prefill of several
+// packets, and has no gap to measure.
+#define USB_BYTES_PER_MS \
+  ((size_t)(CONFIG_UAC_SAMPLE_RATE / 1000) * BYTES_PER_FRAME)
+
+#define SINK_TASK_STACK 4096
+#define SINK_TASK_PRIO  AUDIO_PLAYBACK_TASK_PRIORITY
+#if CONFIG_FREERTOS_UNICORE
+#define SINK_TASK_CORE 0
+#else
+#define SINK_TASK_CORE 1
+#endif
+
+#define VOLUME_MIN_DB (-30.0f)
+#define VOLUME_MAX_DB 0.0f
+// The range usb_device_uac advertises to the host, -50..0 dB in 1 dB steps,
+// which it hands over as 0..100: (dB + 50) * 2.
+#define HOST_VOLUME_MIN_DB (-50.0f)
+
+static RingbufHandle_t s_ringbuf;
+static TaskHandle_t s_task;
+static usb_audio_sink_state_cb_t s_state_cb;
+
+static volatile bool s_streaming;
+static volatile int64_t s_last_rx_us;
+static uint32_t s_dropped;
+static uint32_t s_underruns;
+static _Atomic uint32_t s_rx_bytes;
+static int64_t s_stats_us;
+// Audio that never reached uac_output_cb() this stream, and the longest gap
+// between two callbacks since the last stats line.  Written on the
+// component's task, read and reset on the sink task.
+static _Atomic uint32_t s_missing_ms;
+static _Atomic uint32_t s_gap_max_us;
+// Sink task only: what has been reported, and the stream's longest gap.
+static uint32_t s_missing_logged;
+static uint32_t s_stream_gap_max_us;
+
+#define STATS_INTERVAL_US 2000000
+
+// Host feature-unit updates are handled on the TinyUSB task during a
+// control transfer; defer the (I2C) DAC writes to the sink task so USB
+// never stalls behind the bus.  -1 means "nothing pending".
+static _Atomic int32_t s_pending_volume = -1;
+static _Atomic int32_t s_pending_mute = -1;
+// The host's volume twice over: on AirPlay's -30..0 dB scale, which a DAC's
+// own volume curve expects, and as the dB the host asked for, which the
+// software volume applies.
+static float s_unmuted_db = -15.0f;
+static float s_host_db = -15.0f;
+// Latched mute state, owned by the sink task.
+static bool s_muted;
+// Host volume as a software gain, for DACs that cannot attenuate themselves
+// (audio_output_write_pcm ignores it on those that can). Owned by the sink
+// task.
+static int32_t s_volume_q15 = 32768;
+
+// Only the host's mute means silence. Its slider stops at the bottom of the
+// range advertised above and carries on down in software, so silencing that
+// floor cut off the bottom of the slider: on Linux, whose slider is cubic,
+// everything under about 15 %.
+static int32_t volume_q15(bool muted, float db) {
+  if (muted) {
+    return 0;
+  }
+  if (db >= 0.0f) {
+    return 32768;
+  }
+  return (int32_t)(32768.0f * powf(10.0f, db / 20.0f));
+}
+
+// ============================================================================
+// UAC callbacks
+// ============================================================================
+
+// Host -> device PCM.  Runs on the component's usb_spk_task (priority
+// CONFIG_UAC_SPK_TASK_PRIORITY), not in interrupt context.
+static esp_err_t uac_output_cb(uint8_t *buf, size_t len, void *cb_ctx) {
+  (void)cb_ctx;
+
+  // Snapshot the handle: usb_audio_sink_init() may still be tearing down.
+  RingbufHandle_t ringbuf = s_ringbuf;
+  if (ringbuf == NULL || len == 0) {
+    return ESP_OK;
+  }
+
+  const int64_t now = esp_timer_get_time();
+  if (len <= USB_BYTES_PER_MS) {
+    const int64_t gap_us = now - s_last_rx_us;
+    if (gap_us >= 2000) {
+      atomic_fetch_add(&s_missing_ms, (uint32_t)(gap_us / 1000 - 1));
+    }
+    if (gap_us > (int64_t)atomic_load(&s_gap_max_us)) {
+      atomic_store(&s_gap_max_us, (uint32_t)gap_us);
+    }
+  }
+  s_last_rx_us = now;
+  atomic_fetch_add(&s_rx_bytes, (uint32_t)len);
+
+  if (xRingbufferSend(ringbuf, buf, len, 0) != pdTRUE) {
+    // Either the sink task is still handing I2S over from AirPlay, or the
+    // host is running ahead of our clock.  Dropping is preferable to
+    // blocking the USB stack.
+    s_dropped++;
+  }
+
+  if (!s_streaming && s_task != NULL) {
+    xTaskNotifyGive(s_task);
+  }
+  return ESP_OK;
+}
+
+static void uac_set_mute_cb(uint32_t mute, void *cb_ctx) {
+  (void)cb_ctx;
+  atomic_store(&s_pending_mute, mute ? 1 : 0);
+}
+
+// The component hands us 0..100 (mapped from the host's -50..0 dB).
+static void uac_set_volume_cb(uint32_t volume, void *cb_ctx) {
+  (void)cb_ctx;
+  if (volume > 100) {
+    volume = 100;
+  }
+  atomic_store(&s_pending_volume, (int32_t)volume);
+}
+
+static void apply_host_controls(void) {
+  int32_t mute = atomic_exchange(&s_pending_mute, -1);
+  if (mute >= 0) {
+    s_muted = (mute == 1);
+    ESP_LOGI(TAG, "Host %s", s_muted ? "muted" : "unmuted");
+  }
+
+  int32_t volume = atomic_exchange(&s_pending_volume, -1);
+  if (volume >= 0) {
+    s_unmuted_db = VOLUME_MIN_DB +
+                   ((float)volume / 100.0f) * (VOLUME_MAX_DB - VOLUME_MIN_DB);
+    s_host_db = HOST_VOLUME_MIN_DB + (float)volume / 2.0f;
+    ESP_LOGI(TAG, "Host volume %.0f dB", s_host_db);
+  }
+
+  // Mute is a latched state, not an event: a volume change while muted must
+  // update s_unmuted_db without lifting the mute.
+  if (mute >= 0 || volume >= 0) {
+    dac_set_volume(s_muted ? VOLUME_MIN_DB : s_unmuted_db);
+    s_volume_q15 = volume_q15(s_muted, s_host_db);
+  }
+}
+
+// ============================================================================
+// Writer task
+// ============================================================================
+
+static size_t ringbuf_filled(void) {
+  return RINGBUF_SIZE - xRingbufferGetCurFreeSize(s_ringbuf);
+}
+
+static void ringbuf_drain(void) {
+  size_t item_size = 0;
+  void *data;
+  while ((data = xRingbufferReceiveUpTo(s_ringbuf, &item_size, 0,
+                                        RINGBUF_SIZE)) != NULL) {
+    vRingbufferReturnItem(s_ringbuf, data);
+  }
+}
+
+// The longest callback gap since the last call, folded into the stream's.
+static uint32_t take_gap_max_us(void) {
+  uint32_t gap_us = atomic_exchange(&s_gap_max_us, 0);
+  if (gap_us > s_stream_gap_max_us) {
+    s_stream_gap_max_us = gap_us;
+  }
+  return gap_us;
+}
+
+// Diagnostic: the host's delivered frame rate should equal the I2S rate.  A
+// standing difference means the two clocks are not locked and the ring buffer
+// is absorbing the error until it runs dry or overflows.
+static void log_stats(void) {
+  int64_t now = esp_timer_get_time();
+  int64_t elapsed = now - s_stats_us;
+  if (elapsed < STATS_INTERVAL_US) {
+    return;
+  }
+  s_stats_us = now;
+  uint32_t bytes = atomic_exchange(&s_rx_bytes, 0);
+  uint32_t fps = (uint32_t)((uint64_t)(bytes / BYTES_PER_FRAME) * 1000000U /
+                            (uint64_t)elapsed);
+  ESP_LOGD(TAG,
+           "host %" PRIu32 " fps (i2s %d) ring %u/%u dropped %" PRIu32
+           " underruns %" PRIu32,
+           fps, CONFIG_OUTPUT_SAMPLE_RATE_HZ, (unsigned)ringbuf_filled(),
+           (unsigned)RINGBUF_SIZE, s_dropped, s_underruns);
+
+  uint32_t gap_us = take_gap_max_us();
+  uint32_t missing_ms = atomic_load(&s_missing_ms);
+  if (missing_ms != s_missing_logged) {
+    ESP_LOGW(TAG,
+             "%" PRIu32 " ms of USB audio missing (longest gap %" PRIu32
+             ".%" PRIu32 " ms)",
+             missing_ms - s_missing_logged, gap_us / 1000, gap_us % 1000 / 100);
+    s_missing_logged = missing_ms;
+  }
+}
+
+static void usb_sink_task(void *arg) {
+  (void)arg;
+  static const int16_t silence[256] = {0};
+
+  for (;;) {
+    if (!s_streaming) {
+      // Idle: wait for the host to start pushing frames, then let a small
+      // prefetch accumulate before taking the output over from AirPlay.
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      if (ringbuf_filled() < RINGBUF_PREFETCH) {
+        continue;
+      }
+      ESP_LOGI(TAG, "Host stream started");
+      s_streaming = true;
+      // An AirPlay session may have left the clock at its own rate, and this
+      // path writes to I2S directly without resampling.
+      audio_output_set_sample_rate(CONFIG_UAC_SAMPLE_RATE);
+      if (s_state_cb != NULL) {
+        s_state_cb(true);
+      }
+      // The board keeps the amplifier in DAC_POWER_OFF until it sees these,
+      // so without them the USB stream is written to a sleeping DAC.
+      // CLIENT_CONNECTED also clears whatever the display was last showing.
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_CONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_PLAYING, NULL);
+      // UAC carries no track info, so label the source instead.
+      playback_event_data_t meta = {0};
+      snprintf(meta.metadata.title, METADATA_STRING_MAX, "USB Audio");
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_METADATA, &meta);
+      s_dropped = 0;
+      s_underruns = 0;
+      atomic_store(&s_rx_bytes, 0);
+      atomic_store(&s_missing_ms, 0);
+      atomic_store(&s_gap_max_us, 0);
+      s_missing_logged = 0;
+      s_stream_gap_max_us = 0;
+      s_stats_us = esp_timer_get_time();
+      continue;
+    }
+
+    apply_host_controls();
+    log_stats();
+
+    size_t item_size = 0;
+    void *data =
+        xRingbufferReceiveUpTo(s_ringbuf, &item_size, pdMS_TO_TICKS(20), 512);
+    if (data != NULL) {
+      audio_output_write_pcm(data, item_size, s_volume_q15, portMAX_DELAY);
+      vRingbufferReturnItem(s_ringbuf, data);
+      continue;
+    }
+
+    if (esp_timer_get_time() - s_last_rx_us > IDLE_TIMEOUT_US) {
+      (void)take_gap_max_us();
+      ESP_LOGI(TAG,
+               "Host stream idle, releasing output (%" PRIu32
+               " dropped, %" PRIu32 " ms missing, longest gap %" PRIu32
+               ".%" PRIu32 " ms)",
+               s_dropped, atomic_load(&s_missing_ms),
+               s_stream_gap_max_us / 1000, s_stream_gap_max_us % 1000 / 100);
+      s_streaming = false;
+      ringbuf_drain();
+      audio_output_flush();
+      playback_events_emit(PLAYBACK_SOURCE_USB, PLAYBACK_EVENT_DISCONNECTED,
+                           NULL);
+      if (s_state_cb != NULL) {
+        s_state_cb(false);
+      }
+      continue;
+    }
+
+    // Short gap between USB packets — keep I2S fed rather than underrun.
+    // Through the same processing, so filter tails and volume ramps carry on
+    // rather than stop dead.
+    s_underruns++;
+    audio_output_write_pcm(silence, sizeof(silence), s_volume_q15,
+                           pdMS_TO_TICKS(10));
+  }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+esp_err_t usb_audio_sink_init(usb_audio_sink_state_cb_t state_cb) {
+  if (s_task != NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  (void)settings_get_volume(&s_unmuted_db);
+  s_host_db = s_unmuted_db;
+  s_volume_q15 = volume_q15(false, s_host_db);
+
+  s_state_cb = state_cb;
+  s_last_rx_us = esp_timer_get_time();
+
+  s_ringbuf = xRingbufferCreate(RINGBUF_SIZE, RINGBUF_TYPE_BYTEBUF);
+  if (s_ringbuf == NULL) {
+    ESP_LOGE(TAG, "Failed to allocate %u byte ring buffer",
+             (unsigned)RINGBUF_SIZE);
+    return ESP_ERR_NO_MEM;
+  }
+
+  if (xTaskCreatePinnedToCore(usb_sink_task, "usb_sink", SINK_TASK_STACK, NULL,
+                              SINK_TASK_PRIO, &s_task,
+                              SINK_TASK_CORE) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create writer task");
+    vRingbufferDelete(s_ringbuf);
+    s_ringbuf = NULL;
+    return ESP_ERR_NO_MEM;
+  }
+
+#if CONFIG_USB_DEVICE_UAC_AS_PART
+  // The host reads the name once, as it enumerates, so a rename shows after
+  // the next restart, as it does for AirPlay.
+  char name[65];
+  settings_get_device_name(name, sizeof(name));
+  usb_descriptors_set_name(name);
+#endif
+
+  uac_device_config_t cfg = {
+      .skip_tinyusb_init = false,
+      .output_cb = uac_output_cb,
+      .input_cb = NULL,
+      .set_mute_cb = uac_set_mute_cb,
+      .set_volume_cb = uac_set_volume_cb,
+      .cb_ctx = NULL,
+#if CONFIG_USB_DEVICE_UAC_AS_PART
+      // We own the descriptors, so the driver cannot infer this itself.
+      .spk_itf_num = ITF_NUM_AUDIO_STREAMING_SPK,
+      .mic_itf_num = 0,
+#endif
+  };
+
+  esp_err_t err = uac_device_init(&cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "uac_device_init failed: %s", esp_err_to_name(err));
+    vTaskDelete(s_task);
+    s_task = NULL;
+    vRingbufferDelete(s_ringbuf);
+    s_ringbuf = NULL;
+    return err;
+  }
+
+  ESP_LOGI(TAG, "USB audio sink ready (%d Hz stereo, %u ms buffer)",
+           CONFIG_UAC_SAMPLE_RATE,
+           (unsigned)(RINGBUF_SIZE / BYTES_PER_FRAME * 1000 /
+                      CONFIG_OUTPUT_SAMPLE_RATE_HZ));
+  return ESP_OK;
+}
+
+bool usb_audio_sink_is_streaming(void) {
+  return s_streaming;
+}

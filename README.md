@@ -8,8 +8,8 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/rbouteiller/airplay-esp32?style=flat-square)](https://github.com/rbouteiller/airplay-esp32/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/rbouteiller/airplay-esp32?style=flat-square)](https://github.com/rbouteiller/airplay-esp32/network)
-[![License](https://img.shields.io/badge/license-Non--Commercial-blue?style=flat-square)](LICENSE)
-[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.5+-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square)](LICENSE)
+[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v6.1+-red?style=flat-square)](https://docs.espressif.com/projects/esp-idf/)
 [![Platform](https://img.shields.io/badge/platform-ESP32%20%7C%20S2%20%7C%20S3%20%7C%20C5-green?style=flat-square)](https://www.espressif.com/en/products/socs)
 
 ### [Documentation](https://rbouteiller.github.io/airplay-esp32/) · [Install from your browser](https://rbouteiller.github.io/airplay-esp32/getting-started/flashing/) · [Troubleshooting](https://rbouteiller.github.io/airplay-esp32/troubleshooting/)
@@ -91,9 +91,28 @@ Documentation lives in [`docs/`](docs/) and is built with [Zensical](https://zen
 - [openairplay/airplay2-receiver](https://github.com/openairplay/airplay2-receiver) — Python AirPlay 2 implementation
 - [Espressif](https://github.com/espressif) — ESP-IDF framework and codec libraries
 
-## Legal
+## License
 
-**Non-commercial use only.** Commercial use requires explicit permission — see [LICENSE](LICENSE).
+Copyright © 2026 Rémi Bouteiller and the airplay-esp32 contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed in the
+hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the
+full text.
+
+[LICENSE-EXCEPTION](LICENSE-EXCEPTION) grants the additional permission needed to link
+this firmware against Espressif's closed binary components — notably the `esp_audio_codec`
+ALAC and AAC decoders, whose license restricts use to Espressif chips. Without it, neither
+this project nor anyone downstream could ship a working binary.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists the licenses of everything else
+that ends up in the firmware.
+
+Building a product on this? You may, including commercially, provided you release your
+source under the GPL as well.
+
+## Legal
 
 This is an independent project based on protocol analysis. Not affiliated with Apple Inc.
 Not guaranteed to work with future iOS or macOS versions. Provided as-is without warranty.

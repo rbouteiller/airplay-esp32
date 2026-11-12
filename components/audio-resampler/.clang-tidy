@@ -1,0 +1,9 @@
+# Vendored (dbry/audio-resampler): report bug findings, never fail.
+# Fixes belong upstream; style checks are off.
+InheritParentConfig: true
+# Appended to the parent's '*', so it must negate it.
+WarningsAsErrors: '-*'
+Checks: >
+  -bugprone-*,
+  -misc-*,
+  -readability-*

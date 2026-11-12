@@ -5,9 +5,15 @@
 #
 # When disabled, only the stub is compiled.
 
+set(ldfragments "")
+if(CONFIG_DISPLAY_DRIVER_ST7789)
+    list(APPEND ldfragments "lvgl_mem.lf")
+endif()
+
 idf_component_register(
     SRCS "display_stub.c"
     INCLUDE_DIRS "include"
+    LDFRAGMENTS ${ldfragments}
 )
 
 if(CONFIG_DISPLAY_ENABLED)
@@ -16,7 +22,8 @@ if(CONFIG_DISPLAY_ENABLED)
             "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c")
         target_link_libraries(${COMPONENT_LIB} PRIVATE
             idf::esp_lcd
-            idf::driver
+            idf::esp_driver_gpio
+            idf::esp_driver_spi
             idf::esp_timer
             idf::espressif__esp_lvgl_port
             idf::spiffs_storage)

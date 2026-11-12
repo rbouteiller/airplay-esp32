@@ -1,6 +1,8 @@
 dependencies:
   espressif/esp_lvgl_port:
-    version: "~2.3.0"
+    # 2.6.1 fixed the RGB panel callback for ESP-IDF 6.x
+    # (on_bounce_frame_finish -> on_frame_buf_complete).
+    version: "^2.6.1"
     rules:
       - if: "target == esp32s3"
   lvgl/lvgl:

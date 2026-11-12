@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "rtsp_server.h"
 
 #include <errno.h>
@@ -19,15 +22,16 @@
 #include "rtsp_crypto.h"
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
+#include "rtsp_rsa.h"
 
 #include "ntp_clock.h"
 #include "ptp_clock.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
+#include "settings.h"
 #include "dacp_client.h"
 
 static const char *TAG = "rtsp_server";
 
-#define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
 #define RTSP_BUFFER_LARGE   ((size_t)256 * 1024)
 
@@ -76,6 +80,10 @@ int32_t airplay_get_volume_q15(void) {
 
 void rtsp_server_request_resume(void) {
   s_resume_requested = true;
+}
+
+uint16_t airplay_rtsp_port(void) {
+  return settings_airplay_v1() ? 5000 : 7000;
 }
 
 // Helper to grow buffer
@@ -269,6 +277,13 @@ cleanup:
 
   // Immediate: stop audio and NTP
   audio_receiver_stop();
+  if (!slot->is_old) {
+    // The socket is gone, so the claim on the audio path goes with it. The DACP
+    // grace period below only decides when to report a disconnect. A replaced
+    // connection releases nothing: is_old is set before the replacement is
+    // accepted, so its SETUP already owns the claim.
+    audio_receiver_end_session();
+  }
   audio_output_flush();
   ntp_clock_stop();
 
@@ -282,7 +297,8 @@ cleanup:
   if (has_dacp_remote) {
     if (!slot->should_stop) {
       s_resume_requested = false;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PAUSED,
+                           NULL);
 
       // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
       for (int i = 0; i < 6 && !slot->should_stop; i++) {
@@ -336,17 +352,20 @@ cleanup:
       } else {
         ESP_LOGI(TAG, "Grace period expired — full disconnect");
         dacp_clear_session();
-        rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+        playback_events_emit(PLAYBACK_SOURCE_AIRPLAY,
+                             PLAYBACK_EVENT_DISCONNECTED, NULL);
       }
     } else {
       // Forcefully stopped (server shutdown or replaced by new client)
       dacp_clear_session();
-      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_DISCONNECTED,
+                           NULL);
     }
   } else {
     // v2 / unknown — no grace period, clear immediately.
     dacp_clear_session();
-    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_DISCONNECTED,
+                         NULL);
   }
 
   // When being replaced by a new client (is_old), skip global state changes —
@@ -424,7 +443,7 @@ static void server_task(void *pvParameters) {
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  server_addr.sin_port = htons(RTSP_PORT);
+  server_addr.sin_port = htons(airplay_rtsp_port());
 
   if (bind(server_socket, (struct sockaddr *)&server_addr,
            sizeof(server_addr)) < 0) {
@@ -445,7 +464,7 @@ static void server_task(void *pvParameters) {
     return;
   }
 
-  ESP_LOGI(TAG, "RTSP server listening on port %d", RTSP_PORT);
+  ESP_LOGI(TAG, "RTSP server listening on port %d", airplay_rtsp_port());
   server_running = true;
 
   while (server_running) {
@@ -542,6 +561,11 @@ esp_err_t rtsp_server_start(void) {
       return ESP_ERR_INVALID_STATE;
     }
   }
+
+  // Parsing the key and deriving the first blinding pair costs the best part
+  // of a second; a sender waiting on its OPTIONS response gives up before
+  // that. Do it before the listener exists so it cannot land mid-request.
+  rsa_init();
 
   BaseType_t task_ret =
       xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,

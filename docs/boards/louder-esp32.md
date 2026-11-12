@@ -1,10 +1,11 @@
-# Louder-ESP32 and Louder-ESP32-Plus
+# Louder-ESP32, Louder-ESP32-Plus and Louder-ESP32-S3-Pro
 
 The Sonocotta [Louder-ESP32](https://github.com/sonocotta/esp32-audio-dock) boards carry a
 TI **TAS58xx** combined DAC and Class-D amplifier, the same family the
 [Esparagus Audio Brick](esparagus-audio-brick.md) uses. Speakers connect directly.
 
-The **Plus** boards are fitted with a **TAS5825M**; the plain boards with a **TAS5805M**.
+The **Plus** and **Pro** boards are fitted with a **TAS5825M**; the plain boards with a
+**TAS5805M**.
 Both are driven by the same driver, which reads the die ID at startup, so the difference
 is what the part can do rather than which build you flash:
 
@@ -26,9 +27,12 @@ Volume is done in the amplifier (`CONFIG_DAC_CONTROLS_VOLUME`) rather than in so
 | `louder-esp32-plus-bt` | ESP32 | TAS5825M | yes | yes |
 | `louder-esp32-s3` | ESP32-S3 | TAS5805M | — | yes |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | — | yes |
+| `louder-esp32-s3-pro` | ESP32-S3 | TAS5825M | — | yes |
+| `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | — | yes |
+| `louder-esp32-s3-mini-uac` | ESP32-S3 | TAS5805M, bridged | — | — |
 
-Bluetooth Classic exists only on the original ESP32, so neither S3 board has a `-bt`
-build. On an ESP32 the published binary is the Bluetooth one.
+Bluetooth Classic exists only on the original ESP32, so no S3 board has a `-bt` build. On
+an ESP32 the published binary is the Bluetooth one.
 
 !!! note "Esparagus Louder is a separate board"
 
@@ -36,6 +40,104 @@ build. On an ESP32 the published binary is the Bluetooth one.
     amplifier family on Sonocotta's Esparagus form factor and has its own environments
     (`esparagus-louder`, `-bt`, `-s3`). Its ESP32 build differs from `louder-esp32` in
     pinout: it has a FAULTZ line and an RGB LED, and no `PDN` pin.
+
+## Louder-ESP32-Mini
+
+The [Louder-ESP32-Mini](https://sonocotta.com/louder-esp32-mini/) sits on the back of a
+single passive speaker. It carries an ESP32-S3 with 8 MB of flash and 8 MB of PSRAM and a
+TAS5805M, and a USB-C port that both powers the amplifier and flashes the board. It uses
+the Louder-ESP32-S3's pins, without the Ethernet or the display. Sonocotta's
+configurations for the 42 mm and 55 mm boards share the pins and the output wiring.
+
+Its amplifier is **bridged (PBTL)**: the board ties each channel's two half-bridges
+together, so all four drive the one speaker. That is wiring, not a setting, so the board
+has a build of its own. `louder-esp32-s3-mini` sets `CONFIG_TAS58XX_FORCE_PBTL`, which
+brings the amplifier up bridged before its outputs ever switch, and locks the Configuration
+page's Primary amplifier choice to bridged.
+
+!!! danger "Only flash the Mini's own build"
+
+    Every other Louder build starts the amplifier as a stereo pair, which drives the tied
+    half-bridges against each other, and lets the Speaker page choose stereo.
+
+A bridged TAS5805M plays the left I2S channel, and the TAS5805M has no input mixer to sum
+the pair into it here. So the board starts with the output channel set to **Mono (L+R)**.
+For a stereo pair of speakers, set one board to Left and the other to Right on the
+Speaker page.
+
+### USB audio
+
+`louder-esp32-s3-mini-uac` is the same build with [USB audio](../features/usb-audio.md)
+layered on, so the USB-C port that powers the board also makes it a USB speaker for the
+computer at the other end. The host's audio goes through the same mono mix, EQ and volume
+control as AirPlay's, and AirPlay is suspended while the host is streaming. It runs at
+48 kHz, and plays from macOS, Windows and Linux hosts alike.
+
+TinyUSB claims the USB port, so this build has no USB console, and reflashing over USB
+needs BOOT held while EN is pressed. [OTA updates](../reference/ota.md) sidestep both.
+
+### USB-C power on the 55 mm board
+
+The 55 mm board adds a Hynetek HUSB238A USB-PD trigger, so a USB-C charger can feed the
+amplifier more than the 5 V every port gives. The trigger asks for nothing until the
+firmware tells it to, and it forgets on every power loss, so the board asks again on every
+boot, before the amplifier comes up. The 42 mm board has no trigger; the same build runs
+both.
+
+Left to itself, the board asks the charger for the highest voltage it offers, up to
+20 V. To give the speaker less, choose a **USB-C supply** voltage in the Audio card of
+the Speaker page; the choice is kept across restarts. Choose what your speaker can take. 20 V needs
+a 65 W charger; a 30 W one manages 15 V. A charger that does not offer the voltage you
+chose gets the highest one below it, and a supply without USB-PD, such as a computer's
+port, stays at 5 V.
+
+The amplifier's **Analog gain** sets how far digital full scale swings the output, so it
+has to match the supply. Left to itself, the board sets it to the supply it got:
+
+| Supply | Analog gain | Most it delivers, 4 Ω / 8 Ω |
+| --- | --- | --- |
+| 5 V | −15.5 dB, the lowest it goes | about 3 / 1.5 W |
+| 9 V | −11 dB | about 9 / 4.5 W |
+| 12 V | −8.5 dB | about 15 / 8 W |
+| 15 V | −7 dB | about 22 / 11 W |
+| 20 V | −4.5 dB | about 39 / 19 W |
+
+On 5 V the gain runs out half a dB short, so the loudest passages clip slightly early.
+Matching in the analog gain rather than the digital volume also keeps the output stage's
+own noise down at low volume.
+
+A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
+has been strapped to a fixed voltage in hardware, plays at the 5 V level. The analog gain
+can also be set by hand on the Speaker page.
+
+The **Digital gain**, the level full volume plays at, stays at 0 dB unless you lower it,
+and nothing lowers it for you. An EQ boost needs room above full volume: the Output card
+on the EQ page shows how much is left, and the digital gain, there or on the Speaker
+page, is what to lower to make room. Left higher, the loudest passages clip; at low
+frequencies that is often hard to hear.
+
+!!! note "Never more than 20 V"
+
+    The board's supply capacitors are rated for 25 V and the TAS5805M for 26.4 V. The
+    trigger can negotiate up to 48 V from an EPR charger, but the firmware only ever asks
+    for the fixed 5–20 V offers, and never above `CONFIG_HUSB238A_MAX_VOLTS`.
+
+## Louder-ESP32-S3-Pro
+
+The **Louder-ESP32-S3-Pro** is a Louder-ESP32-S3-Plus with a screen and an LED. It keeps
+the Plus pinout — the same TAS5825M at the same I2C pins, the same Ethernet, the same
+amplifier `PDN` — and changes three things:
+
+- A **320×240 [ST7789 TFT](../features/tft-display.md)** on the display header in place
+  of the SH1106 OLED, rendered through LVGL 9 the same way the
+  [Audio Brick Dual](esparagus-audio-brick-dual-dac.md)'s is. It uses the Plus board's
+  display pins (CS 47, DC 38, RST 48) with the backlight on **GPIO 42**.
+- A **WS2812 status LED** on GPIO 21.
+- A cooling fan, PWM on GPIO 2 and tacho on GPIO 1, which **this firmware does not
+  drive**. GPIO 2 left alone runs the fan continuously; nothing reads the tacho.
+
+Because it is electrically a Plus board, the TAS5825M's process flows, PPC3 dumps and
+15-band EQ all behave as they do on `louder-esp32-s3-plus`.
 
 ## Features
 
@@ -45,7 +147,8 @@ build. On an ESP32 the published binary is the Bluetooth one.
 - 8 MB flash
 - [Bluetooth A2DP](../features/bluetooth.md) on the ESP32 variants
 - [W5500 SPI Ethernet](../features/ethernet.md) with automatic WiFi failover
-- [SH1106 OLED](../features/oled-display.md) over SPI, sharing the Ethernet bus
+- [SH1106 OLED](../features/oled-display.md) over SPI, sharing the Ethernet bus — or a
+  [320×240 ST7789 TFT](../features/tft-display.md) on the Pro
 
 ## Flashing
 
@@ -72,6 +175,10 @@ build. On an ESP32 the published binary is the Bluetooth one.
     # ESP32-S3 + TAS5825M
     pio run -e louder-esp32-s3-plus -t upload
     pio run -e louder-esp32-s3-plus -t uploadfs
+
+    # ESP32-S3 + TAS5825M, TFT and RGB LED
+    pio run -e louder-esp32-s3-pro -t upload
+    pio run -e louder-esp32-s3-pro -t uploadfs
     ```
 
 === "ESP-IDF"
@@ -83,7 +190,8 @@ build. On an ESP32 the published binary is the Bluetooth one.
     ```
 
     Swap in `config/sdkconfig.defaults.louder-esp32-s3-plus` after
-    `idf.py set-target esp32s3` for the S3 revision.
+    `idf.py set-target esp32s3` for the S3 revision, or
+    `config/sdkconfig.defaults.louder-esp32-s3-pro` for the Pro.
 
 ## Default GPIO assignments
 
@@ -116,6 +224,7 @@ toggle from playback events.
 
 - [Esparagus Audio Brick](esparagus-audio-brick.md) — the same TAS58xx driver, EQ and PPC3 workflow
 - [HybridFlow DSP](../features/hybridflow.md)
+- [TFT display](../features/tft-display.md)
 - [Bluetooth A2DP](../features/bluetooth.md)
 - [Ethernet (W5500)](../features/ethernet.md)
 - [Build environments](../reference/build-environments.md)

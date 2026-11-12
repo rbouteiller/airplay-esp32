@@ -54,35 +54,21 @@ if [ -n "$UNFORMATTED" ]; then
 fi
 
 # ── Lint (clang-tidy) ───────────────────────────────────────────────
-# Only run if compile_commands.json exists (requires a prior build).
-if [ ! -f build/compile_commands.json ]; then
-  echo "pre-commit: build/compile_commands.json not found — skipping lint"
+# Needs ESP-IDF's clang-tidy (see scripts/lint.sh). Headers are checked via
+# the sources that include them.
+STAGED_C=$(echo "$STAGED" | { grep '\.c$' || true; })
+if [ -z "$STAGED_C" ]; then
   exit 0
 fi
-
-# Prefer brew llvm if available (macOS)
-if command -v brew &>/dev/null; then
-  LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null)" || true
-  [ -n "$LLVM_PREFIX" ] && export PATH="$LLVM_PREFIX/bin:$PATH"
-fi
-
-if ! command -v clang-tidy &>/dev/null; then
-  echo "pre-commit: clang-tidy not found — skipping lint"
+if ! command -v idf.py &>/dev/null; then
+  echo "pre-commit: no ESP-IDF environment — skipping lint"
+  echo "  Run: . \$IDF_PATH/export.sh"
   exit 0
 fi
 
 echo "pre-commit: running clang-tidy on staged files..."
-WARNINGS=0
-for file in $STAGED; do
-  OUTPUT=$(clang-tidy -p build "$file" 2>&1 || true)
-  FILTERED=$(echo "$OUTPUT" | grep -v "file not found \[clang-diagnostic" || true)
-  if echo "$FILTERED" | grep -q ": warning:"; then
-    echo "$FILTERED" | grep -E "(: warning:|: note:)"
-    WARNINGS=1
-  fi
-done
-
-if [ "$WARNINGS" -ne 0 ]; then
+# shellcheck disable=SC2086 # one path per word
+if ! scripts/lint.sh $STAGED_C; then
   echo ""
   echo "pre-commit: clang-tidy found issues — commit aborted"
   exit 1

@@ -1,3 +1,4 @@
+# DeprecatedOrUnsafeBufferHandling wants Annex K *_s functions; newlib has none.
 Checks: >
   -*,
   bugprone-*,
@@ -5,6 +6,7 @@ Checks: >
   -bugprone-reserved-identifier,
   -bugprone-branch-clone,
   clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   misc-*,
   -misc-unused-parameters,
   -misc-include-cleaner,
@@ -20,11 +22,15 @@ Checks: >
   readability-misleading-indentation,
   readability-redundant-declaration,
 
-WarningsAsErrors: ''
+# Vendored directories override this to report only.
+WarningsAsErrors: '*'
 
 HeaderFilterRegex: 'main/.*'
 
 CheckOptions:
+  # int8_t is numeric (e.g. negative font metrics), not a character.
+  - key: bugprone-signed-char-misuse.CharTypdefsToIgnore
+    value: 'int8_t'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.VariableCase

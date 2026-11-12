@@ -58,6 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the docs republish below. A release created with GITHUB_TOKEN does
+      # not fire the `release` event, so the docs site has to be dispatched
+      # explicitly or the browser installer keeps serving the old binaries.
+      actions: write
     steps:
       - name: Download all firmware artifacts
         uses: actions/download-artifact@v6
@@ -74,3 +78,19 @@ jobs:
           files: release-artifacts/*.bin
           make_latest: true
           generate_release_notes: true
+          # The GPL requires the Corresponding Source to travel with the
+          # binaries. Pointing at the exact tag they were built from satisfies
+          # that, so it has to appear on every release.
+          append_body: true
+          body: |
+            These binaries are free software under
+            [GPL-3.0-or-later](https://github.com/${{ github.repository }}/blob/v${{ needs.validate-release-version.outputs.version }}/LICENSE),
+            with the Espressif binary component
+            [exception](https://github.com/${{ github.repository }}/blob/v${{ needs.validate-release-version.outputs.version }}/LICENSE-EXCEPTION).
+            The complete corresponding source is this repository at tag
+            `v${{ needs.validate-release-version.outputs.version }}`.
+
+      - name: Republish the docs site so the installer picks up the new binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main

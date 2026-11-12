@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * DAC dispatch layer
  *
@@ -35,9 +38,15 @@ void dac_set_power_mode(dac_power_mode_t mode) {
   }
 }
 
-void dac_on_i2s_started(void) {
+void dac_on_i2s_stopping(void) {
+  if (s_ops && s_ops->on_i2s_stopping) {
+    s_ops->on_i2s_stopping();
+  }
+}
+
+void dac_on_i2s_started(uint32_t sample_rate_hz) {
   if (s_ops && s_ops->on_i2s_started) {
-    s_ops->on_i2s_started();
+    s_ops->on_i2s_started(sample_rate_hz);
   }
 }
 

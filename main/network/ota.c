@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "ota.h"
 
 #include "esp_app_format.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
-#include "mbedtls/sha256.h"
+#include "psa/crypto.h"
 #include <string.h>
 #include <sys/param.h>
 
@@ -45,7 +48,14 @@ static esp_err_t ota_validate_image(const uint8_t *image, size_t len) {
     const uint8_t *expected_hash = image + data_len;
 
     uint8_t computed_hash[32];
-    mbedtls_sha256(image, data_len, computed_hash, 0);
+    size_t computed_hash_len = 0;
+    psa_crypto_init();
+    if (psa_hash_compute(PSA_ALG_SHA_256, image, data_len, computed_hash,
+                         sizeof(computed_hash),
+                         &computed_hash_len) != PSA_SUCCESS) {
+      ESP_LOGE(TAG, "SHA-256 hash computation failed");
+      return ESP_ERR_INVALID_STATE;
+    }
 
     if (memcmp(computed_hash, expected_hash, 32) != 0) {
       ESP_LOGE(TAG, "SHA-256 mismatch — firmware is corrupt");

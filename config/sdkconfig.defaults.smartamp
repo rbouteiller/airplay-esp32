@@ -7,6 +7,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions-4m.csv"
 CONFIG_DAC_TAS58XX=y
 CONFIG_DAC_CONTROLS_VOLUME=y
 
+# Bluetooth and a 1.92MB app slot leave 4% free before Sendspin, and 1% after.
+# That is too little to absorb any future growth, so it is the one shipping
+# target built without it.
+CONFIG_SENDSPIN_ENABLE=n
+
 # GPIO config
 CONFIG_I2S_BCK_IO=13
 CONFIG_I2S_WS_IO=33
