@@ -12,7 +12,6 @@
 #include "sdkconfig.h"
 #include <inttypes.h>
 #include <math.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
