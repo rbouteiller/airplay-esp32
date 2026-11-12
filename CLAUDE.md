@@ -212,7 +212,7 @@ components/
 
 ## Code Quality
 
-**Requirements**: ESP-IDF >= 5.5.5. Sendspin needs `ws_post_handshake_cb`, which only landed in v5.5.5 — on an older 5.5.x the build dies in `sendspin_register()` unless `CONFIG_SENDSPIN_ENABLE=n`. The CI workflows pin the same version. **PlatformIO gets 5.5.5 from the pioarduino platform pinned in `[env]`**, not from `platformio/espressif32`, which is stuck on 5.5.3 — and pinning only `framework-espidf` is not enough, because 5.5.5's `tool_version_check.cmake` rejects every toolchain but `esp-14.2.0_20260121`. The platform has to move as a unit.
+**Requirements**: ESP-IDF >= 6.1. CI and PlatformIO use a platform/toolchain matching that minimum.
 
 **Formatting**: LLVM-style, 2-space indent, 80-char column limit. See `.clang-format`.
 

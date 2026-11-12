@@ -177,7 +177,6 @@ static void network_monitor_task(void *pvParameters) {
     }
 
     had_eth = eth_up;
-    has_network = eth_up || wifi_is_connected();
 
     if (has_network == had_network) {
       continue;

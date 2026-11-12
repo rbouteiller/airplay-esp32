@@ -207,7 +207,7 @@ static tas57xx_input_src_t s_input_src = TAS57XX_INPUT_MIX;
 static const uint8_t tas575x_addrs[] = {TAS575x, 0x4D, 0x4E, 0x4F};
 
 static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
-                           ...);
+                           const uint8_t *data);
 static int tas57xx_detect_all(i2c_master_bus_handle_t bus);
 static void tas57xx_reprogram_locked(void);
 static void tas57xx_enable_speaker(bool enable);
@@ -534,8 +534,8 @@ static esp_err_t tas57xx_write_seq(tas57xx_dev_t *d,
  * the init sequence is replayed after the download to take those back.
  */
 static void tas57xx_program_device(tas57xx_dev_t *d) {
-  write_cmd(d->handle, TAS57XX_MUTE);
-  write_cmd(d->handle, TAS57XX_STANDBY);
+  write_cmd(d->handle, TAS57XX_MUTE, NULL);
+  write_cmd(d->handle, TAS57XX_STANDBY, NULL);
   tas57xx_write_seq(d, tas57xx_init_seq);
 
   // The ROM program runs happily on a BCK-derived PLL, but the miniDSP needs a
@@ -586,8 +586,8 @@ static void tas57xx_program_device(tas57xx_dev_t *d) {
       //
       // CRAM is unreachable while the DSP runs, so adaptive mode also has to
       // be set back in standby, the order PurePath Control Console uses.
-      write_cmd(d->handle, TAS57XX_MUTE);
-      write_cmd(d->handle, TAS57XX_STANDBY);
+      write_cmd(d->handle, TAS57XX_MUTE, NULL);
+      write_cmd(d->handle, TAS57XX_STANDBY, NULL);
       vTaskDelay(pdMS_TO_TICKS(10));
 
       const uint8_t page0 = 0x00;
@@ -612,7 +612,7 @@ static void tas57xx_program_device(tas57xx_dev_t *d) {
       board_i2c_write(d->handle, TAS57XX_REG_GPIO_OE, &gpio_oe,
                       sizeof(gpio_oe));
 
-      write_cmd(d->handle, TAS57XX_ACTIVE);
+      write_cmd(d->handle, TAS57XX_ACTIVE, NULL);
     }
   } else if (s_flow_resident) {
     // A flow is still in the miniDSP RAM and nothing is replacing it, so only
@@ -626,7 +626,8 @@ static void tas57xx_program_device(tas57xx_dev_t *d) {
                     sizeof(err_masks));
   }
 
-  write_cmd(d->handle, TAS57XX_MUTE); // a flow's tail exits shutdown unmuted
+  write_cmd(d->handle, TAS57XX_MUTE,
+            NULL); // a flow's tail exits shutdown unmuted
   if (download) {
     s_flow_resident = true;
     tas57xx_verify_hf(d);
@@ -960,11 +961,11 @@ static void tas57xx_redownload_locked(void) {
     return;
   }
   for (int i = 0; i < s_dev_count; i++) {
-    write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
+    write_cmd(s_devs[i].handle, TAS57XX_ACTIVE, NULL);
   }
   vTaskDelay(pdMS_TO_TICKS(50));
   for (int i = 0; i < s_dev_count; i++) {
-    write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
+    write_cmd(s_devs[i].handle, TAS57XX_UNMUTE, NULL);
   }
   tas57xx_enable_speaker(true);
 }
@@ -1574,8 +1575,8 @@ static void tas57xx_restore_config(void) {
  */
 static void tas57xx_reprogram_locked(void) {
   for (int i = 0; i < s_dev_count; i++) {
-    write_cmd(s_devs[i].handle, TAS57XX_MUTE);
-    write_cmd(s_devs[i].handle, TAS57XX_STANDBY);
+    write_cmd(s_devs[i].handle, TAS57XX_MUTE, NULL);
+    write_cmd(s_devs[i].handle, TAS57XX_STANDBY, NULL);
   }
   // Wait for the standby state to settle before writing the miniDSP config.
   vTaskDelay(pdMS_TO_TICKS(50));
@@ -1583,8 +1584,8 @@ static void tas57xx_reprogram_locked(void) {
   // A flow ends with its own exit-shutdown tail, which leaves the device
   // active and unmuted; park it back in standby for the caller.
   for (int i = 0; i < s_dev_count; i++) {
-    write_cmd(s_devs[i].handle, TAS57XX_MUTE);
-    write_cmd(s_devs[i].handle, TAS57XX_STANDBY);
+    write_cmd(s_devs[i].handle, TAS57XX_MUTE, NULL);
+    write_cmd(s_devs[i].handle, TAS57XX_STANDBY, NULL);
   }
 }
 
@@ -1762,7 +1763,7 @@ static void tas57xx_monitor_task(void *arg) {
 static void tas57xx_enable_speaker(bool enable) {
   for (int i = 0; i < s_dev_count; i++) {
     write_cmd(s_devs[i].handle,
-              enable ? TAS57XX_ANALOGUE_ON : TAS57XX_ANALOGUE_OFF);
+              enable ? TAS57XX_ANALOGUE_ON : TAS57XX_ANALOGUE_OFF, NULL);
   }
 }
 
@@ -1775,8 +1776,8 @@ static void tas57xx_set_power_mode(dac_power_mode_t mode) {
       tas57xx_reprogram_locked();
     } else {
       for (int i = 0; i < s_dev_count; i++) {
-        write_cmd(s_devs[i].handle, TAS57XX_MUTE);
-        write_cmd(s_devs[i].handle, TAS57XX_STANDBY);
+        write_cmd(s_devs[i].handle, TAS57XX_MUTE, NULL);
+        write_cmd(s_devs[i].handle, TAS57XX_STANDBY, NULL);
       }
     }
     break;
@@ -1787,13 +1788,13 @@ static void tas57xx_set_power_mode(dac_power_mode_t mode) {
       tas57xx_reprogram_locked();
     }
     for (int i = 0; i < s_dev_count; i++) {
-      write_cmd(s_devs[i].handle, TAS57XX_MUTE);
-      write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
+      write_cmd(s_devs[i].handle, TAS57XX_MUTE, NULL);
+      write_cmd(s_devs[i].handle, TAS57XX_ACTIVE, NULL);
     }
     // Allow PLL lock and charge pump settling before unmuting
     vTaskDelay(pdMS_TO_TICKS(50));
     for (int i = 0; i < s_dev_count; i++) {
-      write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
+      write_cmd(s_devs[i].handle, TAS57XX_UNMUTE, NULL);
     }
     tas57xx_enable_speaker(true);
     // The DSP only boots on the way to the run state, so this is the first
@@ -1813,8 +1814,8 @@ static void tas57xx_set_power_mode(dac_power_mode_t mode) {
     s_flow_resident = false; // powerdown wipes the miniDSP RAM
     for (int i = 0; i < s_dev_count; i++) {
       s_devs[i].has_input_mix = false;
-      write_cmd(s_devs[i].handle, TAS57XX_MUTE);
-      write_cmd(s_devs[i].handle, TAS57XX_DOWN);
+      write_cmd(s_devs[i].handle, TAS57XX_MUTE, NULL);
+      write_cmd(s_devs[i].handle, TAS57XX_DOWN, NULL);
     }
     break;
   default:
@@ -1864,11 +1865,11 @@ static void tas57xx_on_i2s_started(uint32_t sample_rate_hz) {
     tas57xx_reprogram_locked();
     if (s_power_state == DAC_POWER_ON) {
       for (int i = 0; i < s_dev_count; i++) {
-        write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
+        write_cmd(s_devs[i].handle, TAS57XX_ACTIVE, NULL);
       }
       vTaskDelay(pdMS_TO_TICKS(50));
       for (int i = 0; i < s_dev_count; i++) {
-        write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
+        write_cmd(s_devs[i].handle, TAS57XX_UNMUTE, NULL);
       }
       tas57xx_enable_speaker(true);
     }
@@ -1934,7 +1935,7 @@ static void tas57xx_apply_volume_locked(void) {
     for (int ch = 0; ch < TAS57XX_CHANNELS; ch++) {
       uint8_t reg_val = tas57xx_db_to_reg(
           s_ch_muted[ch] ? TAS57XX_VOL_MIN_DB : dev_db + s_ch_trim_db[ch]);
-      write_cmd(s_devs[i].handle, ch_cmd[ch], reg_val);
+      write_cmd(s_devs[i].handle, ch_cmd[ch], &reg_val);
     }
   }
 }
@@ -2078,27 +2079,21 @@ const dac_ops_t dac_tas57xx_ops = {
 };
 
 static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
-                           ...) {
-  va_list args;
-  esp_err_t err = ESP_OK;
-  va_start(args, cmd);
+                           const uint8_t *data) {
+  esp_err_t err;
 
-  switch (cmd) {
-  case TAS57XX_SET_VOLUME_A:
-  case TAS57XX_SET_VOLUME_B:
-    uint8_t val = (uint8_t)va_arg(args, int);
-    err = board_i2c_write(handle, tas57xx_cmd[cmd].reg, &val, sizeof(uint8_t));
-    break;
-  default:
-    err = board_i2c_write(handle, tas57xx_cmd[cmd].reg,
-                          &(tas57xx_cmd[cmd].value), sizeof(uint8_t));
+  if ((cmd == TAS57XX_SET_VOLUME_A || cmd == TAS57XX_SET_VOLUME_B) &&
+      data == NULL) {
+    ESP_LOGE(TAG, "Missing data for TAS57xx volume command");
+    return ESP_ERR_INVALID_ARG;
   }
+
+  const uint8_t *value = data != NULL ? data : &tas57xx_cmd[cmd].value;
+  err = board_i2c_write(handle, tas57xx_cmd[cmd].reg, value, sizeof(*value));
 
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed i2c write to TAS57xx: %s", esp_err_to_name(err));
   }
-
-  va_end(args);
   return err;
 }
 

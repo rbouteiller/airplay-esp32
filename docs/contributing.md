@@ -2,11 +2,9 @@
 
 ## Requirements
 
-ESP-IDF **v5.5.5 or newer**. Sendspin, which is built into almost every image by default,
-needs the WebSocket post-handshake callback that landed in v5.5.5; on an older 5.5.x
-release build with `CONFIG_SENDSPIN_ENABLE=n`. PlatformIO gets a matching toolchain from
-the pioarduino platform pinned in `platformio.ini`, so no manual ESP-IDF install is needed
-for that route. Clone with submodules:
+ESP-IDF **v6.1 or newer**. PlatformIO installs the platform and matching toolchain pinned
+in `platformio.ini`, so no manual ESP-IDF install is needed for that route. Clone with
+submodules:
 
 ```bash
 git clone --recursive https://github.com/rbouteiller/airplay-esp32
