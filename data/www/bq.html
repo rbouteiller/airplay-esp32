@@ -1,0 +1,2953 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Biquad EQ - AirPlay Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
+.wrap{max-width:900px;margin:0 auto}
+.header{text-align:center;padding:20px 0}
+.header h1{font-size:24px;font-weight:600;margin-bottom:4px}
+.header p{color:#888;font-size:13px}
+.card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn-secondary.on{background:#e94560}
+.btn-secondary.on:hover{background:#d63850}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+.actions.top{margin:0 0 12px}
+/* Narrower than 1200 px the cards stack: plots, output levels, chain.
+   From 1200 px the plots sit on the left and stay in view while the chain
+   beside them is edited, with the output levels above the chain. */
+.cq{container-type:inline-size}
+.work{display:grid;grid-template-columns:minmax(0,1fr);
+      grid-template-areas:'plots' 'vol' 'chain'}
+#vol-card{grid-area:vol}
+#plots{grid-area:plots}
+#chain-card{grid-area:chain}
+/* Which output is selected drives both the plots and the chain. The tabs
+   head the chain card, beside the rows they pick; the plots name the
+   selected output in their legend. */
+.picker{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;
+        margin-bottom:14px;padding-bottom:14px;
+        border-bottom:1px solid rgba(255,255,255,0.08)}
+.picker .tabs{margin-bottom:0}
+/* A one-amplifier speaker has no amplifier tabs; the empty box would still
+   take a gap before the output tabs. */
+#amp-tabs:empty{display:none}
+/* Wraps under the amplifier tabs as a whole rather than stacking its own
+   tabs, and grows so the copy button keeps to the far end. */
+#ch-tabs{flex:1 0 auto}
+.viewrow{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;margin-bottom:12px}
+.viewrow h2{margin-bottom:0}
+.viewrow .tabs{margin:0 0 0 auto}
+.msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+.msg.warn{background:rgba(110,78,10,0.5)}
+.msg a{color:inherit}
+.hint{color:#888;font-size:12px;margin-top:8px;line-height:1.5}
+input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
+select option{background:#16213e}
+input:disabled,select:disabled{opacity:0.25}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.tab{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#aaa;padding:8px 12px;font-size:12px;cursor:pointer}
+.tab.on{background:#e94560;border-color:#e94560;color:#fff}
+/* Sits with the output tabs it acts on, at the far end of their row. */
+#copy-btn{margin-left:auto}
+.gang{display:flex;align-items:center;gap:8px;font-size:12px;color:#aaa;margin-bottom:14px}
+.gang input{accent-color:#e94560;width:16px;height:16px}
+.trim{display:flex;align-items:center;gap:10px;font-size:12px;color:#aaa;margin-bottom:14px}
+.trim input[type=range]{accent-color:#e94560;flex:1;max-width:260px}
+.trim select{width:auto;min-width:220px}
+.trim b{color:#fff;font-weight:600;min-width:52px;text-align:right}
+.trim label{min-width:130px}
+.trim input[type=number]{width:96px;flex:0 0 auto}
+.trim.dl{flex-wrap:wrap}
+.trim small{color:#888;white-space:nowrap}
+.mute{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
+      color:#aaa;border-radius:8px;padding:5px 12px;font-size:11px;
+      cursor:pointer;min-width:62px}
+.mute.on{background:#e94560;border-color:#e94560;color:#fff}
+.muted{opacity:.45}
+/* Read-outs rather than controls: the value, then why it is what it is. */
+.chainwrap{overflow-x:auto}
+.chaininner{min-width:770px}
+.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr 34px 34px;gap:6px;align-items:center;margin-bottom:6px}
+.bqhead{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
+.bq .n{font-size:11px;color:#666;text-align:right}
+.bq input[type=checkbox]{accent-color:#e94560;width:16px;height:16px;cursor:pointer}
+/* Narrower padding pays for the lock column: a gain such as -8.80 still fits. */
+.bq input[type=number]{padding-left:5px;padding-right:5px}
+/* A locked filter is one an import leaves where it is. */
+.bq.locked .n{color:#e94560}
+.bq.locked select,.bq.locked input[type=number]{border-color:rgba(233,69,96,0.4)}
+.bqc{display:none;grid-template-columns:24px repeat(5,1fr) auto;gap:6px;align-items:center;margin:-2px 0 8px;min-width:770px}
+.bqc .n{font-size:10px;color:#666;text-align:right}
+.xo{display:none;margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;background:rgba(0,0,0,0.2)}
+.xo.on{display:block}
+.xo .actions{margin-top:12px}
+.xo input[type=number]{width:auto;min-width:120px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px 14px}
+.fgrid input[type=number]{width:100%;min-width:0}
+.fld label{display:block;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.fld input[type=file]{font-size:11px;color:#aaa;width:100%}
+.plot{width:100%;height:230px;display:block;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin-bottom:14px;cursor:crosshair}
+.plotlab{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.headroom{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:14px}
+.headroom div{background:rgba(0,0,0,0.2);padding:10px 12px;border-radius:8px}
+.headroom label{display:block;font-size:11px;color:#888;margin-bottom:4px}
+.headroom b{font-size:14px;font-weight:500;color:#fff}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#999;margin-bottom:6px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:11px;height:11px;border-radius:3px}
+.bar{position:sticky;bottom:var(--sh-bottom,0px);background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bar .state{font-size:12px;color:#aaa}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
+.dot.dirty{background:#e94560}
+/* A file holds the whole tuning rather than one chain, so these sit with
+   commit and revert, at the far end of the bar. */
+.bar .files{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+/* Last, so it overrides the single-column sizes above. */
+@container (min-width:1200px){
+  .wrap{max-width:1800px}
+  .work{grid-template-columns:minmax(0,1fr) 760px;column-gap:16px;
+        grid-template-areas:'plots vol' 'plots chain';align-items:start}
+  /* Leaves room for the bar pinned under it. */
+  #plots{position:sticky;top:16px;overflow-y:auto;
+         max-height:calc(100vh - 128px - var(--sh-bottom,0px))}
+  /* Shorter on a short screen, so both plots fit beside the chain. */
+  .plot{height:clamp(150px,25vh,260px)}
+  /* The column is fixed at a width the rows fit, which gives the plots the
+     slack the rows had at 770 px. Letting the tracks shrink below their
+     longest option keeps a type name from pushing the row sideways. */
+  .chaininner,.bqc{min-width:0}
+  .bq,.bqhead{grid-template-columns:24px minmax(0,1.5fr) minmax(0,1.3fr)
+    minmax(0,.8fr) minmax(0,.7fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) 34px 34px}
+}
+</style></head><body>
+<script src='/shell.js'></script>
+<div class='cq'><div class='wrap'>
+<div class='header'><h1>Biquad EQ</h1><p id='sub'>Loading&hellip;</p></div>
+
+<div id='banner'></div>
+
+<div class='work'>
+<div class='card' id='plots'>
+<div class='viewrow'>
+<h2>Response</h2>
+<div class='tabs' id='view-tabs'>
+<button class='tab' id='vt-one' onclick="pickView('one')">Selected output</button>
+<button class='tab' id='vt-all' onclick="pickView('all')">All outputs</button>
+</div></div>
+<div id='one-wrap'>
+<div class='legend' id='legend'></div>
+<div class='plotlab'>Magnitude</div>
+<canvas id='mag' class='plot' width='1640' height='460'></canvas>
+<div class='plotlab'>Phase</div>
+<canvas id='phase' class='plot' width='1640' height='460'></canvas>
+<p class='hint'>Curves are computed with the same model the firmware uses, at
+the amplifier's processing rate. Faint lines are individual sections, bold is
+the cascade.</p>
+</div>
+<div id='all-wrap'>
+<label class='gang'>
+<input type='checkbox' id='sumq' onchange='plotAll()' checked>
+<span>Show what the outputs sum to</span></label>
+<div class='legend' id='all-legend'></div>
+<canvas id='all' class='plot' width='1640' height='460'></canvas>
+<p class='hint'>Every output that is driving a speaker, across both
+amplifiers, so a crossover split between them reads as one picture.</p>
+<p class='hint' id='sum-hint' style='display:none'>The sum is taken on the
+complex response, not on the curves, because two outputs feeding two drivers
+add as vectors. A crossover is right when the sum runs flat through the corner;
+a dip there means the branches are cancelling, so tick Inv on either one. This
+is the response of the filters alone; it knows nothing of the drivers, their
+spacing or the room.</p>
+</div>
+<div class='headroom' id='headroom' style='display:none'>
+<div><label>Max gain with boost</label><b id='hr-gain'>&mdash;</b></div>
+<div><label>Room before clipping</label><b id='hr-room'>&mdash;</b></div>
+</div>
+</div>
+
+<div class='card' id='chain-card'>
+<h2 id='chain-title'>Filter Chain</h2>
+<div class='picker' id='picker'>
+<div class='tabs' id='amp-tabs'></div>
+<div class='tabs' id='ch-tabs'></div>
+</div>
+<div class='actions top'>
+<button class='btn btn-primary' onclick='apply()'>Apply</button>
+<button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
+<button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
+<button class='btn btn-secondary' id='xo-btn' onclick='xoToggle()'>Build crossover&hellip;</button>
+<button class='btn btn-secondary' id='aeq-btn' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
+</div>
+<div class='xo' id='xo'>
+<div class='trim'>
+<label for='xo-layout'>Layout</label>
+<select id='xo-layout' onchange='xoSync()'></select></div>
+<div class='trim'>
+<label for='xo-freq'>Crossover Hz</label>
+<input type='number' id='xo-freq' min='20' max='16000' step='10' value='2500'></div>
+<div class='trim'>
+<label for='xo-align'>Slope</label>
+<select id='xo-align' onchange='xoSync()'></select></div>
+<p class='hint' id='xo-hint'></p>
+<div class='actions'>
+<button class='btn btn-primary' id='xo-go' onclick='xoBuild()'>Build</button>
+<button class='btn btn-secondary' onclick='xoToggle()'>Cancel</button>
+</div>
+</div>
+<div class='xo' id='aeq'>
+<div class='fgrid'>
+<div class='fld'><label>Response file</label>
+<input type='file' id='aeq-file' accept='.txt,.csv,.frd,.dat'
+       onchange='aeqLoad(this)'></div>
+<div class='fld'><label>Fit from Hz</label>
+<input type='number' id='aeq-lo' min='10' max='20000' step='1' value='20'></div>
+<div class='fld'><label>Fit to Hz</label>
+<input type='number' id='aeq-hi' min='10' max='20000' step='1' value='20000'></div>
+<div class='fld'><label>Smoothing 1/N oct</label>
+<input type='number' id='aeq-sm' min='1' max='48' step='1' value='6'
+       oninput='plot()'></div>
+<div class='fld'><label>Filters to use <b id='aeq-room'></b></label>
+<input type='number' id='aeq-n' min='1' max='15' step='1' value='10'></div>
+<div class='fld'><label>Keep first N sections</label>
+<input type='number' id='aeq-keep' min='0' max='14' step='1' value='0'
+       oninput='aeqRoomSync();plot()'></div>
+<div class='fld'><label>Max total boost dB</label>
+<input type='number' id='aeq-up' min='0' max='20' step='0.5' value='6'></div>
+<div class='fld'><label>Max total cut dB</label>
+<input type='number' id='aeq-dn' min='0' max='20' step='0.5' value='12'></div>
+</div>
+<label class='gang' style='margin-top:14px'>
+<input type='checkbox' id='aeq-shelf' checked>
+<span>Use bass and treble shelves as well</span></label>
+<p class='hint' id='aeq-msg'></p>
+<p class='hint'>Load a frequency response export &mdash; REW text, or any file
+with a frequency and a level in its first two columns &mdash; and the fitter
+places filters to flatten it. Only the shape is fitted, never the level, and
+the two limits apply to the summed response rather than to any one filter.</p>
+<p class='hint'>The fit replaces every section past the keep count on the
+chain shown below, so measure with those first sections already playing: on a
+bi-amped speaker, keep the crossover and measure each way through it. The fit
+range matters more than anything else &mdash; a driver rolls off at its ends by
+more than any EQ can undo, and leaving the range wide spends filters fighting
+that instead of correcting the band the driver does cover.</p>
+<div class='actions'>
+<button class='btn btn-primary' id='aeq-run' onclick='aeqRun()' disabled>Fit filters</button>
+<button class='btn btn-secondary' onclick='aeqClear()'>Clear measurement</button>
+<button class='btn btn-secondary' onclick='aeqToggle()'>Close</button>
+</div>
+</div>
+<div class='trim' id='mix-row'>
+<label for='mix'>Input channels</label>
+<select id='mix' onchange='mixChanged()'></select></div>
+<p class='hint' id='mix-hint' style='display:none;margin:-6px 0 14px'></p>
+<label class='gang' id='gang-row'>
+<input type='checkbox' id='gang' onchange='gangChanged()'>
+<span>Gang outputs A and B</span></label>
+<div class='chainwrap'><div class='chaininner'>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
+<span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
+<span>Ripple dB</span><span>Inv</span>
+<span title='Locked filters stay as they are when a file is imported'>Lock</span></div>
+<div id='rows'></div>
+</div></div>
+<div id='msg'></div>
+</div>
+
+<div class='card' id='vol-card'>
+<h2>Output</h2>
+<p class='hint' id='trim-hint' style='margin-bottom:14px'>The volume at the top
+of the page is the AirPlay volume. The levels below trim each output against it
+to match drivers; they only cut, so they cost no filter headroom.</p>
+<p class='hint' id='preamp' style='display:none;margin-bottom:14px'></p>
+<div id='gains'></div>
+<div id='delays' style='display:none'>
+<p class='hint' style='margin-bottom:14px'>A delay holds one output back to
+line its driver up with the other: give it to the one whose sound arrives
+first, usually the tweeter, and leave the other at 0. It is applied in whole
+samples and saved at once.</p>
+<div id='delay-rows'></div>
+</div>
+<div id='power' style='display:none'>
+<div class='trim'><label for='pw-db'>Digital gain</label>
+<select id='pw-db' onchange='pickGain()' title='The level full volume
+reaches. Lower it by the boost to keep loud passages from clipping.'></select></div>
+</div>
+<div id='ab' style='display:none'>
+<div class='trim'><label for='ab-sel'>EQ runs on</label>
+<select id='ab-sel' onchange='pickAb()'>
+<option value='dsp'>Amplifier DSP</option>
+<option value='sw'>ESP32</option></select></div>
+<p class='hint' id='ab-hint'></p>
+</div>
+</div>
+</div>
+
+<div class='bar'>
+<button class='btn btn-primary' onclick='commit()'>Commit to flash</button>
+<button class='btn btn-secondary' onclick='revert()'>Revert</button>
+<span class='state' id='state'><span class='dot'></span>In sync with flash</span>
+<span class='files'>
+<button class='btn btn-secondary' onclick='exportEq()'
+        title='Save the filters, routing and levels of every output'>Export to file</button>
+<button class='btn btn-secondary' onclick="$('eq-file').click()"
+        title='Load a saved tuning, or REW filter settings, then Apply to hear it'>Import from file&hellip;</button>
+</span>
+<input type='file' id='eq-file' accept='.json,.txt,application/json,text/plain' hidden
+       onchange='importEq(this)'>
+</div>
+</div></div>
+
+<script>
+var TYPES=['Bypass','Peaking (Q)','Peaking (bandwidth)','Bass shelf',
+           'Treble shelf','Low pass','High pass','Band pass','Notch',
+           'Phase shift','Custom'];
+var SUBS=['Butterworth 1','Butterworth 2','Bessel 2','Linkwitz-Riley 2',
+          'Variable Q 2','Chebyshev 2'];
+var T_BYPASS=0,T_PEAK_Q=1,T_LOSHELF=3,T_HISHELF=4,T_LP=5,T_HP=6,T_CUSTOM=10;
+var S_BW1=0,S_BW2=1,S_BESS2=2,S_LR2=3,S_VARQ=4,S_CHEB=5;
+var SLOTS=15;
+/* Field visibility per filter type. Low and high pass defer to the alignment
+   for Q and ripple, so those two are decided in bqSync() instead. */
+var HAS_SUB =[0,0,0,0,0,1,1,0,0,0,0];
+var HAS_FREQ=[0,1,1,1,1,1,1,1,1,1,0];
+var HAS_Q   =[0,1,0,0,0,0,0,0,0,0,0];
+var HAS_BW  =[0,0,1,0,0,0,0,1,1,1,0];
+var HAS_GAIN=[0,1,1,1,1,0,0,0,0,0,0];
+/* Matches the clamps in tas58xx_bq_design(), so the plot cannot promise a
+   filter the part will not be given. */
+var F_MIN=1,Q_MIN=0.1,Q_MAX=20,G_MIN=-20,G_MAX=20,R_MIN=0.1,R_MAX=3;
+
+var data=null,amp=0,ch=0,dirty=false;
+var P=Math.PI,S2=Math.sqrt(2);
+
+function $(id){return document.getElementById(id);}
+function num(id){return parseFloat($(id).value);}
+function clamp(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
+function show(el,text,cls){
+  el.innerHTML=text?"<div class='msg "+cls+"'>"+text+'</div>':'';
+}
+function setDirty(d){
+  dirty=d;
+  $('state').innerHTML="<span class='dot"+(d?' dirty':'')+"'></span>"+
+    (d?'Uncommitted changes':'In sync with flash');
+}
+/* Older firmware reports only the primary rate. Newer firmware also reports
+   each amplifier's rate: different DSPs can share the same I2S clock. */
+function fs(a){
+  var am=data&&data.amps&&data.amps[a===undefined?amp:a];
+  return (am&&am.rate)||(data&&data.rate)||48000;
+}
+function fMax(){return fs()*0.49;}
+
+/* ---- PPC3 filter models ----
+   Transcribed from biquad.model.js in PurePath Console 3 and checked against
+   the firmware's C port. a1 and a2 come back already negated, which is the
+   form the part stores, so the response below subtracts them. */
+function eqBq(gain,freq,q,sr){
+  var g=Math.pow(10,gain/20),t0=2*P*freq/sr;
+  var beta=(g>=1)?t0/(2*q):t0/(2*g*q);
+  var a2=-0.5*(1-beta)/(1+beta);
+  var a1=(0.5-a2)*Math.cos(t0);
+  var b0=(g-1)*(0.25+0.5*a2)+0.5;
+  var b1=-a1;
+  var b2=-(g-1)*(0.25+0.5*a2)-a2;
+  return {b0:2*b0,b1:2*b1,b2:2*b2,a1:2*a1,a2:2*a2};
+}
+function shelfG(g){
+  var A=Math.pow(10,g/20);
+  var F=(g>=-6&&g<=6)?Math.sqrt(A):(A>1?A/S2:A*S2);
+  var D=Math.pow((F*F-1)/(A*A-F*F),0.25);
+  return [Math.sqrt(A)*D,D];
+}
+function shelfBq(gain,freq,sr,treble){
+  if(gain===0)return unity();
+  var gg=shelfG(gain),gN=gg[0],gD=gg[1],s=S2/2;
+  var a=Math.tan(P*(freq/sr-0.25)),aP=a*a,nP=gN*gN,dP=gD*gD,den;
+  if(treble){
+    den=1+dP+2*s*gD-2*s*gD*aP+dP*aP-2*dP*a+aP+2*a;
+    return {b0:(nP*aP+2*s*gN-2*nP*a+1-2*s*gN*aP+aP+nP+2*a)/den,
+            b1:(2-2*nP*aP+4*nP*a+4*a-2*nP+2*aP)/den,
+            b2:(1+2*s*gN*aP-2*s*gN+2*a+aP+nP-2*nP*a+nP*aP)/den,
+            a1:-(2-2*dP*aP+4*dP*a+2*aP-2*dP+4*a)/den,
+            a2:-(1-2*dP*a+2*a+dP-2*s*gD+aP+dP*aP+2*s*gD*aP)/den};
+  }
+  den=2*s*gD+1-2*s*gD*aP+dP*aP+2*dP*a+aP+dP-2*a;
+  return {b0:(1+nP*aP+aP+2*nP*a+nP+2*s*gN-2*s*gN*aP-2*a)/den,
+          b1:(-2+4*a+4*nP*a+2*nP*aP+2*nP-2*aP)/den,
+          b2:(1+2*s*gN*aP-2*a+nP-2*s*gN+2*nP*a+aP+nP*aP)/den,
+          a1:(2-2*dP*aP-4*dP*a+2*aP-2*dP-4*a)/den,
+          a2:(-dP*aP+2*a-1-2*dP*a+2*s*gD-aP-2*s*gD*aP-dP)/den};
+}
+function cheby(r){
+  var eps=Math.sqrt(Math.pow(10,Math.abs(r)/10)-1),t=1/eps;
+  var al=Math.log(t+Math.sqrt(t*t+1))/2;
+  var sh=(Math.exp(al)-Math.exp(-al))/2,chh=(Math.exp(al)+Math.exp(-al))/2;
+  return [-S2*sh,0.5*(sh*sh+chh*chh),
+          r>0?0.5*(sh*sh+chh*chh)/Math.sqrt(1+eps*eps):0.5*(sh*sh+chh*chh)];
+}
+function bilinear(k,A1,A2,n,hp){
+  var den=k*k+A2+A1*k;
+  return {b0:n/den,b1:(hp?-2:2)*n/den,b2:n/den,
+          a1:(2*k*k-2*A2)/den,a2:(A1*k-k*k-A2)/den};
+}
+/* PPC3 normalises the Chebyshev prototype differently for the two
+   directions; the others share one form. */
+function passBq(sub,freq,sr,q,ripple,hp){
+  var wc=2*P*freq,k=wc/Math.tan(P*freq/sr);
+  if(sub===0)return hp
+    ?{b0:k/(k+wc),b1:-k/(k+wc),b2:0,a1:(k-wc)/(k+wc),a2:0}
+    :{b0:wc/(k+wc),b1:wc/(k+wc),b2:0,a1:(k-wc)/(k+wc),a2:0};
+  if(sub===S_CHEB){
+    var t=cheby(ripple),a=t[0],b=t[1],c=t[2];
+    return hp?bilinear(k,-wc*a/b,wc*wc/b,(c/b)*k*k,true)
+             :bilinear(k,-wc*a,b*wc*wc,c*wc*wc,false);
+  }
+  var A1=sub===1?wc*S2:sub===2?wc*Math.sqrt(3):sub===3?2*wc:wc/q;
+  return bilinear(k,A1,wc*wc,hp?k*k:wc*wc,hp);
+}
+function bandBq(freq,bw,sr){
+  var fl=freq-bw/2,fu=freq+bw/2;
+  var Wu=2*P*fu/sr,Wl=2*P*fl/sr;
+  var Wc=Math.sqrt(Wu*Wl),C=Math.tan(Wc/2);
+  var K=C/Math.tan((Wu-Wl)/2);
+  var al=Math.cos((Wu+Wl)/2)/Math.cos((Wu-Wl)/2);
+  var p1=-2*al*K/(K+1),p2=(K-1)/(K+1);
+  var A0=(p2+1)+C*(1-p2);
+  return {b0:C*(1-p2)/A0,b1:0,b2:C*(p2-1)/A0,
+          a1:-2*p1/A0,a2:(-C*(p2-1)-(1+p2))/A0};
+}
+function notchBq(freq,bw,sr,allpass){
+  var it=Math.tan(P*bw/sr),a=(1-it)/(1+it);
+  var D=-Math.cos(2*P*freq/sr);
+  return allpass?{b0:a,b1:D*(1+a),b2:1,a1:-D*(1+a),a2:-a}
+                :{b0:(1+a)/2,b1:D*(1+a),b2:(1+a)/2,a1:-D*(1+a),a2:-a};
+}
+function unity(){return {b0:1,b1:0,b2:0,a1:0,a2:0};}
+
+/* Mirrors tas58xx_bq_design(): same clamps, same fall back to unity when a
+   filter cannot be built. Polarity is the numerator's sign, so it applies to
+   a bypassed slot too — that is how a slot becomes a plain phase flip. */
+function designBq(b,sr){
+  var o=designShape(b,sr);
+  return b.invert?{b0:-o.b0,b1:-o.b1,b2:-o.b2,a1:o.a1,a2:o.a2}:o;
+}
+function designShape(b,sr){
+  var t=b.type;
+  if(t===T_BYPASS)return unity();
+  if(t===T_CUSTOM){
+    for(var k=0;k<5;k++)if(!isFinite(b.coeff[k]))return unity();
+    return {b0:b.coeff[0],b1:b.coeff[1],b2:b.coeff[2],
+            a1:b.coeff[3],a2:b.coeff[4]};
+  }
+  var fmax=sr*0.49;
+  var f=clamp(b.freq,F_MIN,fmax);
+  var q=clamp(b.q,Q_MIN,Q_MAX);
+  var g=clamp(b.gain,G_MIN,G_MAX);
+  var r=clamp(b.ripple,R_MIN,R_MAX);
+  var bwMax=2*Math.min(f-F_MIN,fmax-f);
+  var bw=clamp(b.bw,1,bwMax>1?bwMax:1);
+  if(!isFinite(f))return unity();
+  var o;
+  switch(t){
+    case 1: o=eqBq(g,f,q,sr);break;
+    case 2: o=eqBq(g,f,f/Math.max(bw,1),sr);break;
+    case 3: o=shelfBq(g,f,sr,false);break;
+    case 4: o=shelfBq(g,f,sr,true);break;
+    case T_LP: o=passBq(b.sub,f,sr,q,r,false);break;
+    case T_HP: o=passBq(b.sub,f,sr,q,r,true);break;
+    case 7: o=bandBq(f,bw,sr);break;
+    case 8: o=notchBq(f,bw,sr,false);break;
+    case 9: o=notchBq(f,bw,sr,true);break;
+    default: return unity();
+  }
+  if(!isFinite(o.b0)||!isFinite(o.b1)||!isFinite(o.b2)||
+     !isFinite(o.a1)||!isFinite(o.a2))return unity();
+  return o;
+}
+
+/* ---- response ----
+   a1 and a2 are stored negated, so the denominator subtracts them. */
+function response(c,w){
+  var c1=Math.cos(w),s1=Math.sin(w),c2=Math.cos(2*w),s2=Math.sin(2*w);
+  return {nr:c.b0+c.b1*c1+c.b2*c2, ni:-(c.b1*s1+c.b2*s2),
+          dr:1-c.a1*c1-c.a2*c2,    di:c.a1*s1+c.a2*s2};
+}
+function magDb(c,w){
+  var r=response(c,w);
+  var n=Math.sqrt(r.nr*r.nr+r.ni*r.ni),d=Math.sqrt(r.dr*r.dr+r.di*r.di);
+  if(!(d>1e-12)||!(n>1e-12))return -60;
+  return Math.max(-60,Math.min(60,20*Math.log10(n/d)));
+}
+function phaseDeg(c,w){
+  var r=response(c,w);
+  return Math.atan2(r.ni*r.dr-r.nr*r.di, r.nr*r.dr+r.ni*r.di)*180/P;
+}
+
+/* ---- recovering a shape from raw coefficients ----
+   A tuning read back off a PPC3 dump arrives as five numbers per section,
+   because that is all the part stores: a peaking filter and a shelf that
+   happen to match are the same five numbers, and which one the designer typed
+   is gone. The response is exact either way, so nothing is wrong with leaving
+   a section Custom — but you cannot drag a corner frequency on it. This looks
+   for a shape this page can express that reproduces the coefficients, and
+   only offers it when the match is close enough to be the same filter. */
+function coefErr(t,c){
+  return Math.max(Math.abs(t.b0-c.b0),Math.abs(t.b1-c.b1),Math.abs(t.b2-c.b2),
+                  Math.abs(t.a1-c.a1),Math.abs(t.a2-c.a2));
+}
+/* The worst single coefficient is the right test for accepting a fit, but the
+   wrong thing to steer one by: it is the maximum of five surfaces, so it has
+   creases along which no one parameter improves it and a descent sits down on
+   them well short of the answer. Squared total is smooth and has the same
+   minimum. */
+function sqErr(t,c){
+  var e=t.b0-c.b0,s=e*e;
+  e=t.b1-c.b1;s+=e*e;
+  e=t.b2-c.b2;s+=e*e;
+  e=t.a1-c.a1;s+=e*e;
+  e=t.a2-c.a2;s+=e*e;
+  return s;
+}
+/* Coefficients are what the fit is judged on, but they are meaningless to
+   read, so misses are reported as the worst gap in the response instead. */
+function respErr(t,c,sr){
+  var e=0,i,w,d;
+  for(i=0;i<=80;i++){
+    w=2*P*20*Math.pow(sr*0.49/20,i/80)/sr;
+    d=Math.abs(magDb(t,w)-magDb(c,w));
+    if(d>e)e=d;
+  }
+  return e;
+}
+/* How closely the five coefficients have to agree before two sections are
+   taken to be the same filter. Loose enough to absorb the part's 5.27
+   quantisation, tight enough that nothing else gets through. */
+var SHAPE_TOL=5e-4;
+/* Agreeing coefficients are not quite the same thing as agreeing filters: down
+   near DC a shelf's numerator and denominator very nearly cancel, so a section
+   can sit well inside the tolerance above and still be a decibel out where it
+   is audible. The row is about to be rewritten with whatever comes back, so
+   the response is what has to hold. */
+var RESP_TOL=0.05;
+/* A section whose numerator equals its denominator passes everything through
+   untouched. The trivial b0=1 with the rest zero is the obvious case, but a
+   0 dB shelf lands on b1=a1, b2=a2 instead and looks like a real filter. */
+function isUnity(t){
+  return Math.abs(t.b0-1)<1e-5&&Math.abs(t.b1-t.a1)<1e-5&&
+         Math.abs(t.b2-t.a2)<1e-5;
+}
+/* Low and high pass defer to the alignment for Q and ripple, the same way
+   bqSync() decides which fields to enable. */
+function usesQ(t,sub){
+  return !!HAS_Q[t]||((t===T_LP||t===T_HP)&&sub===S_VARQ);
+}
+function usesRipple(t,sub){return (t===T_LP||t===T_HP)&&sub===S_CHEB;}
+/* Only worth offering a shape the row can actually hold: a peak at Q 38 is a
+   real filter, but not one this page can express or send back. */
+function inRange(b,sr){
+  var fhi=Math.min(20000,sr*0.49);
+  if(HAS_FREQ[b.type]&&!(b.freq>=10&&b.freq<=fhi))return false;
+  if(usesQ(b.type,b.sub)&&!(b.q>=Q_MIN&&b.q<=Q_MAX))return false;
+  if(HAS_BW[b.type]&&!(b.bw>=1&&b.bw<=5000))return false;
+  if(HAS_GAIN[b.type]&&!(b.gain>=G_MIN&&b.gain<=G_MAX))return false;
+  if(usesRipple(b.type,b.sub)&&!(b.ripple>=R_MIN&&b.ripple<=R_MAX))return false;
+  return true;
+}
+function shapeBq(t,sub,f,q,bw,g,r){
+  return {type:t,sub:sub,freq:f,q:q,bw:clamp(bw,1,5000),gain:g,ripple:r,
+          invert:false,coeff:[1,0,0,0,0]};
+}
+/* A peaking section does not need searching for. eqBq() builds b1 = -a1 and
+   b0 + b2 = 1 - a2, which identifies the shape; the gain then falls out of
+   b0 - b2 and the Q out of the pole pair. Worth doing separately because it
+   is far and away the commonest shape in a PPC3 tuning, and solving it
+   outright keeps the descent below for the handful that need it. */
+function solvePeaking(t,sr){
+  if(Math.abs(t.b1+t.a1)>1e-6)return null;
+  var s=t.b0+t.b2;
+  if(!(Math.abs(s)>1e-12)||Math.abs((1-s)-t.a2)>1e-6)return null;
+  var cw=t.a1/s;
+  if(!(cw>-1&&cw<1))return null;
+  var g=(t.b0-t.b2)/(1+t.a2),beta=(1+t.a2)/(1-t.a2);
+  if(!(g>1e-9)||!(beta>1e-12))return null;
+  var w=Math.acos(cw),f=w*sr/(2*P);
+  var q=(g>=1)?w/(2*beta):w/(2*g*beta);
+  return shapeBq(T_PEAK_Q,0,f,q,Math.max(1,f/q),20*Math.log10(g),0.5);
+}
+/* Coordinate descent on whichever of frequency, Q, bandwidth, gain and ripple
+   the type actually uses. A gain-bearing type is restarted from several gains:
+   the descent is local, and a peaking filter started from flat often cannot
+   see its way to a deep cut. */
+function fitShape(target,type,sub,sr,f0,q0,g0){
+  var fhi=Math.min(20000,sr*0.49);
+  var b=shapeBq(type,sub,clamp(f0,10,fhi),clamp(q0,Q_MIN,Q_MAX),
+                clamp(f0/Math.max(q0,0.05),1,5000),g0||0,0.5);
+  var vars=[];
+  if(HAS_FREQ[type])vars.push({k:'freq',lo:10,hi:fhi,step:f0*0.5});
+  if(usesQ(type,sub))
+    vars.push({k:'q',lo:Q_MIN,hi:Q_MAX,step:(Q_MAX-Q_MIN)*0.25});
+  if(HAS_BW[type])vars.push({k:'bw',lo:1,hi:5000,step:b.bw*0.5});
+  if(HAS_GAIN[type])vars.push({k:'gain',lo:G_MIN,hi:G_MAX,step:4});
+  if(usesRipple(type,sub))
+    vars.push({k:'ripple',lo:R_MIN,hi:R_MAX,step:(R_MAX-R_MIN)*0.25});
+  var best=sqErr(target,designBq(b,sr)),v,s,old,nv,e,it,moved;
+  for(it=0;it<400&&best>1e-20;it++){
+    moved=false;
+    for(v=0;v<vars.length;v++){
+      for(s=0;s<2;s++){
+        old=b[vars[v].k];
+        nv=old+(s?-vars[v].step:vars[v].step);
+        if(nv<vars[v].lo||nv>vars[v].hi)continue;
+        b[vars[v].k]=nv;
+        e=sqErr(target,designBq(b,sr));
+        if(e<best*(1-1e-12)){best=e;moved=true;}
+        else b[vars[v].k]=old;
+      }
+    }
+    if(moved)continue;
+    var live=false;
+    for(v=0;v<vars.length;v++){
+      vars[v].step*=0.5;
+      if(vars[v].step>1e-6)live=true;
+    }
+    if(!live)break;
+  }
+  return {bq:b,err:coefErr(target,designBq(b,sr))};
+}
+/* The descent is local, and near either end of the band a section's
+   coefficients barely move with frequency, so it stalls a long way from the
+   answer unless it starts near it. A coarse sweep costs almost nothing next to
+   the descent and puts it in the right basin. */
+function seedFreq(target,type,sub,sr,q,g){
+  var fhi=Math.min(20000,sr*0.49),best=-1,bf=1000,i,f,e;
+  if(!HAS_FREQ[type])return 1000;
+  for(i=0;i<=48;i++){
+    f=20*Math.pow(fhi/20,i/48);
+    e=sqErr(target,designBq(shapeBq(type,sub,f,q,Math.max(1,f/q),g,0.5),sr));
+    if(best<0||e<best){best=e;bf=f;}
+  }
+  return bf;
+}
+/* Low and high pass fall out just as directly. The numerator is fixed by the
+   direction, so the ratio of a1 to b0 gives the corner outright, and the
+   denominator then gives the damping. Solving beats searching for these by
+   more than speed: the corner and the damping trade off against each other,
+   so the valley the descent has to follow runs diagonally and it sits down on
+   the side of it. Every alignment shares the same corner, so they come back
+   as alternatives for betterFit() to choose between. */
+function solvePass(t,sr){
+  /* Coefficients read back off the part have been through 5.27, so the
+     numerator symmetry these tests look for only holds to within a few LSBs
+     of 2^-27. Being generous here costs nothing: every candidate is checked
+     against the coefficients before it is offered. */
+  var TOL=1e-6;
+  if(Math.abs(t.b0-t.b2)>TOL||!(Math.abs(t.b0)>1e-12))return [];
+  var hp;
+  if(Math.abs(t.b1-2*t.b0)<TOL)hp=false;
+  else if(Math.abs(t.b1+2*t.b0)<TOL)hp=true;
+  else return [];
+  var R=t.a1/t.b0,T2=hp?1-R/2:2/(R+2);
+  if(!(T2>0))return [];
+  var T=Math.sqrt(T2),f=Math.atan(T)*sr/P;
+  if(!(f>0&&f<sr*0.49))return [];
+  var wc=2*P*f,k=wc/T,den=(hp?k*k:wc*wc)/t.b0;
+  var A1=(t.a2*den+k*k+wc*wc)/k;
+  if(!(A1>1e-12))return [];
+  var q=wc/A1,ty=hp?T_HP:T_LP,out=[],s;
+  for(s=S_BW2;s<=S_VARQ;s++)
+    out.push(shapeBq(ty,s,f,q,Math.max(1,f/q),0,0.5));
+  return out;
+}
+/* Variable Q reproduces every fixed alignment, and its free Q usually lands a
+   hair closer, so on error alone it wins even when the section plainly is a
+   Linkwitz-Riley. Once both are inside tolerance the named alignment is the
+   better answer: it is what was designed, and it holds its shape if the rate
+   changes. */
+function betterFit(r,best){
+  if(!best)return true;
+  if(r.err<=SHAPE_TOL&&best.err<=SHAPE_TOL&&r.bq.type===best.bq.type&&
+     (r.bq.sub===S_VARQ)!==(best.bq.sub===S_VARQ))
+    return best.bq.sub===S_VARQ;
+  return r.err<best.err;
+}
+/* Fit one section in the model, in place. Returns a result the caller can
+   report: {ok, drift} on a match, {ok:false, why} otherwise. */
+function shapeOf(b,sr){
+  var k;
+  if(b.type!==T_CUSTOM)return {ok:false,why:'not a custom section'};
+  for(k=0;k<5;k++)if(!isFinite(b.coeff[k]))return {ok:false,why:'blank'};
+  var t={b0:b.coeff[0],b1:b.coeff[1],b2:b.coeff[2],
+         a1:b.coeff[3],a2:b.coeff[4]};
+  /* Polarity is the numerator's sign, so a section that only differs by it
+     is the same filter with the invert box ticked. */
+  var flip=t.b0<0;
+  if(flip)t={b0:-t.b0,b1:-t.b1,b2:-t.b2,a1:t.a1,a2:t.a2};
+  if(isUnity(t)){
+    var u=shapeBq(T_BYPASS,0,1000,0.707,100,0,0.5);
+    u.invert=flip;
+    applyShape(b,u);
+    return {ok:true,drift:0,unity:true};
+  }
+  var q0=0.707,best=null,bad=null,cand=[],ci,ce;
+  var pk=solvePeaking(t,sr);
+  if(pk){q0=pk.q;cand.push(pk);}
+  cand=cand.concat(solvePass(t,sr));
+  for(ci=0;ci<cand.length;ci++){
+    ce=coefErr(t,designBq(cand[ci],sr));
+    if(ce>=SHAPE_TOL)continue;
+    /* A shape we recognise but the row cannot hold — worth saying so rather
+       than reporting that nothing matched. */
+    if(!inRange(cand[ci],sr)){if(!bad)bad=cand[ci];continue;}
+    if(betterFit({bq:cand[ci],err:ce},best))best={bq:cand[ci],err:ce};
+  }
+  if(!best){
+    var TRY=[1,2,3,4,5,6,7,8,9],GSEED=[0,-4,-9,4,9,-14];
+    for(k=0;k<TRY.length;k++){
+      var ty=TRY[k],subs=HAS_SUB[ty]?[0,1,2,3,4,5]:[0];
+      var gseed=HAS_GAIN[ty]?GSEED:[0];
+      for(var si=0;si<subs.length;si++)
+        for(var gi=0;gi<gseed.length;gi++){
+          var g=gseed[gi];
+          var r=fitShape(t,ty,subs[si],sr,
+                         seedFreq(t,ty,subs[si],sr,q0,g),q0,g);
+          if(inRange(r.bq,sr)&&betterFit(r,best))best=r;
+        }
+    }
+  }
+  if(!best||best.err>SHAPE_TOL){
+    if(bad)
+      return {ok:false,why:'it is '+TYPES[bad.type].toLowerCase()+' at '+
+              Math.round(bad.freq)+' Hz, Q '+bad.q.toFixed(2)+
+              (HAS_GAIN[bad.type]?', '+bad.gain.toFixed(1)+' dB':'')+
+              ', which is outside what this page can set'};
+    return {ok:false,why:'no shape this page offers reproduces those'+
+            ' coefficients'+(best?' — the closest is '+
+            respErr(t,designBq(best.bq,sr),sr).toFixed(2)+' dB out':'')};
+  }
+  /* Rounded to the steps the row offers, so what is shown is what will be
+     encoded, and re-checked afterwards in case rounding moved it too far. */
+  best.bq.freq=Math.round(best.bq.freq*100)/100;
+  best.bq.q=Math.round(best.bq.q*1000)/1000;
+  best.bq.bw=Math.round(best.bq.bw*100)/100;
+  best.bq.gain=Math.round(best.bq.gain*100)/100;
+  best.bq.ripple=Math.round(best.bq.ripple*100)/100;
+  var drift=respErr(t,designBq(best.bq,sr),sr);
+  if(coefErr(t,designBq(best.bq,sr))>SHAPE_TOL||drift>RESP_TOL)
+    return {ok:false,why:'the closest shape is '+drift.toFixed(2)+' dB out'};
+  best.bq.invert=flip;
+  applyShape(b,best.bq);
+  return {ok:true,drift:drift};
+}
+function applyShape(dst,src){
+  dst.type=src.type;dst.sub=src.sub;dst.freq=src.freq;dst.q=src.q;
+  dst.bw=src.bw;dst.gain=src.gain;dst.ripple=src.ripple;dst.invert=src.invert;
+  dst.coeff=[1,0,0,0,0];
+}
+/* The part stores five coefficients per section and nothing about how they
+   were arrived at, so a chain recovered from a PPC3 dump arrives entirely
+   Custom. Fit every section on every amplifier before the page is shown:
+   opening on five numbers per row, none of which can be dragged, is not the
+   tuning anyone typed. */
+function autoShape(){
+  var left=0,a,c,i,cs;
+  for(a=0;a<data.amps.length;a++)
+    for(c=0;c<data.amps[a].channels.length;c++){
+      cs=data.amps[a].channels[c];
+      for(i=0;i<SLOTS;i++)
+        if(cs[i].type===T_CUSTOM&&!shapeOf(cs[i],fs(a)).ok)left++;
+    }
+  return left;
+}
+/* Manual fit of the visible row, for coefficients typed in by hand. */
+function toShape(i){
+  storeRows();
+  var b=chan()[i],r=shapeOf(b,fs());
+  if(!r.ok){
+    show($('msg'),'Section '+(i+1)+': '+r.why+
+         ', so it stays Custom. It is still exact as it stands.','info');
+    return;
+  }
+  loadRows();
+  setDirty(true);
+  plot();
+  show($('msg'),r.unity
+    ?'Section '+(i+1)+' passes the signal through unchanged — set to Bypass.'
+    :'Section '+(i+1)+' matched '+TYPES[b.type].toLowerCase()+
+     (HAS_SUB[b.type]?', '+SUBS[b.sub].toLowerCase():'')+
+     ' — the response is unchanged to within '+r.drift.toFixed(3)+' dB.','ok');
+}
+/* Phase is unwrapped as it goes, so an all-pass reads -360 rather than
+   folding back to 0. */
+function sweep(secs,sr,fn,unwrap,maxHz){
+  var N=360,F0=20,F1=Math.min(maxHz||20000,sr/2),k;
+  var curves=[],prev=[],total=[];
+  for(k=0;k<secs.length;k++){curves.push([]);prev.push(0);}
+  for(var i=0;i<=N;i++){
+    var w=2*P*F0*Math.pow(F1/F0,i/N)/sr,sum=0;
+    for(k=0;k<secs.length;k++){
+      var v=fn(secs[k],w);
+      if(unwrap){
+        while(v-prev[k]>180)v-=360;
+        while(v-prev[k]<-180)v+=360;
+        prev[k]=v;
+      }
+      curves[k].push(v);sum+=v;
+    }
+    total.push(sum);
+  }
+  return {n:N,f0:F0,f1:F1,curves:curves,total:total};
+}
+
+var TRACE=[['#e94560','rgba(233,69,96,0.25)'],['#4ecca3','rgba(78,204,163,0.25)'],
+           ['#f0a202','rgba(240,162,2,0.25)'],['#5b8ff9','rgba(91,143,249,0.25)']];
+var C_SUM='#e6ebf5',C_MEAS='#8a94a6',C_FIX='#f5b301';
+
+/* Complex transfer of a cascade at one frequency. The sections multiply, which
+   is why the dB curves may be added within a chain, but two chains driving two
+   drivers add as vectors — and that is exactly where a crossover with the
+   wrong polarity hides, since both dB curves look identical either way. */
+function chainH(secs,w){
+  var re=1,im=0,k,r,dn,nr,ni,pr;
+  for(k=0;k<secs.length;k++){
+    r=response(secs[k],w);
+    dn=r.dr*r.dr+r.di*r.di;
+    if(!(dn>1e-30))return {re:0,im:0};
+    nr=(r.nr*r.dr+r.ni*r.di)/dn;
+    ni=(r.ni*r.dr-r.nr*r.di)/dn;
+    pr=re*nr-im*ni;im=re*ni+im*nr;re=pr;
+  }
+  return {re:re,im:im};
+}
+/* On the same grid sweep() walks, so it overlays the per-chain curves. */
+function sumCurve(groups,rates,gains,delays){
+  var N=360,F0=20,F1=Math.min(20000,Math.min.apply(null,rates)/2);
+  var out=[],i,k,h,re,im,m,f,g,t,cr,ci;
+  for(i=0;i<=N;i++){
+    f=F0*Math.pow(F1/F0,i/N);
+    re=0;im=0;
+    for(k=0;k<groups.length;k++){
+      h=chainH(groups[k],2*P*f/rates[k]);
+      g=gains?gains[k]:1;
+      /* A delay turns a branch's phase, which only the sum shows. */
+      t=delays?delays[k]:0;
+      cr=Math.cos(2*P*f*t);ci=-Math.sin(2*P*f*t);
+      re+=(h.re*cr-h.im*ci)*g;im+=(h.re*ci+h.im*cr)*g;
+    }
+    m=Math.sqrt(re*re+im*im);
+    out.push(m>1e-3?Math.max(-60,Math.min(60,20*Math.log10(m))):-60);
+  }
+  return out;
+}
+/* The sizes below are in canvas pixels at twice the size shown, so the
+   canvas is matched to its box before drawing: stretching a fixed one would
+   squash the labels whenever the box is not the shape it was drawn for. A
+   hidden canvas keeps its size until it is shown and drawn again. */
+function fitCanvas(cv){
+  var r=cv.getBoundingClientRect(),w=Math.round(r.width*2),h=Math.round(r.height*2);
+  if(w&&h&&(cv.width!==w||cv.height!==h)){cv.width=w;cv.height=h;}
+}
+function drawGraph(cv,sweeps,lo,hi,step,fmt,totalsOnly,extras){
+  fitCanvas(cv);
+  var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  /* The hover readout restores a snapshot rather than re-sweeping, so drop
+     the stale one whenever the picture underneath changes. */
+  cv._snap=null;
+  var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,i,k,d,f;
+  var f0=sweeps[0].f0,f1=sweeps[0].f1,N=sweeps[0].n;
+  function x(v){return PL+PW*Math.log(v/f0)/Math.log(f1/f0);}
+  function y(v){return PT+PH*(hi-v)/(hi-lo);}
+  g.clearRect(0,0,W,H);
+  g.font='20px sans-serif';g.textBaseline='middle';g.lineWidth=2;
+  g.strokeStyle='rgba(255,255,255,0.09)';g.fillStyle='#777';g.textAlign='center';
+  var ticks=[10,20,50,100,200,500,1000,2000,5000,10000,20000];
+  for(i=0;i<ticks.length;i++){
+    f=ticks[i];if(f>f1)break;
+    if(f<f0)continue;
+    g.beginPath();g.moveTo(x(f),PT);g.lineTo(x(f),PT+PH);g.stroke();
+    g.fillText(f>=1000?(f/1000)+'k':''+f,x(f),H-12);
+  }
+  g.textAlign='right';
+  for(d=lo;d<=hi+1e-6;d+=step){
+    g.strokeStyle=d===0?'rgba(255,255,255,0.22)':'rgba(255,255,255,0.09)';
+    g.beginPath();g.moveTo(PL,y(d));g.lineTo(PL+PW,y(d));g.stroke();
+    g.fillText(fmt(d),PL-8,y(d));
+  }
+  g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
+  function trace(vals,style,width){
+    var pen=false;
+    g.strokeStyle=style;g.lineWidth=width;g.beginPath();
+    for(i=0;i<=N;i++){
+      f=f0*Math.pow(f1/f0,i/N);
+      if(vals[i]===null||vals[i]===undefined){pen=false;continue;}
+      if(pen)g.lineTo(x(f),y(vals[i]));else{g.moveTo(x(f),y(vals[i]));pen=true;}
+    }
+    g.stroke();
+  }
+  for(var s=0;s<sweeps.length;s++){
+    var col=sweeps[s].col||TRACE[s%TRACE.length];
+    if(!totalsOnly)
+      for(k=0;k<sweeps[s].curves.length;k++)trace(sweeps[s].curves[k],col[1],2);
+    trace(sweeps[s].total,col[0],4);
+  }
+  /* Its own counter: trace() walks the shared `i`. */
+  if(extras)for(var xi=0;xi<extras.length;xi++)
+    trace(extras[xi].v,extras[xi].c,extras[xi].w);
+  g.restore();
+  var series=[];
+  for(k=0;k<sweeps.length;k++)
+    series.push({v:sweeps[k].total,c:(sweeps[k].col||TRACE[k%TRACE.length])[0],
+                 n:sweeps[k].name||''});
+  if(extras)for(k=0;k<extras.length;k++)
+    series.push({v:extras[k].v,c:extras[k].c,n:extras[k].n||''});
+  cv._rd={f0:f0,f1:f1,N:N,lo:lo,hi:hi,PL:PL,PW:PW,PT:PT,PH:PH,
+          fmt:fmt,series:series};
+  hoverInit(cv);
+}
+function hoverAt(cv,px){
+  var d=cv._rd,g=cv.getContext('2d'),W=cv.width,H=cv.height,k,v;
+  if(!d)return;
+  if(!cv._snap){
+    var s=document.createElement('canvas');
+    s.width=W;s.height=H;s.getContext('2d').drawImage(cv,0,0);
+    cv._snap=s;
+  }
+  g.clearRect(0,0,W,H);g.drawImage(cv._snap,0,0);
+  var t=(px-d.PL)/d.PW;
+  if(t<0||t>1)return;
+  /* Snap to a swept point so the value shown is one that was computed. */
+  var i=Math.round(t*d.N),f=d.f0*Math.pow(d.f1/d.f0,i/d.N);
+  var x=d.PL+d.PW*i/d.N;
+  g.save();
+  g.strokeStyle='rgba(255,255,255,0.35)';g.lineWidth=2;
+  g.beginPath();g.moveTo(x,d.PT);g.lineTo(x,d.PT+d.PH);g.stroke();
+  g.font='20px sans-serif';g.textBaseline='middle';g.textAlign='left';
+  var rows=[];
+  for(k=0;k<d.series.length;k++){
+    v=d.series[k].v[i];
+    if(v===null||v===undefined||!isFinite(v))continue;
+    rows.push({c:d.series[k].c,
+               t:(d.series[k].n?d.series[k].n+'  ':'')+
+                 d.fmt(Math.round(v*10)/10)});
+    g.fillStyle=d.series[k].c;
+    g.beginPath();
+    g.arc(x,d.PT+d.PH*(d.hi-v)/(d.hi-d.lo),6,0,6.2832);
+    g.fill();
+  }
+  var head=f<1000?Math.round(f)+' Hz':(f/1000).toFixed(f<10000?2:1)+' kHz';
+  var LH=26,PX=10,PY=8,SW=14,wm=g.measureText(head).width;
+  for(k=0;k<rows.length;k++)
+    wm=Math.max(wm,SW+8+g.measureText(rows[k].t).width);
+  var bw=wm+PX*2,bh=PY*2+LH*(rows.length+1),bx=x+14,by=d.PT+10;
+  if(bx+bw>d.PL+d.PW)bx=x-14-bw;
+  g.fillStyle='rgba(16,20,28,0.88)';
+  g.strokeStyle='rgba(255,255,255,0.18)';g.lineWidth=2;
+  g.beginPath();g.rect(bx,by,bw,bh);g.fill();g.stroke();
+  g.fillStyle='#cfd6e4';g.fillText(head,bx+PX,by+PY+LH/2);
+  for(k=0;k<rows.length;k++){
+    var ry=by+PY+LH*(k+1)+LH/2;
+    g.fillStyle=rows[k].c;g.fillRect(bx+PX,ry-5,SW,10);
+    g.fillStyle='#cfd6e4';g.fillText(rows[k].t,bx+PX+SW+8,ry);
+  }
+  g.restore();
+}
+function hoverOff(cv){
+  if(!cv._snap)return;
+  var g=cv.getContext('2d');
+  g.clearRect(0,0,cv.width,cv.height);g.drawImage(cv._snap,0,0);
+}
+function hoverInit(cv){
+  if(cv._hov)return;
+  cv._hov=1;
+  cv.addEventListener('pointermove',function(ev){
+    if(ev.pointerType!=='mouse')return;
+    var r=cv.getBoundingClientRect();
+    hoverAt(cv,(ev.clientX-r.left)*cv.width/r.width);
+  });
+  cv.addEventListener('pointerleave',function(){hoverOff(cv);});
+}
+
+/* ---- rows ---- */
+function bqRow(i){
+  var opts='',t;
+  for(t=0;t<TYPES.length;t++)opts+="<option value='"+t+"'>"+TYPES[t]+'</option>';
+  var subs='';
+  for(t=0;t<SUBS.length;t++)subs+="<option value='"+t+"'>"+SUBS[t]+'</option>';
+  var co='',names=['b0','b1','b2','-a1','-a2'];
+  for(t=0;t<5;t++)
+    co+="<input type='number' id='c"+i+'-'+t+"' step='0.000001' title='"+
+        names[t]+"' placeholder='"+names[t]+"' oninput='touch()'>";
+  var chg='bqSync('+i+');touch()';
+  return "<div class='bq' id='r"+i+"'><span class='n'>"+(i+1)+'</span>'+
+    "<select id='r"+i+"-t' onchange='"+chg+"'>"+opts+'</select>'+
+    "<select id='r"+i+"-s' onchange='"+chg+"'>"+subs+'</select>'+
+    "<input type='number' id='r"+i+"-f' min='10' max='20000' step='1' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-q' min='"+Q_MIN+"' max='"+Q_MAX+"' step='0.01' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-b' min='1' max='5000' step='1' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-g' min='"+G_MIN+"' max='"+G_MAX+"' step='0.5' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-r' min='"+R_MIN+"' max='"+R_MAX+"' step='0.1' oninput='touch()'>"+
+    "<input type='checkbox' id='r"+i+"-i' title='Invert polarity' onchange='touch()'>"+
+    "<input type='checkbox' id='r"+i+"-l' title='Lock: an import leaves this"+
+    " filter as it is' onchange='lockToggle("+i+")'>"+
+    "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+
+    "<button type='button' title='Find a filter shape that matches these"+
+    " coefficients' onclick='toShape("+i+")'>To shape</button>"+'</div>';
+}
+function bqSync(i){
+  var t=parseInt($('r'+i+'-t').value,10);
+  var sub=parseInt($('r'+i+'-s').value,10);
+  var pass=(t===T_LP||t===T_HP);
+  $('r'+i+'-s').style.visibility=HAS_SUB[t]?'visible':'hidden';
+  $('r'+i+'-f').disabled=!HAS_FREQ[t];
+  $('r'+i+'-q').disabled=!(HAS_Q[t]||(pass&&sub===S_VARQ));
+  $('r'+i+'-b').disabled=!HAS_BW[t];
+  $('r'+i+'-g').disabled=!HAS_GAIN[t];
+  $('r'+i+'-r').disabled=!(pass&&sub===S_CHEB);
+  $('r'+i+'-c').style.display=(t===T_CUSTOM)?'grid':'none';
+  plot();
+}
+function bqSet(i,b){
+  $('r'+i+'-t').value=b.type;
+  $('r'+i+'-s').value=b.sub||0;
+  $('r'+i+'-f').value=b.freq;
+  $('r'+i+'-q').value=b.q;
+  $('r'+i+'-b').value=b.bw;
+  $('r'+i+'-g').value=b.gain;
+  $('r'+i+'-r').value=b.ripple;
+  $('r'+i+'-i').checked=!!b.invert;
+  for(var k=0;k<5;k++)
+    $('c'+i+'-'+k).value=(b.coeff&&b.coeff[k]!==undefined)?b.coeff[k]
+                                                          :(k===0?1:0);
+  bqSync(i);
+}
+function bqGet(i){
+  var c=[];
+  for(var k=0;k<5;k++)c.push(num('c'+i+'-'+k));
+  return {type:parseInt($('r'+i+'-t').value,10),
+          sub:parseInt($('r'+i+'-s').value,10),
+          freq:num('r'+i+'-f'),q:num('r'+i+'-q'),bw:num('r'+i+'-b'),
+          gain:num('r'+i+'-g'),ripple:num('r'+i+'-r'),
+          invert:$('r'+i+'-i').checked,coeff:c};
+}
+/* Blanks read back as NaN, which would travel to the firmware as null. */
+function bqClean(b){
+  b.freq=isFinite(b.freq)?b.freq:1000;
+  b.q=isFinite(b.q)?b.q:0.707;
+  b.bw=isFinite(b.bw)?b.bw:100;
+  b.gain=isFinite(b.gain)?b.gain:0;
+  b.ripple=isFinite(b.ripple)?b.ripple:0.5;
+  b.invert=!!b.invert;
+  for(var k=0;k<5;k++)
+    if(!isFinite(b.coeff[k]))b.coeff[k]=(k===0?1:0);
+  return b;
+}
+function touch(){setDirty(true);storeRows();plot();}
+
+/* ---- model ---- */
+function chan(){return data.amps[amp].channels[ch];}
+function storeRows(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)c[i]=bqClean(bqGet(i));
+}
+function loadRows(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++){bqSet(i,c[i]);lockShow(i);}
+}
+
+/* ---- locks ----
+   A bit per slot, per output, kept in this browser (each speaker is its own
+   site, so its own set). They only steer imports, so they are not part of
+   the tuning and never reach the firmware. A ganged pair shares output A's. */
+var locks={};
+try{locks=JSON.parse(localStorage.getItem('bq-locks'))||{};}catch(e){}
+function lockMask(a,c){
+  var m=locks[a];
+  return (m&&m[isGanged(data.amps[a])?0:c])|0;
+}
+function lockShow(i){
+  var on=!!(lockMask(amp,ch)&(1<<i));
+  $('r'+i+'-l').checked=on;
+  $('r'+i).classList.toggle('locked',on);
+}
+function lockToggle(i){
+  var m=locks[amp]||(locks[amp]=[0,0]),c=isGanged(data.amps[amp])?0:ch;
+  m[c]^=1<<i;
+  if(isGanged(data.amps[amp]))m[1]=m[0];
+  lockSave();lockShow(i);
+}
+function lockSave(){
+  try{localStorage.setItem('bq-locks',JSON.stringify(locks));}catch(e){}
+}
+function lockCount(m){
+  for(var n=0;m;m&=m-1)n++;
+  return n;
+}
+function isBlank(b){return b.type===T_BYPASS&&!b.invert;}
+/* An imported chain laid over the current one: a locked slot keeps what it
+   holds, and a filter the import puts there moves to the first unlocked slot
+   the import leaves empty, so none of it is lost. Null when there is no room
+   for it. */
+function lockMerge(cur,src,mask){
+  var out=[],spill=[],moved,i;
+  for(i=0;i<SLOTS;i++){
+    if(mask&(1<<i)){
+      out.push(JSON.parse(JSON.stringify(cur[i])));
+      if(!isBlank(src[i]))spill.push(src[i]);
+    }else out.push(src[i]);
+  }
+  moved=spill.length;
+  for(i=0;i<SLOTS&&spill.length;i++)
+    if(!(mask&(1<<i))&&isBlank(out[i]))out[i]=spill.shift();
+  return spill.length?null:{chain:out,moved:moved};
+}
+function lockFull(where,mask){
+  var free=SLOTS-lockCount(mask);
+  return 'only '+free+' slot'+(free===1?'':'s')+' of '+where+
+         (free===1?' is':' are')+' unlocked, too few for the filters in the '+
+         'file.';
+}
+function lockNote(kept,moved){
+  if(!kept)return '';
+  return ' '+kept+' locked filter'+(kept>1?'s were':' was')+' left as '+
+         (kept>1?'they were':'it was')+(moved?', and '+moved+' from the file '+
+         'moved out of '+(kept>1?'their':'its')+' way':'')+'.';
+}
+function ampLabel(a){
+  var base=data.devices>1?('Amp '+(a+1)):'Speakers';
+  return data.amps[a].role==='mono'?base+' (PBTL)':base;
+}
+/* A bridged amplifier sums its two output paths into one driver, so the two
+   chains must match — there is nothing to un-gang. */
+function isGanged(a){return !!(a.ganged||a.pbtl);}
+/* The chip's two outputs. Which of them carries left, right or a sum is the
+   routing question below, so they are named after the hardware. */
+function outLabel(c){return 'Output '+(c?'B':'A');}
+var MIXES=['Stereo \u2014 L to A, R to B','Mono \u2014 (L+R)/2 to both',
+           'Left channel to both','Right channel to both'];
+var MIX_SHORT=['L/R','(L+R)/2','L','R'];
+/* What the single ganged curve represents: the chain is shared, so name it
+   after whatever the input mixer is feeding the amplifier. */
+function chainLabel(a){
+  return a.mix===0?'Outputs A + B':MIX_SHORT[a.mix];
+}
+function drawMix(){
+  var a=data.amps[amp],sel=$('mix'),h='';
+  for(var m=0;m<MIXES.length;m++){
+    /* An amplifier that cannot route lists only the routing it plays. One
+       that is bridged drives a single speaker, so it lists stereo only while
+       it is set to it. */
+    if(a.mix_fixed?m!==a.mix:a.pbtl&&m===0&&a.mix!==0)continue;
+    h+="<option value='"+m+"'>"+MIXES[m]+'</option>';
+  }
+  sel.innerHTML=h;
+  sel.value=String(a.mix);
+  sel.disabled=!!a.mix_fixed;
+  $('mix-hint').style.display=a.mix_fixed?'':'none';
+  $('mix-hint').textContent=!a.mix_fixed?'':a.pbtl
+    ?'This amplifier cannot route its inputs. Bridged, it plays the left '+
+     'channel, so Output channel on the Speaker page decides what it hears.'
+    :'This amplifier cannot route its inputs, so it plays the pair as it '+
+     'comes.';
+}
+function mixChanged(){
+  data.amps[amp].mix=Number.parseInt($('mix').value,10);
+  drawTabs();plot();
+  post({dev:amp,mix:data.amps[amp].mix},
+       'Input routing: '+MIXES[data.amps[amp].mix]);
+}
+function drawTabs(){
+  var h='',a;
+  $('sub').textContent='15 biquads per output at '+fs()+' Hz';
+  for(a=0;a<data.amps.length;a++)
+    h+="<button class='tab"+(a===amp?' on':'')+"' onclick='pickAmp("+a+
+       ")'>"+ampLabel(a)+'</button>';
+  $('amp-tabs').innerHTML=data.amps.length>1?h:'';
+  var ganged=isGanged(data.amps[amp]);
+  $('gang').checked=ganged;
+  $('gang-row').style.display=data.amps[amp].pbtl?'none':'';
+  h='';
+  for(a=0;a<2;a++)
+    h+="<button class='tab"+(a===ch?' on':'')+"' onclick='pickCh("+a+
+       ")'>"+outLabel(a)+'</button>';
+  h+="<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>"+
+     'Copy to '+(ch?'A':'B')+'</button>';
+  $('ch-tabs').innerHTML=ganged?'':h;
+  $('picker').style.display=data.amps.length>1||!ganged?'':'none';
+  var who=ganged?chainLabel(data.amps[amp]):outLabel(ch);
+  if(data.amps.length>1)who=ampLabel(amp)+', '+who;
+  $('chain-title').textContent='Filter Chain \u2014 '+who;
+  drawLegend();
+}
+function drawLegend(){
+  var ganged=isGanged(data.amps[amp]);
+  var h=ganged
+    ?"<span><i style='background:#e94560'></i>"+chainLabel(data.amps[amp])+
+     '</span>'
+    :"<span><i style='background:"+TRACE[ch][0]+"'></i>"+outLabel(ch)+
+     '</span>';
+  if(meas)h+="<span><i style='background:"+C_MEAS+"'></i>Measured</span>"+
+             "<span><i style='background:"+C_FIX+"'></i>Corrected</span>";
+  $('legend').innerHTML=h;
+}
+function pickAmp(a){storeRows();amp=a;if(isGanged(data.amps[a]))ch=0;
+                    drawTabs();drawMix();loadRows();plot();}
+function pickCh(c){storeRows();ch=c;drawTabs();loadRows();plot();}
+
+/* ---- levels ----
+   Levels and mutes are mixer writes rather than filter coefficients, so they
+   take effect at once and do not go through commit/revert. */
+/* Outputs of a bridged amplifier feed one driver, so it gets a single row. */
+function gainRows(){
+  var out=[],a,c;
+  for(a=0;a<data.amps.length;a++)
+    for(c=0;c<(data.amps[a].pbtl?1:2);c++)
+      out.push({a:a,c:c});
+  return out;
+}
+function gainName(a,c){
+  var pre=data.amps.length>1?ampLabel(a):'';
+  if(data.amps[a].pbtl)return ampLabel(a);
+  return (pre?pre+' ':'')+outLabel(c);
+}
+function drawGains(){
+  var rows=gainRows(),h='',i,r,g,m;
+  for(i=0;i<rows.length;i++){
+    r=rows[i];g=data.amps[r.a].gains[r.c];m=data.amps[r.a].mutes[r.c];
+    h+="<div class='trim"+(m?' muted':'')+"' id='g-row-"+i+"'>"+
+       '<label>'+gainName(r.a,r.c)+'</label>'+
+       "<input type='range' id='g-"+i+"' step='0.5' min='"+data.gain_min+
+       "' max='"+data.gain_max+"' value='"+g+"'"+(m?' disabled':'')+
+       " oninput='gainChanged("+i+")' onchange='gainCommit("+i+")'>"+
+       "<b id='g-val-"+i+"'>"+Number(g).toFixed(1)+' dB</b>'+
+       "<button class='mute"+(m?' on':'')+"' onclick='muteToggle("+i+")'>"+
+       (m?'Muted':'Mute')+'</button></div>';
+  }
+  $('gains').innerHTML=h;
+}
+function gainChanged(i){
+  var r=gainRows()[i],v=Number($('g-'+i).value);
+  data.amps[r.a].gains[r.c]=v;
+  $('g-val-'+i).textContent=v.toFixed(1)+' dB';
+  plot();
+}
+function gainCommit(i){
+  var r=gainRows()[i],v=data.amps[r.a].gains[r.c];
+  post({dev:r.a,out:r.c,gain:v},
+       gainName(r.a,r.c)+' level '+v.toFixed(1)+' dB');
+}
+function muteToggle(i){
+  var r=gainRows()[i],m=!data.amps[r.a].mutes[r.c];
+  data.amps[r.a].mutes[r.c]=m;
+  drawGains();
+  plot();
+  post({dev:r.a,out:r.c,mute:m},
+       gainName(r.a,r.c)+(m?' muted':' unmuted'));
+}
+/* ---- delays ----
+   Per I2S slot, so the board's rather than one amplifier's, and like the
+   levels they go live and are saved at once. */
+function hasDelay(){
+  return !!(data.delay&&data.delay.supported&&data.amps.length===1&&
+            !data.amps[0].pbtl);
+}
+function delayUs(c){
+  return data.delay?Number(data.delay.us[c])||0:0;
+}
+/* Seconds by which the delay holds output c back, for the summed plot. */
+function delayS(c){return hasDelay()?delayUs(c)*1e-6:0;}
+function delayNote(us){
+  var n=Math.round(us*fs()/1e6);
+  return (us*0.343).toFixed(1)+' mm, '+n+' sample'+(n===1?'':'s')+' at '+
+         (fs()/1000)+' kHz';
+}
+function drawDelays(){
+  var show=hasDelay(),h='',c;
+  $('delays').style.display=show?'':'none';
+  if(!show){$('delay-rows').innerHTML='';return;}
+  for(c=0;c<2;c++){
+    h+="<div class='trim dl'><label for='dl-"+c+"'>"+outLabel(c)+
+       " delay</label><input type='number' id='dl-"+c+"' min='0' max='"+
+       data.delay.max_us+"' step='1' value='"+delayUs(c)+
+       "' onchange='delayCommit("+c+")'><span>&micro;s</span>"+
+       "<small id='dl-note-"+c+"'>"+delayNote(delayUs(c))+'</small></div>';
+  }
+  $('delay-rows').innerHTML=h;
+}
+function delayCommit(c){
+  var v=Math.round(Number($('dl-'+c).value));
+  if(!isFinite(v))v=0;
+  v=clamp(v,0,data.delay.max_us);
+  $('dl-'+c).value=v;
+  data.delay.us[c]=v;
+  $('dl-note-'+c).textContent=delayNote(v);
+  plot();
+  post({out:c,delay_us:v},outLabel(c)+' delay '+v+' \u00b5s ('+
+       (v*0.343).toFixed(1)+' mm)');
+}
+function gangChanged(){
+  storeRows();
+  data.amps[amp].ganged=$('gang').checked;
+  if(data.amps[amp].ganged)ch=0;
+  drawTabs();loadRows();
+  post({dev:amp,ganged:data.amps[amp].ganged},'Channels '+
+       (data.amps[amp].ganged?'ganged':'split'));
+  plot();
+}
+
+function sectionsOf(c,sr){
+  var secs=[];
+  sr=sr||fs();
+  for(var i=0;i<SLOTS;i++){
+    var b=c[i];
+    if(b.type===T_BYPASS&&!b.invert)continue;
+    secs.push(designBq(b,sr));
+  }
+  return secs;
+}
+/* The output trim is an input-mixer gain ahead of the filters, so it shifts a
+   chain's level without changing its shape. A ganged pair shares one chain, so
+   it is drawn at output A's level. */
+function trimOf(am,c){
+  return Number(am.gains[isGanged(am)?0:c])||0;
+}
+/* Only the summed trace moves: the trim belongs to no individual filter. */
+function offsetTotal(s,db){
+  if(db)for(var i=0;i<s.total.length;i++)s.total[i]+=db;
+  return s;
+}
+/* The magnitude scale follows the pass bands, not the deepest point. A
+   crossover's stop band falls 100 dB or more inside the audio band, and a
+   symmetric scale stretched to hold it left the part worth reading a few
+   pixels tall. So the top holds the highest point of any curve, the bottom
+   sits 30 dB under the lowest chain's peak (enough for a crossover's slopes
+   through its corner, and for a trim that drags a whole chain down), and
+   anything deeper runs off the bottom. A measurement is centred on 0 and
+   kept whole. */
+function magScale(sweeps,extras){
+  var top=0,floor=0,k,i,v,pk;
+  for(k=0;k<sweeps.length;k++){
+    pk=-Infinity;
+    for(i=0;i<sweeps[k].total.length;i++){
+      v=sweeps[k].total[i];
+      if(isFinite(v))pk=Math.max(pk,v);
+    }
+    /* To 0.1 dB, so a flat chain a hair under 0 doesn't open a step. */
+    pk=Math.round(pk*10)/10;
+    if(isFinite(pk)){top=Math.max(top,pk);floor=Math.min(floor,pk);}
+  }
+  if(extras)for(k=0;k<extras.length;k++){
+    if(extras[k].pk!==undefined){
+      top=Math.max(top,extras[k].pk);floor=Math.min(floor,-extras[k].pk+30);
+      continue;
+    }
+    for(i=0;i<extras[k].v.length;i++){
+      v=extras[k].v[i];
+      if(v!==null&&isFinite(v))top=Math.max(top,v);
+    }
+  }
+  var hi=Math.min(top+3,96),lo=Math.max(floor-30,-120),span=hi-lo;
+  var step=span<=36?6:span<=72?12:24;
+  hi=Math.max(step,Math.ceil(hi/step)*step);
+  lo=Math.floor(lo/step)*step;
+  return {lo:lo,hi:hi,step:step};
+}
+function plot(){
+  if(!data)return;
+  /* First, so a canvas being shown is in its box before it is drawn. */
+  drawView(activeChains().length);
+  /* Only the output being edited; "All outputs" shows them together. It
+     keeps its colour from that view, so B stays green on its own. */
+  var a=data.amps[amp],groups=[],names=[],trims=[],cols=[];
+  if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
+                  names.push(chainLabel(a));trims.push(trimOf(a,0));
+                  cols.push(TRACE[0]);}
+  else{
+    groups.push(sectionsOf(a.channels[ch]));names.push(outLabel(ch));
+    trims.push(trimOf(a,ch));cols.push(TRACE[ch]);
+  }
+  var mag=[],ph=[],lim=0,k,i;
+  for(k=0;k<groups.length;k++){
+    var m=offsetTotal(sweep(groups[k],fs(),magDb,false),trims[k]);
+    var p=sweep(groups[k],fs(),phaseDeg,true);
+    m.name=names[k];p.name=names[k];m.col=p.col=cols[k];
+    for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
+    mag.push(m);ph.push(p);
+  }
+  /* A measurement swings well past the ±18 dB filters are kept inside, and a
+     trim drags a whole chain down, so the scale opens up to hold both rather
+     than clipping them against the frame. */
+  var ex=measCurves(),sc=magScale(mag,ex);
+  drawGraph($('mag'),mag,sc.lo,sc.hi,sc.step,
+            function(d){return d>0?'+'+d:''+d;},false,ex);
+  var range=180;
+  while(range<lim&&range<1440)range*=2;
+  drawGraph($('phase'),ph,-range,range,range/2,
+            function(d){return d+'\u00b0';});
+  plotAll();
+  showHeadroom();
+}
+
+/* ---- headroom ----
+   Full volume reaches the digital gain plus the highest boost of the outputs
+   playing. The DSP clips past full scale, and the output past the supply
+   once the analog gain asks for more than it swings; the analog gain set to
+   match the supply leaves only the first. Shown under the response: that
+   level, and the room left below whichever clips first. */
+var gainInfo=null;
+/* Highest point of one chain, trim included: a 1/48-octave sweep finds every
+   peak, and a golden-section search between each local maximum's neighbours
+   finds its top, since a Q 20 peak is only about three steps wide. */
+function chainPeak(secs,sr,trim){
+  var top=Math.min(20000,sr*0.45),step=Math.pow(2,1/48),G=(Math.sqrt(5)-1)/2;
+  function pw(f){var h=chainH(secs,2*P*f/sr);return h.re*h.re+h.im*h.im;}
+  var best={p:0,f:0},prev=0,cur=pw(10),f,nx,lo,hi,m1,m2,p1,p2,it;
+  for(f=10;f<=top;f*=step){
+    nx=f*step<=top?pw(f*step):0;
+    if(cur>best.p)best={p:cur,f:f};
+    if(cur>=prev&&cur>=nx){
+      lo=f/step;hi=Math.min(f*step,top);
+      for(it=0;it<24;it++){
+        m1=hi-G*(hi-lo);m2=lo+G*(hi-lo);p1=pw(m1);p2=pw(m2);
+        if(p1>best.p)best={p:p1,f:m1};
+        if(p2>best.p)best={p:p2,f:m2};
+        if(p1>p2)hi=m2;else lo=m1;
+      }
+    }
+    prev=cur;cur=nx;
+  }
+  return {db:best.p>0?10*Math.log10(best.p)+trim:-Infinity,f:best.f};
+}
+function dbText(v){return (v<0?'\u2212':'+')+Math.abs(v).toFixed(1)+' dB';}
+function showHeadroom(){
+  var el=$('headroom');
+  if(!gainInfo||!data||softwareEq()){el.style.display='none';return;}
+  el.style.display='';
+  var chains=activeChains(),pk={db:-Infinity,f:0},k,r;
+  for(k=0;k<chains.length;k++){
+    r=chainPeak(sectionsOf(chains[k].c,chains[k].rate),chains[k].rate,
+                chains[k].g);
+    if(r.db>pk.db)pk=r;
+  }
+  /* Nothing playing counts as flat, as it does on the board. */
+  if(pk.db===-Infinity)pk={db:0,f:0};
+  var boost=Math.abs(pk.db)<0.05?0:pk.db;
+  var reach=gainInfo.db+boost,limit=0,room;
+  /* A board that cannot read its supply counts only the DSP's limit. */
+  if(gainInfo.clean_db!==undefined)
+    limit=Math.min(0,gainInfo.clean_db-gainInfo.analog_db);
+  room=limit-reach;
+  $('hr-gain').textContent=dbText(reach).replace(/^\+0\.0/,'0.0');
+  $('hr-room').textContent=room<-0.05?'clips by '+dbText(-room).replace('+',''):
+    dbText(room).replace('+','');
+}
+
+/* ---- digital gain ----
+   Lowered by hand to make room for the boosts. The supply and the analog
+   gain are set on the Speaker page. */
+function drawPower(){
+  var g=gainInfo,h='',v;
+  if(!g){$('power').style.display='none';return;}
+  $('power').style.display='';
+  for(v=0;v>=g.min_db;v-=0.5)
+    h+="<option value='"+v+"'>"+dbText(v).replace('+','')+'</option>';
+  $('pw-db').innerHTML=h;
+  $('pw-db').value=String(g.db);
+}
+function pickGain(){
+  var sel=$('pw-db');
+  Shell.post('/api/audio/digital-gain',{db:Number(sel.value)})
+    .then(function(d){gainInfo=d;Shell.tick(sel,true);},
+          function(e){Shell.tick(sel,false,e.message);})
+    .then(function(){drawPower();showHeadroom();});
+}
+/* ---- software A/B ----
+   The same filters on the ESP32 instead, to tell a fault in the amplifier's
+   DSP from one in the tuning by ear. The board saves the choice. */
+function drawAb(){
+  if(!data||data.software_ab===undefined){$('ab').style.display='none';return;}
+  $('ab').style.display='';
+  $('ab-sel').value=data.software_ab?'sw':'dsp';
+  $('ab-hint').textContent=data.software_ab
+    ?'The ESP32 plays these filters at the stream\'s rate, with the'+
+     ' amplifier\'s set flat and the level matched.'
+    :'Switch to hear the same filters played on the ESP32 instead.';
+}
+function pickAb(){
+  var sel=$('ab-sel'),on=sel.value==='sw';
+  Shell.post('/api/bq',{software_ab:on})
+    .then(function(){data.software_ab=on;Shell.tick(sel,true);},
+          function(e){Shell.tick(sel,false,e.message);})
+    .then(drawAb);
+}
+function loadPower(){
+  /* Digital gain is the TAS58xx's; a software EQ build has no such endpoint,
+     and asking anyway logs a warning on the device for every page load. */
+  if(softwareEq())return Promise.resolve();
+  return fetch('/api/audio/digital-gain').then(function(r){
+    if(!r.ok)return;
+    return r.json().then(function(d){gainInfo=d;});
+  }).then(function(){drawPower();showHeadroom();},function(){});
+}
+
+/* Every chain that is actually driving a driver, across both amplifiers, so
+   a crossover split over two amps can be read as one picture. A muted output
+   is left out rather than drawn flat, since it is contributing nothing. */
+/* A shared chain is as loud as the louder output still playing it. */
+function sharedTrim(am){
+  var g=-Infinity;
+  if(!am.mutes[0])g=Number(am.gains[0])||0;
+  if(!am.pbtl&&!am.mutes[1])g=Math.max(g,Number(am.gains[1])||0);
+  return g===-Infinity?0:g;
+}
+function activeChains(){
+  var out=[];
+  for(var a=0;a<data.amps.length;a++){
+    var am=data.amps[a],pre=data.amps.length>1?ampLabel(a)+' ':'';
+    if(isGanged(am)){
+      /* Ganged shares one chain across both outputs, so it is still being
+         heard unless every output carrying it is muted. */
+      if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
+        out.push({c:am.channels[0],n:pre+chainLabel(am),g:sharedTrim(am),
+                  rate:fs(a),t:delayS(0)});
+    }else{
+      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0),
+                              rate:fs(a),t:delayS(0)});
+      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1),
+                              rate:fs(a),t:delayS(1)});
+    }
+  }
+  return out;
+}
+/* One plot area shows either the selected output or every output together,
+   so it fits beside the chain on a wide screen. The choice is kept per
+   browser, and only offered when more than one output is playing; with one,
+   the combined view would just repeat the selected one. */
+var view='one';
+try{if(localStorage.getItem('bq-view')==='all')view='all';}catch(e){}
+function pickView(v){
+  view=v;
+  try{localStorage.setItem('bq-view',v);}catch(e){}
+  plot();
+}
+function drawView(n){
+  var v=n>1?view:'one';
+  $('view-tabs').style.display=n>1?'':'none';
+  $('vt-one').classList.toggle('on',v==='one');
+  $('vt-all').classList.toggle('on',v==='all');
+  $('one-wrap').style.display=v==='one'?'':'none';
+  $('all-wrap').style.display=v==='all'?'':'none';
+}
+function plotAll(){
+  var chains=activeChains();
+  drawView(chains.length);
+  if(chains.length<2)return;
+  var sweeps=[],groups=[],gains=[],rates=[],delays=[],leg='',k,maxHz=20000;
+  /* Every curve needs the same frequency grid, even when one DSP runs at
+     32 kHz and another at 96 kHz. Evaluate each at its own angular frequency. */
+  for(k=0;k<chains.length;k++)maxHz=Math.min(maxHz,chains[k].rate/2);
+  for(k=0;k<chains.length;k++){
+    var secs=sectionsOf(chains[k].c,chains[k].rate);
+    var s=offsetTotal(sweep(secs,chains[k].rate,magDb,false,maxHz),chains[k].g);
+    s.name=chains[k].n;
+    groups.push(secs);sweeps.push(s);
+    rates.push(chains[k].rate);
+    delays.push(chains[k].t||0);
+    gains.push(Math.pow(10,chains[k].g/20));
+    leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
+         chains[k].n+'</span>';
+  }
+  var ex=null,sc;
+  if($('sumq').checked){
+    ex=[{v:sumCurve(groups,rates,gains,delays),c:C_SUM,w:4,n:'Sum'}];
+    leg+="<span><i style='background:"+C_SUM+"'></i>Sum</span>";
+  }
+  $('sum-hint').style.display=ex?'':'none';
+  $('all-legend').innerHTML=leg;
+  sc=magScale(sweeps,ex);
+  drawGraph($('all'),sweeps,sc.lo,sc.hi,sc.step,
+            function(d){return d>0?'+'+d:''+d;},true,ex);
+}
+
+/* ---- server ---- */
+/* Only a plain DAC's software EQ reports a preamp, and it is always 0: there
+   is no DSP headroom to borrow, so boosts play at full level. */
+function softwareEq(){return !!data&&data.preamp_db!==undefined;}
+function showPreamp(){
+  var e=$('preamp');
+  if(!softwareEq()){e.style.display='none';return;}
+  $('trim-hint').textContent='The volume at the top of the page is the'+
+    ' AirPlay volume. The levels below trim each output against it to match drivers.';
+  var chains=activeChains(),pk={db:-Infinity,f:0},k,r;
+  for(k=0;k<chains.length;k++){
+    r=chainPeak(sectionsOf(chains[k].c,chains[k].rate),chains[k].rate,
+                chains[k].g);
+    if(r.db>pk.db)pk=r;
+  }
+  e.textContent=pk.db>0.05
+    ?'Boosts reach '+dbText(pk.db)+' and play at full level, so a loud'+
+     ' track can clip: if it distorts, turn the volume down.'
+    :'The current curves do not boost past 0 dB.';
+  e.style.display='';
+}
+function post(body,okText){
+  return fetch('/api/bq',{method:'POST',
+                          headers:{'Content-Type':'application/json'},
+                          body:JSON.stringify(body)})
+    .then(function(r){
+      if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
+      return r.json().catch(function(){return {};}).then(function(j){
+        noteLive(body);
+        if(j.preamp_db!==undefined){data.preamp_db=j.preamp_db;showPreamp();}
+        if(okText)show($('msg'),okText,'ok');
+        return true;
+      });
+    })
+    .catch(function(e){show($('msg'),'Failed: '+e.message,'err');return false;});
+}
+/* One at a time: a crossover can span four chains, and the device serves far
+   fewer sockets than that. */
+function postSeq(bodies,i,all){
+  if(i>=bodies.length)return Promise.resolve(all);
+  return post(bodies[i],null).then(function(ok){
+    return postSeq(bodies,i+1,all&&ok);
+  });
+}
+/* Routing and levels go to the device the moment they are touched, so its
+   copy only differs from the page's once an import has staged them. This is
+   what it last confirmed, so Apply can send just the difference. */
+var live=null;
+var liveDelay=null;
+function snapLive(){
+  live=data.amps.map(function(am){
+    return {mix:am.mix,gains:am.gains.slice()};
+  });
+  liveDelay=data.delay?data.delay.us.slice():null;
+}
+function noteLive(b){
+  if(b.delay_us!==undefined&&liveDelay)liveDelay[b.out]=b.delay_us;
+  if(!live||!live[b.dev])return;
+  if(b.mix!==undefined)live[b.dev].mix=b.mix;
+  if(b.gain!==undefined)live[b.dev].gains[b.out]=b.gain;
+}
+function liveBodies(){
+  var out=[],a,c,am;
+  for(a=0;live&&a<data.amps.length;a++){
+    am=data.amps[a];
+    if(am.mix!==live[a].mix)out.push({dev:a,mix:am.mix});
+    for(c=0;c<2;c++)
+      if(am.gains[c]!==live[a].gains[c])
+        out.push({dev:a,out:c,gain:am.gains[c]});
+  }
+  for(c=0;hasDelay()&&liveDelay&&c<2;c++)
+    if(data.delay.us[c]!==liveDelay[c])
+      out.push({out:c,delay_us:data.delay.us[c]});
+  return out;
+}
+/* Every amplifier, not just the visible tab — a crossover split across two of
+   them must never go live by halves. */
+function apply(){
+  storeRows();
+  var bodies=liveBodies(),a,am;
+  for(a=0;a<data.amps.length;a++){
+    am=data.amps[a];
+    if(isGanged(am)){
+      bodies.push({dev:a,ch:0,ganged:true,filters:am.channels[0]});
+    }else{
+      bodies.push({dev:a,ch:0,ganged:false,filters:am.channels[0]});
+      bodies.push({dev:a,ch:1,ganged:false,filters:am.channels[1]});
+    }
+  }
+  postSeq(bodies,0,true).then(function(ok){
+    if(ok)show($('msg'),'Applied. Commit to keep it.','ok');
+  });
+}
+function blankBq(){
+  return {type:T_BYPASS,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
+          invert:false,coeff:[1,0,0,0,0]};
+}
+/* Locked rows are ones the user means to keep, so a clear leaves them. */
+function resetChain(){
+  var c=chan(),mask=lockMask(amp,ch),kept=lockCount(mask);
+  for(var i=0;i<SLOTS;i++)if(!(mask&(1<<i)))c[i]=blankBq();
+  loadRows();setDirty(true);plot();
+  show($('msg'),kept?'Cleared the chain apart from '+kept+' locked filter'+
+                     (kept>1?'s':'')+'.':'','info');
+}
+/* The fixed graphic EQ this page replaced: one peaking section per band, Q
+   widening towards the bottom where the centres are furthest apart. */
+var GEQ=[[20,2],[31.5,2],[50,1.5],[80,1.5],[125,1],[200,1],[315,0.9],
+         [500,0.9],[800,0.8],[1250,0.8],[2000,0.7],[3150,0.7],[5000,0.6],
+         [8000,0.6],[16000,0.5]];
+function graphicEq(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)
+    c[i]={type:T_PEAK_Q,sub:0,freq:GEQ[i][0],q:GEQ[i][1],bw:100,gain:0,
+          ripple:0.5,invert:false,coeff:[1,0,0,0,0]};
+  loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded a flat 15-band EQ. Set the band gains, then Apply.',
+       'info');
+}
+
+/* ---- crossover ----
+   Sections cascade, so a Linkwitz-Riley 4th order is two Butterworth 2
+   sections, not two Linkwitz-Riley 2 sections. `inv` is not a preference: at
+   the corner the branches sit n*180 degrees apart, so the 12 dB/oct pairs need
+   opposite polarity and the 24 dB/oct pairs are already back in phase and
+   would null if we inverted them anyway. */
+var XOA=[{n:'Linkwitz-Riley 24 dB/oct',s:[[S_BW2,0.7071],[S_BW2,0.7071]],inv:0},
+         {n:'Linkwitz-Riley 12 dB/oct',s:[[S_LR2,0.5]],inv:1},
+         {n:'Butterworth 24 dB/oct',s:[[S_VARQ,0.5412],[S_VARQ,1.3065]],inv:0},
+         {n:'Butterworth 12 dB/oct',s:[[S_BW2,0.7071]],inv:1},
+         {n:'Butterworth 6 dB/oct',s:[[S_BW1,0.7071]],inv:0},
+         {n:'Bessel 12 dB/oct',s:[[S_BESS2,0.5774]],inv:1}];
+/* Which chain takes which half of the split. `o` of -1 means both outputs of
+   that amplifier; `mix` is the input routing the arrangement implies. */
+function xoLayouts(){
+  var cur=data.amps[amp],L=[];
+  L.push({n:'This amplifier \u2014 '+outLabel(0)+' high, '+outLabel(1)+' low',
+          parts:[{a:amp,o:0,hi:1},{a:amp,o:1,hi:0}],gang:0,ok:!cur.pbtl,
+          why:'A bridged amplifier drives one voice coil, so its two outputs '+
+              'cannot take different halves of a crossover.'});
+  if(data.amps.length>1){
+    var a0=data.amps[0],a1=data.amps[1];
+    L.push({n:'One amplifier per speaker \u2014 '+outLabel(0)+' high, '+
+              outLabel(1)+' low on each',
+            parts:[{a:0,o:0,hi:1},{a:0,o:1,hi:0},{a:1,o:0,hi:1},{a:1,o:1,hi:0}],
+            gang:0,mix:[2,3],ok:!a0.pbtl&&!a1.pbtl,
+            why:'Both amplifiers have to be in stereo to bi-amp one speaker '+
+                'each; one of them is bridged.'});
+    if(!a1.pbtl)
+      L.push({n:'Tweeters on '+ampLabel(0)+', woofers on '+ampLabel(1),
+              parts:[{a:0,o:-1,hi:1},{a:1,o:-1,hi:0}],gang:1,mix:[0,0],ok:1});
+    L.push({n:'Satellites on '+ampLabel(0)+', subwoofer on '+ampLabel(1),
+            parts:[{a:0,o:-1,hi:1},{a:1,o:-1,hi:0}],gang:1,mix:[0,1],ok:1});
+  }
+  /* An arrangement that needs a routing an amplifier cannot take is out. */
+  L.forEach(function(l){
+    for(var i=0;l.ok&&l.mix&&i<l.mix.length&&i<data.amps.length;i++)
+      if(data.amps[i].mix_fixed&&l.mix[i]!==data.amps[i].mix){
+        l.ok=0;
+        l.why=ampLabel(i)+' cannot route its inputs, which this needs.';
+      }
+  });
+  return L;
+}
+function xoPick(){
+  var L=xoLayouts(),i=parseInt($('xo-layout').value,10);
+  return {lay:L[i],al:XOA[parseInt($('xo-align').value,10)]};
+}
+/* Both panels expand into the same slot under the buttons, so opening one
+   closes the other. Pass null to close whatever is open. */
+function panelShow(id){
+  var open=!!id&&!$(id).classList.contains('on');
+  ['xo','aeq'].forEach(function(p){
+    var on=open&&p===id;
+    $(p).classList.toggle('on',on);
+    $(p+'-btn').classList.toggle('on',on);
+  });
+  return open;
+}
+function xoToggle(){
+  if(!panelShow('xo'))return;
+  var h='',i,L=xoLayouts();
+  for(i=0;i<L.length;i++)h+="<option value='"+i+"'>"+L[i].n+'</option>';
+  $('xo-layout').innerHTML=h;
+  h='';
+  for(i=0;i<XOA.length;i++)h+="<option value='"+i+"'>"+XOA[i].n+'</option>';
+  $('xo-align').innerHTML=h;
+  $('xo-align').value='0';
+  xoSync();
+}
+function xoSync(){
+  var p=xoPick();
+  if(!p.lay||!p.al)return;
+  $('xo-go').disabled=!p.lay.ok;
+  $('xo-hint').textContent=p.lay.ok
+    ? 'Takes '+p.al.s.length+' of the '+SLOTS+' slots on each output and '+
+      'clears the rest.'+
+      (p.al.inv?' The low branch is inverted, which this slope needs to sum '+
+                'flat through the corner.':'')+
+      (p.lay.mix?' Input routing is set to match.':'')+
+      ' Filters are staged only \u2014 press Apply to hear them.'
+    : p.lay.why;
+}
+function xoFill(c,f,al,hi,inv){
+  var i;
+  for(i=0;i<SLOTS;i++)c[i]=blankBq();
+  for(i=0;i<al.s.length;i++){
+    c[i]=blankBq();
+    c[i].type=hi?T_HP:T_LP;
+    c[i].sub=al.s[i][0];
+    c[i].freq=f;
+    c[i].q=al.s[i][1];
+    /* Polarity belongs to the chain, not to a section: the sections multiply,
+       so inverting an even number of them would cancel back to no inversion. */
+    c[i].invert=!hi&&inv&&i===0;
+  }
+}
+function xoBuild(){
+  var p=xoPick();
+  if(!p.lay||!p.al||!p.lay.ok)return;
+  var f=num('xo-freq');
+  if(!isFinite(f)){show($('msg'),'Enter a crossover frequency.','err');return;}
+  var maxHz=Infinity;
+  for(var part=0;part<p.lay.parts.length;part++)
+    maxHz=Math.min(maxHz,fs(p.lay.parts[part].a)*0.45);
+  f=clamp(f,F_MIN,maxHz);
+  var inv=p.al.inv,i,k;
+  for(i=0;i<p.lay.parts.length;i++){
+    var pt=p.lay.parts[i],am=data.amps[pt.a];
+    var outs=pt.o<0?[0,1]:[pt.o];
+    for(k=0;k<outs.length;k++)xoFill(am.channels[outs[k]],f,p.al,pt.hi,inv);
+    if(!am.pbtl)am.ganged=!!p.lay.gang;
+  }
+  /* A ganged amplifier only ships chain 0, so keep its pair identical. */
+  for(i=0;i<data.amps.length;i++)
+    if(isGanged(data.amps[i]))
+      data.amps[i].channels[1]=
+        JSON.parse(JSON.stringify(data.amps[i].channels[0]));
+  /* Routing is a live setting on this page, like the dropdown it mirrors. */
+  if(p.lay.mix)
+    for(i=0;i<p.lay.mix.length&&i<data.amps.length;i++){
+      var want=p.lay.mix[i];
+      if(data.amps[i].pbtl&&want===0)continue;
+      if(data.amps[i].mix===want)continue;
+      data.amps[i].mix=want;
+      post({dev:i,mix:want},null);
+    }
+  if(isGanged(data.amps[amp]))ch=0;
+  panelShow(null);
+  drawTabs();drawMix();loadRows();setDirty(true);plot();
+  show($('msg'),'Crossover staged at '+Math.round(f)+' Hz. Apply to hear it.',
+       'info');
+}
+/* ---- fit to a measurement ----
+   The same fitter the TAS57xx hybrid flow page uses. It runs on the same
+   360-point log grid the plots sweep, so the overlay lines up with the filter
+   curves and the score is taken on exactly what is drawn. */
+var AEQ_N=360,AEQ_QMIN=0.3,AEQ_QMAX=8,AEQ_KNEE=6,meas=null;
+/* Sections before this are the tuner's, not the fitter's. Whatever they do was
+   already playing when the measurement was taken, so it is baked into the
+   measurement and must not be counted a second time. */
+function aeqKeep(){
+  var n=Math.round(num('aeq-keep'));
+  return isFinite(n)?clamp(n,0,SLOTS-1):0;
+}
+function aeqSections(){
+  var c=chan(),secs=[],i,b;
+  for(i=aeqKeep();i<SLOTS;i++){
+    b=c[i];
+    if(b.type===T_BYPASS&&!b.invert)continue;
+    secs.push(designBq(b,fs()));
+  }
+  return secs;
+}
+/* A crossover leg is the obvious thing to keep, and it always sits at the top
+   of the chain, so leading pass filters are what the count defaults to. */
+function aeqDefaultKeep(){
+  var c=chan(),n=0;
+  while(n<SLOTS-1&&(c[n].type===T_LP||c[n].type===T_HP))n++;
+  return n;
+}
+/* Kept sections are slots the fitter cannot have, so say so before it runs
+   rather than quietly returning fewer filters than were asked for. */
+function aeqRoomSync(){
+  var room=SLOTS-aeqKeep(),n=$('aeq-n');
+  n.max=room;
+  if(Math.round(num('aeq-n'))>room)n.value=room;
+  $('aeq-room').textContent=room<SLOTS?'(max '+room+')':'';
+}
+function gridHz(sr){
+  var f0=20,f1=Math.min(20000,sr/2),g=[],i;
+  for(i=0;i<=AEQ_N;i++)g.push(f0*Math.pow(f1/f0,i/AEQ_N));
+  return g;
+}
+/* Frequency and level from the first two numeric columns; anything else on the
+   line, and any header or comment, is skipped. Covers REW text exports, FRD
+   and plain CSV without needing to know which it got. */
+function parseResponse(text){
+  var lines=text.split(/\r?\n/),pt=[],i,p,f,d,ln;
+  for(i=0;i<lines.length;i++){
+    ln=lines[i].trim();
+    if(!ln||'*#;%"\''.indexOf(ln.charAt(0))>=0)continue;
+    p=ln.split(/[\s,;]+/);
+    if(p.length<2)continue;
+    f=parseFloat(p[0]);d=parseFloat(p[1]);
+    if(!isFinite(f)||!isFinite(d)||f<=0)continue;
+    pt.push([f,d]);
+  }
+  if(pt.length<16)return null;
+  pt.sort(function(a,b){return a[0]-b[0];});
+  var m={f:[],db:[]};
+  for(i=0;i<pt.length;i++){m.f.push(pt[i][0]);m.db.push(pt[i][1]);}
+  return m;
+}
+/* Averages the points falling inside each grid bin. Band-averaging rather than
+   interpolating is what stops a 96 point/octave export aliasing onto the
+   coarser grid. Bins with no point in them interpolate; grid points outside
+   the measured span come back null and are left out of the fit. */
+function smoothOnto(m,grid,oct){
+  var half=Math.pow(2,1/(2*oct)),out=[],lo=0,hi=0,i,j,s,n,t;
+  for(i=0;i<grid.length;i++){
+    while(lo<m.f.length&&m.f[lo]<grid[i]/half)lo++;
+    while(hi<m.f.length&&m.f[hi]<=grid[i]*half)hi++;
+    if(grid[i]<m.f[0]||grid[i]>m.f[m.f.length-1]){out.push(null);continue;}
+    s=0;n=0;
+    for(j=lo;j<hi;j++){s+=m.db[j];n++;}
+    if(n){out.push(s/n);continue;}
+    j=Math.min(Math.max(lo,1),m.f.length-1);
+    t=Math.log(grid[i]/m.f[j-1])/Math.log(m.f[j]/m.f[j-1]);
+    out.push(m.db[j-1]+t*(m.db[j]-m.db[j-1]));
+  }
+  return out;
+}
+/* Full weight across the fit range, fading out over the half octave beyond
+   each edge so a filter sitting on the boundary is not free to do whatever it
+   likes just outside it. */
+function fitWeights(grid,sm,lo,hi){
+  var w=[],i,v;
+  for(i=0;i<grid.length;i++){
+    if(sm[i]===null){w.push(0);continue;}
+    v=Math.min(Math.log(grid[i]/lo)/Math.LN2/0.5+1,
+               Math.log(hi/grid[i])/Math.LN2/0.5+1);
+    w.push(Math.max(0,Math.min(1,v)));
+  }
+  return w;
+}
+/* Reference level the fit measures against. Absolute level is the volume
+   control's job, so measuring against a free level keeps the fit on shape
+   alone instead of burning filters trying to move the whole curve. Found by
+   reweighting, so a roll-off the filters cannot reach does not drag it. */
+function fitLevel(sm,eq,w){
+  var i,c=0,sw=0,a,ww,num2,den,it;
+  for(i=0;i<w.length;i++){if(!w[i])continue;c+=w[i]*(sm[i]+eq[i]);sw+=w[i];}
+  if(!sw)return null;
+  c/=sw;
+  for(it=0;it<2;it++){
+    num2=0;den=0;
+    for(i=0;i<w.length;i++){
+      if(!w[i])continue;
+      a=Math.abs(sm[i]+eq[i]-c);
+      ww=a>AEQ_KNEE?w[i]*AEQ_KNEE/a:w[i];
+      num2+=ww*(sm[i]+eq[i]);den+=ww;
+    }
+    if(den)c=num2/den;
+  }
+  return c;
+}
+/* The loss. Huber rather than plain squares: a roll-off the filters cannot
+   reach is often 15 dB out, and under squared error that one region swamps
+   every deviation that actually is correctable. */
+function fitRms(sm,eq,w){
+  var c=fitLevel(sm,eq,w),i,s=0,sw=0,a;
+  if(c===null)return 0;
+  for(i=0;i<w.length;i++){
+    if(!w[i])continue;
+    a=Math.abs(sm[i]+eq[i]-c);
+    s+=w[i]*(a<=AEQ_KNEE?a*a:AEQ_KNEE*(2*a-AEQ_KNEE));sw+=w[i];
+  }
+  return Math.sqrt(s/sw);
+}
+/* Plain weighted RMS about that same level, for the message only: the number
+   the user is shown should mean what it says. */
+function fitDev(sm,eq,w){
+  var c=fitLevel(sm,eq,w),i,s=0,sw=0,d;
+  if(c===null)return 0;
+  for(i=0;i<w.length;i++){if(!w[i])continue;d=sm[i]+eq[i]-c;s+=w[i]*d*d;sw+=w[i];}
+  return Math.sqrt(s/sw);
+}
+/* What the search minimises: the deviation above, plus a heavy term for however
+   far the SUMMED response breaks the gain limits. Without it the fitter stacks
+   filter on filter at one frequency, since each is inside its own clamp while
+   together they are nowhere near it. Worst point rather than an average, or a
+   narrow violation gets diluted across the grid, and linear so there is still a
+   gradient to follow back into range. */
+function fitScore(sm,eq,w,opt){
+  var i,ex=0,d;
+  for(i=0;i<eq.length;i++){
+    d=eq[i]>opt.gmax?eq[i]-opt.gmax:(eq[i]<opt.gmin?opt.gmin-eq[i]:0);
+    if(d>ex)ex=d;
+  }
+  return fitRms(sm,eq,w)+100*ex;
+}
+/* Biquad magnitude from phi = 4 sin^2(w/2), one term per grid point. */
+function gridPhi(g,sr){
+  var p=[],i,s;
+  for(i=0;i<g.length;i++){s=Math.sin(P*g[i]/sr);p.push(4*s*s);}
+  return p;
+}
+/* |H|^2 has the same shape above and below the line in the phi = 4 sin^2(w/2)
+   formulation, so both come from here: one trig term per grid point, computed
+   once for a whole fit, where magDb needs four per filter per point. */
+function aeqPoly(c0,c1,c2,phi){
+  var s=c0+c1+c2;
+  return s*s+(c0*c2*phi-(c1*(c0+c2)+4*c0*c2))*phi;
+}
+function aeqMagDb(c,phi){
+  /* a1 and a2 are stored negated, so the true denominator is 1, -a1, -a2. */
+  var n=aeqPoly(c.b0,c.b1,c.b2,phi),d=aeqPoly(1,-c.a1,-c.a2,phi);
+  if(!(n>1e-24)||!(d>1e-24))return -60;
+  return Math.max(-60,Math.min(60,10*Math.log10(n/d)));
+}
+function eqSum(secs,ph){
+  var out=[],i,k,v;
+  for(i=0;i<ph.length;i++){
+    v=0;
+    for(k=0;k<secs.length;k++)v+=aeqMagDb(secs[k],ph[i]);
+    out.push(v);
+  }
+  return out;
+}
+function aeqEval(b,sr,ph,sm,base,w,opt){
+  var m=eqSum([designBq(b,sr)],ph),sum=[],i;
+  for(i=0;i<ph.length;i++)sum.push(base[i]+m[i]);
+  return {score:fitScore(sm,sum,w,opt),mag:m};
+}
+function aeqBand(f,q,gain,type){
+  var b=blankBq();
+  b.type=type||T_PEAK_Q;b.freq=f;b.q=q;b.gain=gain;
+  return b;
+}
+/* A peaking filter's steepest slope runs past 18 dB/octave once the gain
+   outruns the Q, and it starts to ring. This is the gain that just reaches that
+   limit, so Q and gain are held in a sane relationship instead of each being
+   clamped on its own. */
+function aeqGainLimit(q){return 20.575/q-0.095;}
+/* One filter is limited only by what a row can hold and by that rule. The
+   budget the user set is on the SUMMED response and fitScore enforces it there:
+   a +3 dB band sitting on top of a -6 dB one still leaves the total below
+   unity, so clamping each band to the total as well would forbid that for no
+   reason. */
+function aeqClamp(b,sr,opt){
+  /* A shelf in this model takes no Q at all - its slope is fixed - so the
+     peaking sharpness rule has nothing to apply to. */
+  var sh=(b.type===T_LOSHELF||b.type===T_HISHELF);
+  var q=sh?0.707:clamp(b.q,AEQ_QMIN,AEQ_QMAX);
+  var gl=sh?G_MAX:aeqGainLimit(q);
+  return aeqBand(clamp(b.freq,20,Math.min(20000,sr*0.49)),q,
+    clamp(b.gain,Math.max(G_MIN,-gl),Math.min(G_MAX,gl)),b.type);
+}
+/* Coordinate descent on frequency, Q and gain with a halving step. Scoring
+   through designBq means the fit sees the filter the part will actually run,
+   clamps included. */
+function aeqRefine(b,sr,ph,sm,base,w,opt){
+  b=aeqClamp(b,sr,opt);
+  /* Half an octave of frequency travel, halved each pass, so a filter can
+     correct a mis-seed but cannot walk out of the deviation it was placed on
+     and leave that deviation for the next filter to be wasted on too. */
+  var best=aeqEval(b,sr,ph,sm,base,w,opt),sf=0.5,sq=1,sg=4,it,k,d,c,e;
+  for(it=0;it<6;it++){
+    for(k=0;k<3;k++){
+      for(d=-1;d<=1;d+=2){
+        c=aeqBand(b.freq,b.q,b.gain,b.type);
+        if(k===0)c.freq=b.freq*Math.pow(2,d*sf);
+        else if(k===1)c.q=b.q*Math.pow(2,d*sq);
+        else c.gain=b.gain+d*sg;
+        e=aeqEval(c=aeqClamp(c,sr,opt),sr,ph,sm,base,w,opt);
+        if(e.score<best.score-1e-9){best=e;b=c;}
+      }
+    }
+    sf/=2;sq/=2;sg/=2;
+  }
+  return {band:b,score:best.score,mag:best.mag};
+}
+function aeqSum(mags,skip,n){
+  var out=[],i,j,s;
+  for(i=0;i<n;i++){
+    s=0;
+    for(j=0;j<mags.length;j++)if(j!==skip)s+=mags[j][i];
+    out.push(s);
+  }
+  return out;
+}
+/* A shelf pays where a tilt runs off the end of the fit range: one of them does
+   what two or three peaking filters would, and it keeps working past the edge
+   instead of turning back over. Seeded on the same-sign run that touches the
+   edge, cornered at the inner end of that run. */
+function aeqShelf(g,need,gain,pm,lo0,hi0,type){
+  var j,s=0,n=0,st,oct;
+  if(type===T_LOSHELF){
+    if(!pm[lo0])return null;
+    st=need[lo0]>0?1:-1;
+    for(j=lo0;j<=hi0&&pm[j]&&(need[j]>0?1:-1)===st;j++){s+=gain[j];n++;}
+    j--;oct=Math.log(g[j]/g[lo0])/Math.LN2;
+  }else{
+    if(!pm[hi0])return null;
+    st=need[hi0]>0?1:-1;
+    for(j=hi0;j>=lo0&&pm[j]&&(need[j]>0?1:-1)===st;j--){s+=gain[j];n++;}
+    j++;oct=Math.log(g[hi0]/g[j])/Math.LN2;
+  }
+  /* Narrower than this is a bump, not a tilt, and a peaking filter fits it
+     better without moving everything beyond the corner too. */
+  if(n<2||oct<0.5)return null;
+  return aeqBand(g[j],0.707,s/n,type);
+}
+/* Where the next filter should go: the contiguous same-sign stretch of residual
+   worth the most, with what each point wants capped by the headroom still left
+   there. Ranking by width AND height, because a broad gentle excess deserves a
+   filter more than a narrow deep notch, which is usually a measurement
+   artefact. Ranking on raw depth alone parks every filter on the deepest
+   roll-off, exactly where the boost limit means none of them can help. */
+function aeqSeed(g,sm,eq,w,opt){
+  var c=fitLevel(sm,eq,w),i,j,need=[],gain=[],pm=[],avail;
+  if(c===null)return [];
+  for(i=0;i<g.length;i++){
+    need.push(w[i]?c-sm[i]-eq[i]:0);
+    avail=need[i]>0?opt.gmax-eq[i]:eq[i]-opt.gmin;
+    if(!w[i]||avail<=0){gain.push(0);pm.push(0);continue;}
+    gain.push(Math.abs(need[i])<avail?need[i]:(need[i]>0?avail:-avail));
+    pm.push(w[i]*Math.abs(gain[i])*(2*Math.abs(need[i])-Math.abs(gain[i])));
+  }
+  var bs=0,bi=-1,bj=-1,sg,run,out=[];
+  for(i=0;i<g.length;){
+    if(!pm[i]){i++;continue;}
+    sg=need[i]>0?1:-1;run=0;
+    for(j=i;j<g.length&&pm[j]&&(need[j]>0?1:-1)===sg;j++)run+=pm[j];
+    if(run>bs){bs=run;bi=i;bj=j-1;}
+    i=j;
+  }
+  if(bi<0)return [];
+  /* Centre on the deepest point of the run, Q from how wide the run is. */
+  var ci=bi;
+  for(i=bi;i<=bj;i++)if(Math.abs(gain[i])>Math.abs(gain[ci]))ci=i;
+  var bw=Math.log(g[bj]/g[bi])/Math.LN2,oc=Math.pow(2,bw);
+  out.push(aeqBand(g[ci],bw>0.05?Math.sqrt(oc)/(oc-1):2,gain[ci]));
+  if(opt.shelf){
+    var lo0=-1,hi0=-1,s;
+    for(i=0;i<g.length;i++)if(w[i]){if(lo0<0)lo0=i;hi0=i;}
+    if(lo0>=0){
+      s=aeqShelf(g,need,gain,pm,lo0,hi0,T_LOSHELF);if(s)out.push(s);
+      s=aeqShelf(g,need,gain,pm,lo0,hi0,T_HISHELF);if(s)out.push(s);
+    }
+  }
+  return out;
+}
+/* Refine every candidate for the slot and keep whichever ends up best: a shelf
+   and a peaking filter are worth different amounts at different stages, and
+   only refining tells them apart. */
+function aeqBest(cand,sr,ph,sm,base,w,opt){
+  var best=null,i,r;
+  for(i=0;i<cand.length;i++){
+    r=aeqRefine(cand[i],sr,ph,sm,base,w,opt);
+    if(!best||r.score<best.score)best=r;
+  }
+  return best;
+}
+/* Each filter re-fitted against the sum of the others until that stops paying. */
+function aeqPolish(bands,mags,sr,ph,g,sm,w,opt,cur,lim){
+  var round,k,r;
+  for(round=0;round<lim;round++){
+    var moved=0;
+    for(k=0;k<bands.length;k++){
+      r=aeqRefine(bands[k],sr,ph,sm,aeqSum(mags,k,g.length),w,opt);
+      if(r.score<cur-0.001)moved=1;
+      if(r.score<=cur){cur=r.score;bands[k]=r.band;mags[k]=r.mag;}
+    }
+    if(!moved)break;
+  }
+  return cur;
+}
+/* A shelf can score best at the moment it is placed and turn out worse once the
+   others have moved around it. Re-try each band as the other types it could
+   plausibly be, so offering shelves can only help. Shelves are only considered
+   within two octaves of the fit edge, where a shelf is the shape that fits. */
+function aeqRetype(bands,mags,sr,ph,g,sm,w,opt,cur){
+  var k,t,b,r,alt,i,lo=-1,hi=-1;
+  for(i=0;i<g.length;i++)if(w[i]){if(lo<0)lo=i;hi=i;}
+  if(lo<0)return cur;
+  for(k=0;k<bands.length;k++){
+    b=bands[k];alt=[];
+    if(b.type!==T_PEAK_Q)alt.push(T_PEAK_Q);
+    if(opt.shelf){
+      if(b.type!==T_LOSHELF&&b.freq<g[lo]*4)alt.push(T_LOSHELF);
+      if(b.type!==T_HISHELF&&b.freq>g[hi]/4)alt.push(T_HISHELF);
+    }
+    for(t=0;t<alt.length;t++){
+      r=aeqRefine(aeqBand(b.freq,b.q,b.gain,alt[t]),sr,ph,sm,
+                  aeqSum(mags,k,g.length),w,opt);
+      if(r.score<cur){cur=r.score;bands[k]=r.band;mags[k]=r.mag;b=r.band;}
+    }
+  }
+  return cur;
+}
+/* One greedy pass and its repairs, from an empty set to a pruned one. */
+function aeqCore(sr,opt,g,ph,sm,w){
+  var eq=[],bands=[],mags=[],i,k;
+  for(i=0;i<g.length;i++)eq.push(0);
+  /* Place every filter that was asked for, judging none of them yet: one that
+     looks worthless while the others are still sat on their seeds can be worth
+     a lot once they have all moved. */
+  for(k=0;k<opt.n;k++){
+    var seed=aeqSeed(g,sm,eq,w,opt);
+    if(!seed.length)break;
+    var r=aeqBest(seed,sr,ph,sm,eq,w,opt);
+    bands.push(r.band);mags.push(r.mag);
+    eq=aeqSum(mags,-1,g.length);
+  }
+  var cur=aeqPolish(bands,mags,sr,ph,g,sm,w,opt,fitScore(sm,eq,w,opt),8);
+  /* A filter can settle on nothing because the deviation it was seeded on got
+     taken over by another one while both were still moving. Repeatedly lift
+     whichever one the fit would miss least and re-seed it on what is still
+     wrong. Kept only if it actually pays. */
+  for(var pass=0;pass<opt.n;pass++){
+    var idle=-1,cost=1e9,sc;
+    for(k=0;k<bands.length;k++){
+      sc=fitScore(sm,aeqSum(mags,k,g.length),w,opt)-cur;
+      if(sc<cost){cost=sc;idle=k;}
+    }
+    if(idle<0)break;
+    var base=aeqSum(mags,idle,g.length),s2=aeqSeed(g,sm,base,w,opt);
+    if(!s2.length)break;
+    var r2=aeqBest(s2,sr,ph,sm,base,w,opt);
+    if(r2.score>=cur-0.001)break;
+    bands[idle]=r2.band;mags[idle]=r2.mag;
+    /* Only one filter moved, so the rest need a nudge rather than a rebuild. */
+    cur=aeqPolish(bands,mags,sr,ph,g,sm,w,opt,r2.score,3);
+  }
+  cur=aeqRetype(bands,mags,sr,ph,g,sm,w,opt,cur);
+  cur=aeqPolish(bands,mags,sr,ph,g,sm,w,opt,cur,3);
+  /* Now judge them: a filter the fit would barely miss is a filter better left
+     bypassed, both for headroom and for the phase it would cost. */
+  for(k=bands.length-1;k>=0;k--){
+    var without=aeqSum(mags,k,g.length),sc2=fitScore(sm,without,w,opt);
+    if(sc2<cur+0.02){bands.splice(k,1);mags.splice(k,1);cur=sc2;}
+  }
+  return {bands:bands,cur:cur};
+}
+function aeqFit(sr,opt){
+  opt.gmax=opt.boost;opt.gmin=-opt.cut;
+  var g=gridHz(sr),ph=gridPhi(g,sr),sm=smoothOnto(meas,g,opt.oct);
+  var w=fitWeights(g,sm,opt.lo,opt.hi),i,k;
+  var zero=[];
+  for(i=0;i<g.length;i++)zero.push(0);
+  var before=fitDev(sm,zero,w);
+  /* Shelves are offered, not imposed: one that scores best at the moment it is
+     placed can send the greedy path somewhere worse overall, which no local
+     repair recovers. So fit without them, fit with them, keep the better. */
+  var want=opt.shelf;
+  opt.shelf=false;
+  var best=aeqCore(sr,opt,g,ph,sm,w);
+  if(want){
+    opt.shelf=true;
+    var alt=aeqCore(sr,opt,g,ph,sm,w);
+    if(alt.cur<best.cur)best=alt;
+    opt.shelf=want;
+  }
+  var bands=best.bands;
+  /* Cuts into the early slots, boosts into the late ones - a boost that clips
+     early would be copied by every section after it. Rounded to the steps the
+     row inputs use, so what is reported is what the rows will actually do. */
+  bands.sort(function(a,b){return a.gain-b.gain;});
+  var keep=[],secs=[];
+  for(k=0;k<bands.length;k++){
+    bands[k].freq=Math.round(bands[k].freq);
+    bands[k].q=Math.round(bands[k].q*100)/100;
+    bands[k].gain=Math.round(bands[k].gain*2)/2;
+    keep.push(bands[k]);secs.push(designBq(bands[k],sr));
+  }
+  /* Rounding happens after the fit, so the rounded set can land a fraction
+     outside the headroom the fit respected. Walk it back a step at a time, off
+     whichever filter is doing the most at the frequency that is over, until it
+     is inside. The limits are a promise about clipping, not a preference. */
+  for(var guard=0;guard<40;guard++){
+    var tot=eqSum(secs,ph),pk=0,pi=-1,over;
+    for(i=0;i<tot.length;i++){
+      over=tot[i]>opt.gmax?tot[i]-opt.gmax:
+        (tot[i]<opt.gmin?opt.gmin-tot[i]:0);
+      if(over>pk){pk=over;pi=i;}
+    }
+    if(pi<0)break;
+    var sgn=tot[pi]>0?1:-1,wk=-1,wv=0,mv;
+    for(k=0;k<keep.length;k++){
+      mv=sgn*aeqMagDb(secs[k],ph[pi]);
+      if(mv>wv){wv=mv;wk=k;}
+    }
+    if(wk<0)break;
+    keep[wk].gain=Math.round((keep[wk].gain-sgn*0.5)*2)/2;
+    secs[wk]=designBq(keep[wk],sr);
+  }
+  var out=[],os=[];
+  for(k=0;k<keep.length;k++)
+    if(keep[k].gain){out.push(keep[k]);os.push(secs[k]);}
+  var fin=eqSum(os,ph),peak=0;
+  for(i=0;i<fin.length;i++)if(fin[i]>peak)peak=fin[i];
+  return {bands:out,before:before,after:fitDev(sm,fin,w),peak:peak};
+}
+/* Grey: the smoothed measurement. Amber: what it becomes with the sections the
+   fitter owns applied. Both are drawn about the same level the fit measures
+   against, so what the curves show and what the deviation figure claims are the
+   same thing. Centring them on a plain average over the whole span instead
+   makes an uncorrectable roll-off pull the zero line down and puts a hump on
+   the corrected trace that the numbers say is not there. */
+function measCurves(){
+  if(!meas)return null;
+  var sr=fs(),oct=num('aeq-sm'),g=gridHz(sr),ph=gridPhi(g,sr),i;
+  var sm=smoothOnto(meas,g,oct>0?oct:6),eq=eqSum(aeqSections(),ph);
+  var lo=num('aeq-lo'),hi=num('aeq-hi'),z=[],raw=[],fix=[];
+  for(i=0;i<g.length;i++)z.push(0);
+  var w=fitWeights(g,sm,lo>0?lo:20,hi>lo?hi:20000);
+  var cr=fitLevel(sm,z,w),cf=fitLevel(sm,eq,w);
+  if(cr===null||cf===null)return null;
+  var pr=0,pf=0;
+  for(i=0;i<g.length;i++){
+    raw.push(sm[i]===null?null:sm[i]-cr);
+    fix.push(sm[i]===null?null:sm[i]+eq[i]-cf);
+    if(sm[i]===null||!w[i])continue;
+    pr=Math.max(pr,Math.abs(raw[i]));pf=Math.max(pf,Math.abs(fix[i]));
+  }
+  return [{v:raw,c:C_MEAS,w:3,pk:pr,n:'Measured'},
+          {v:fix,c:C_FIX,w:3,pk:pf,n:'Corrected'}];
+}
+/* Where the driver gives up. Below this the fit can only spend boost, headroom
+   and excursion on ground it cannot win, so it is worth saying out loud rather
+   than letting it turn up later as a poor result and a wasted filter or two. */
+function aeqRolloff(m){
+  var i,s=0,n=0,ref;
+  for(i=0;i<m.f.length;i++)if(m.f[i]>=500&&m.f[i]<=2000){s+=m.db[i];n++;}
+  if(!n)return 0;
+  ref=s/n-10;
+  for(i=0;i<m.f.length;i++)if(m.f[i]>=1000)break;
+  for(i--;i>=0;i--)if(m.db[i]<ref)return m.f[i];
+  return 0;
+}
+function aeqToggle(){
+  if(!panelShow('aeq'))return;
+  if(!meas)$('aeq-keep').value=aeqDefaultKeep();
+  aeqRoomSync();
+  plot();
+}
+function aeqLoad(input){
+  var file=input.files&&input.files[0];
+  if(!file)return;
+  var rd=new FileReader();
+  rd.onerror=function(){
+    aeqClear();$('aeq-msg').textContent='Could not read that file.';
+  };
+  rd.onload=function(){
+    meas=parseResponse(String(rd.result));
+    if(!meas){
+      aeqClear();
+      $('aeq-msg').textContent=
+        'No data found \u2014 expected lines with a frequency and a level.';
+      return;
+    }
+    $('aeq-run').disabled=false;
+    var ro=aeqRolloff(meas),msg=meas.f.length+' points, '+
+      Math.round(meas.f[0])+' Hz to '+
+      Math.round(meas.f[meas.f.length-1])+' Hz.';
+    if(ro>meas.f[0]*1.05)
+      msg+=' Output is already 10 dB down by '+Math.round(ro)+
+        ' Hz; starting the fit at or above that stops filters and boost being'+
+        ' spent where the driver cannot follow.';
+    $('aeq-msg').textContent=msg;
+    drawLegend();plot();
+  };
+  rd.readAsText(file);
+}
+function aeqClear(){
+  meas=null;
+  $('aeq-file').value='';
+  $('aeq-run').disabled=true;
+  $('aeq-msg').textContent='';
+  drawLegend();plot();
+}
+function aeqRun(){
+  if(!meas)return;
+  var keep=aeqKeep(),room=SLOTS-keep;
+  var opt={lo:num('aeq-lo'),hi:num('aeq-hi'),oct:num('aeq-sm'),
+           n:Math.min(Math.round(num('aeq-n')),room),
+           boost:Math.min(num('aeq-up'),G_MAX),
+           cut:Math.min(num('aeq-dn'),-G_MIN),
+           shelf:$('aeq-shelf').checked};
+  if(!(opt.lo>0)||!(opt.hi>opt.lo*1.2)||!(opt.oct>=1)||!(opt.n>=1)||
+     !(opt.boost>=0)||!(opt.cut>=0)){
+    $('aeq-msg').textContent='Check the fit settings.';
+    return;
+  }
+  /* The search runs for a few seconds and blocks the page while it does, so
+     hand the browser a frame to paint the notice in before starting. */
+  $('aeq-msg').textContent='Fitting\u2026';
+  $('aeq-run').disabled=true;
+  setTimeout(function(){
+    var r,c=chan(),i;
+    try{r=aeqFit(fs(),opt);}finally{$('aeq-run').disabled=false;}
+    for(i=keep;i<SLOTS;i++)
+      c[i]=(i-keep)<r.bands.length?r.bands[i-keep]:blankBq();
+    loadRows();setDirty(true);plot();
+    $('aeq-msg').textContent=r.bands.length+' filter'+
+      (r.bands.length===1?'':'s')+' into slot '+(keep+1)+' onwards, deviation '+
+      r.before.toFixed(1)+' dB RMS before and '+r.after.toFixed(1)+
+      ' dB after. Summed EQ '+r.peak.toFixed(1)+' dB at its highest'+
+      (r.peak<=0.05?', so it costs no headroom.'
+       :softwareEq()?', which plays at full level: turn the volume down if a loud track distorts.'
+       :', so take that much off this output to keep the headroom.');
+    show($('msg'),'Filters fitted. Apply to hear them.','info');
+  },30);
+}
+
+function copyChannel(){
+  storeRows();
+  var a=data.amps[amp];
+  a.channels[1-ch]=JSON.parse(JSON.stringify(a.channels[ch]));
+  setDirty(true);plot();
+  show($('msg'),'Copied to '+outLabel(1-ch)+'. Apply to hear it.','info');
+}
+function commit(){
+  fetch('/api/bq/commit',{method:'POST'}).then(function(r){
+    if(!r.ok)throw new Error(r.status);
+    setDirty(false);show($('msg'),'Saved to flash.','ok');
+  }).catch(function(e){show($('msg'),'Commit failed: '+e.message,'err');});
+}
+function revert(){
+  fetch('/api/bq/revert',{method:'POST'}).then(function(r){
+    if(!r.ok)throw new Error(r.status);
+    return load();
+  }).then(function(){
+    setDirty(false);show($('msg'),'Reverted to the stored tuning.','ok');
+  }).catch(function(e){show($('msg'),'Revert failed: '+e.message,'err');});
+}
+
+/* ---- files ----
+   A tuning taken off the board, to keep or to load onto another one: every
+   output's filters, with the ganging, routing and levels they were tuned
+   with. Mutes and the master volume are left out, being the state of the
+   room rather than of the tuning. Types and alignments travel as names, not
+   the firmware's numbers, and each filter carries only the fields its type
+   uses, so a file can be read and edited by hand. */
+var EQ_FORMAT='airplay-esp32-eq',EQ_VERSION=1;
+var TYPE_KEYS=['bypass','peaking_q','peaking_bw','bass_shelf','treble_shelf',
+               'low_pass','high_pass','band_pass','notch','phase_shift',
+               'custom'];
+var SUB_KEYS=['butterworth_1','butterworth_2','bessel_2','linkwitz_riley_2',
+              'variable_q_2','chebyshev_2'];
+var MIX_KEYS=['stereo','mono','left','right'];
+var devName='';
+function esc(s){
+  return String(s).replace(/[&<>"']/g,function(c){
+    return '&#'+c.charCodeAt(0)+';';
+  });
+}
+/* Values come back from the part as float32, so 0.45 arrives as
+   0.449999988079071. Six figures is finer than any row can be set. */
+function sig(v){return Number(Number(v).toPrecision(6));}
+function bqOut(b){
+  var o={type:TYPE_KEYS[b.type]};
+  if(HAS_SUB[b.type])o.alignment=SUB_KEYS[b.sub];
+  if(HAS_FREQ[b.type])o.freq=sig(b.freq);
+  if(usesQ(b.type,b.sub))o.q=sig(b.q);
+  if(HAS_BW[b.type])o.bw=sig(b.bw);
+  if(HAS_GAIN[b.type])o.gain=sig(b.gain);
+  if(usesRipple(b.type,b.sub))o.ripple=sig(b.ripple);
+  if(b.invert)o.invert=true;
+  if(b.type===T_CUSTOM)o.coeff=b.coeff.slice(0,5);
+  return o;
+}
+/* Trailing bypassed slots say nothing, so a chain is written up to its last
+   section that does something, and padded back out with bypass when read. */
+function chainOut(c){
+  var n=SLOTS,out=[],i;
+  while(n>0&&c[n-1].type===T_BYPASS&&!c[n-1].invert)n--;
+  for(i=0;i<n;i++)out.push(bqOut(c[i]));
+  return out;
+}
+/* A ganged amplifier runs one chain on both outputs, so it is written once. */
+function eqFile(){
+  storeRows();
+  var f={format:EQ_FORMAT,version:EQ_VERSION},a,am,g,o;
+  if(devName)f.device=devName;
+  f.saved=new Date().toISOString();
+  f.rate=data.rate;
+  f.amps=[];
+  for(a=0;a<data.amps.length;a++){
+    am=data.amps[a];g=isGanged(am);
+    /* An amplifier that cannot route has no routing to save, and a board
+       loading the file keeps its own. */
+    o={ganged:g};
+    if(!am.mix_fixed)o.mix=MIX_KEYS[am.mix];
+    o.trim_db=[sig(am.gains[0]),sig(am.gains[1])];
+    o.outputs=g?[chainOut(am.channels[0])]
+               :[chainOut(am.channels[0]),chainOut(am.channels[1])];
+    f.amps.push(o);
+  }
+  if(hasDelay())f.delay_us=[delayUs(0),delayUs(1)];
+  return f;
+}
+/* JSON with one filter to a line, so a chain reads top to bottom like the
+   rows on this page: anything holding only plain values stays inline. */
+function plainJson(v){return v===null||typeof v!=='object';}
+function flatJson(v){
+  return Object.keys(v).every(function(k){
+    return plainJson(v[k])||(Array.isArray(v[k])&&v[k].every(plainJson));
+  });
+}
+function eqText(v,ind){
+  if(plainJson(v))return JSON.stringify(v);
+  var arr=Array.isArray(v),flat=flatJson(v),pad=ind+'  ';
+  var parts=(arr?v:Object.keys(v)).map(function(x){
+    var s=arr?eqText(x,pad):JSON.stringify(x)+': '+eqText(v[x],pad);
+    return flat?s:pad+s;
+  });
+  if(flat)return (arr?'[':'{')+parts.join(', ')+(arr?']':'}');
+  return (arr?'[\n':'{\n')+parts.join(',\n')+'\n'+ind+(arr?']':'}');
+}
+function slug(s){
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-')
+                  .replace(/^-+|-+$/g,'');
+}
+function exportEq(){
+  if(!data)return;
+  var d=new Date();
+  function two(n){return (n<10?'0':'')+n;}
+  var name='eq-'+(slug(devName)||'speaker')+'-'+d.getFullYear()+
+           two(d.getMonth()+1)+two(d.getDate())+'-'+two(d.getHours())+
+           two(d.getMinutes())+'.json';
+  var url=URL.createObjectURL(new Blob([eqText(eqFile(),'')+'\n'],
+                                       {type:'application/json'}));
+  var a=document.createElement('a');
+  a.href=url;a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+  /* Some browsers are still reading the blob when click() returns. */
+  setTimeout(function(){URL.revokeObjectURL(url);},10000);
+  show($('msg'),'Exported '+esc(name)+'.'+(dirty?' It holds the tuning as'+
+       ' shown here, including changes not committed to flash.':''),'ok');
+}
+/* Names, or the firmware's own numbers, since a file edited by hand might
+   use either. */
+function keyIndex(keys,v){
+  if(typeof v==='number')
+    return v===Math.floor(v)&&v>=0&&v<keys.length?v:-1;
+  return keys.indexOf(v);
+}
+/* The limits are the firmware's own, from tas58xx_bq_validate(), so a file
+   that loads here is one Apply will not refuse. Returns the filter, or why
+   it is not one. */
+function bqIn(o){
+  if(!o||typeof o!=='object'||Array.isArray(o))return 'not a filter';
+  var b=blankBq(),t=keyIndex(TYPE_KEYS,o.type),k,v;
+  var NUMS=['freq','q','bw','gain','ripple'];
+  if(t<0)return 'unknown type '+esc(JSON.stringify(o.type));
+  b.type=t;
+  if(o.alignment!==undefined){
+    b.sub=keyIndex(SUB_KEYS,o.alignment);
+    if(b.sub<0)return 'unknown alignment '+esc(JSON.stringify(o.alignment));
+  }
+  for(k=0;k<NUMS.length;k++){
+    v=o[NUMS[k]];
+    if(v===undefined)continue;
+    if(typeof v!=='number'||!isFinite(v))return NUMS[k]+' is not a number';
+    b[NUMS[k]]=v;
+  }
+  if(o.invert!==undefined){
+    if(typeof o.invert!=='boolean')return 'invert is not true or false';
+    b.invert=o.invert;
+  }
+  if(t===T_CUSTOM){
+    if(!Array.isArray(o.coeff)||o.coeff.length!==5)
+      return 'a custom section needs five coefficients';
+    for(k=0;k<5;k++)
+      if(typeof o.coeff[k]!=='number'||!(Math.abs(o.coeff[k])<16))
+        return 'coefficient '+(k+1)+' is out of range';
+    b.coeff=o.coeff.slice();
+  }else if(t!==T_BYPASS&&!(b.freq>=1&&b.freq<=30000)){
+    return 'the frequency is out of range';
+  }
+  return b;
+}
+/* All of it is checked before any of it is used, so a file that is wrong
+   anywhere changes nothing. */
+function eqRead(f){
+  if(!f||typeof f!=='object'||!Array.isArray(f.amps)||
+     (f.format!==undefined&&f.format!==EQ_FORMAT))
+    return {err:'it is not an EQ file.'};
+  if(typeof f.version==='number'&&f.version>EQ_VERSION)
+    return {err:'it was saved by newer firmware.'};
+  if(!f.amps.length)return {err:'it holds no amplifiers.'};
+  var r={rate:typeof f.rate==='number'&&f.rate>0?f.rate:0,amps:[]},a,c,i;
+  for(a=0;a<f.amps.length;a++){
+    var fa=f.amps[a],at=f.amps.length>1?'amplifier '+(a+1)+', ':'';
+    var am={chains:[]};
+    if(!fa||typeof fa!=='object'||!Array.isArray(fa.outputs)||
+       fa.outputs.length<1||fa.outputs.length>2)
+      return {err:at+'"outputs" should hold one or two chains.'};
+    for(c=0;c<fa.outputs.length;c++){
+      var src=fa.outputs[c],chain=[],where=at+outLabel(c);
+      if(!Array.isArray(src))return {err:where+' is not a list of filters.'};
+      if(src.length>SLOTS)
+        return {err:where+' has '+src.length+' filters, but an output has '+
+                SLOTS+' slots.'};
+      for(i=0;i<SLOTS;i++){
+        var b=i<src.length?bqIn(src[i]):blankBq();
+        if(typeof b==='string')return {err:where+', filter '+(i+1)+': '+b+'.'};
+        chain.push(b);
+      }
+      am.chains.push(chain);
+    }
+    if(fa.ganged!==undefined&&typeof fa.ganged!=='boolean')
+      return {err:at+'"ganged" is not true or false.'};
+    /* A single chain can only mean both outputs share it. */
+    am.ganged=fa.outputs.length===1||fa.ganged===true;
+    if(fa.mix!==undefined){
+      am.mix=keyIndex(MIX_KEYS,fa.mix);
+      if(am.mix<0)
+        return {err:at+'unknown input routing '+esc(JSON.stringify(fa.mix))+
+                '.'};
+    }
+    if(fa.trim_db!==undefined){
+      if(!Array.isArray(fa.trim_db)||fa.trim_db.length!==2||
+         !fa.trim_db.every(function(v){
+           return typeof v==='number'&&isFinite(v);
+         }))
+        return {err:at+'"trim_db" should be two levels in dB.'};
+      am.gains=fa.trim_db.slice();
+    }
+    r.amps.push(am);
+  }
+  if(f.delay_us!==undefined){
+    if(!Array.isArray(f.delay_us)||f.delay_us.length!==2||
+       !f.delay_us.every(function(v){
+         return typeof v==='number'&&isFinite(v)&&v>=0;
+       }))
+      return {err:'"delay_us" should be two delays in microseconds.'};
+    r.delay_us=f.delay_us.map(function(v){return Math.round(v);});
+  }
+  return r;
+}
+function ampRef(a){return data.amps.length>1?'Amp '+(a+1):'The amplifier';}
+/* Lands on the page like any other edit: filters, ganging, routing and
+   levels are all staged, and Apply makes them live together. A custom
+   section is given back its shape at the rate it was saved at, which is
+   what lets it be redesigned for this board's rate. */
+function eqStage(r,name){
+  var n=Math.min(r.amps.length,data.amps.length),sr=r.rate||fs();
+  var notes=[],odd=0,kept=0,moved=0,merged=[],a,c,i;
+  storeRows();
+  /* Locked slots first, so a file that does not fit around them changes
+     nothing. */
+  for(a=0;a<n;a++){
+    var fa=r.amps[a],am=data.amps[a],cg=isGanged(am),mc=[];
+    var src=[fa.chains[0],fa.ganged?fa.chains[0]:fa.chains[1]];
+    /* A bridged amplifier only plays output A's chain. */
+    for(c=0;c<(am.pbtl?1:2);c++){
+      var mask=lockMask(a,c);
+      mc[c]=lockMerge(am.channels[cg?0:c],src[c],mask);
+      if(!mc[c]){
+        show($('msg'),'Could not import '+esc(name)+': '+
+             lockFull((data.amps.length>1?ampLabel(a)+', ':'')+
+                      (cg?chainLabel(am):outLabel(c)),mask),'err');
+        return;
+      }
+    }
+    if(am.pbtl)mc[1]=mc[0];
+    merged.push(mc);
+  }
+  for(a=0;a<n;a++){
+    var fa=r.amps[a],am=data.amps[a],mc=merged[a],gang=fa.ganged;
+    for(c=0;c<fa.chains.length;c++)
+      for(i=0;i<SLOTS;i++)
+        if(fa.chains[c][i].type===T_CUSTOM&&!shapeOf(fa.chains[c][i],sr).ok&&
+           sr!==fs())odd++;
+    if(am.pbtl&&!fa.ganged&&
+       JSON.stringify(fa.chains[0])!==JSON.stringify(fa.chains[1]))
+      notes.push(ampRef(a)+' is bridged, so it takes the filters for '+
+                 outLabel(0)+' only.');
+    /* Ganged outputs share one chain, which they cannot while the filters
+       locked on each differ. */
+    if(gang&&!am.pbtl&&
+       JSON.stringify(mc[0].chain)!==JSON.stringify(mc[1].chain)){
+      gang=false;
+      notes.push(ampRef(a)+' kept '+outLabel(0)+' and '+outLabel(1)+
+                 ' separate: the filters locked on them differ.');
+    }
+    kept+=lockCount(lockMask(a,0));moved+=mc[0].moved;
+    if(!am.pbtl&&!gang){kept+=lockCount(lockMask(a,1));moved+=mc[1].moved;}
+    /* Once split, output B shows the locks it was imported with. */
+    if(isGanged(am)&&!am.pbtl&&!gang&&locks[a]){
+      locks[a][1]=locks[a][0];lockSave();
+    }
+    am.channels=[mc[0].chain,JSON.parse(JSON.stringify(mc[1].chain))];
+    if(!am.pbtl)am.ganged=gang;
+    if(fa.mix!==undefined){
+      if(am.mix_fixed){
+        if(fa.mix!==am.mix)
+          notes.push(ampRef(a)+' cannot route its inputs, so the routing in '+
+                     'the file is not used.');
+      }else if(!am.pbtl||fa.mix!==0)am.mix=fa.mix;
+      else if(am.mix!==0)
+        notes.push(ampRef(a)+' is bridged, so it keeps its own input routing.');
+    }
+    /* A bridged amplifier's level is output A's; the page has no other. */
+    if(fa.gains)
+      for(c=0;c<(am.pbtl?1:2);c++)
+        am.gains[c]=clamp(fa.gains[c],data.gain_min,data.gain_max);
+  }
+  if(r.delay_us){
+    if(hasDelay())
+      data.delay.us=r.delay_us.map(function(v){
+        return clamp(v,0,data.delay.max_us);
+      });
+    else if(r.delay_us[0]||r.delay_us[1])
+      notes.push('This board cannot delay one output on its own, so the '+
+                 'delays in the file are not used.');
+  }
+  if(r.amps.length>n)
+    notes.push('The file holds '+r.amps.length+' amplifiers and this board '+
+               n+', so only the first '+(n>1?n+' were':'was')+' loaded.');
+  for(a=n;a<data.amps.length;a++)
+    notes.push(ampRef(a)+' kept its filters: the file has none for it.');
+  if(odd)
+    notes.push(odd+' custom section'+(odd>1?'s':'')+' saved at '+r.rate+
+               ' Hz could not be matched to a filter shape, so '+
+               (odd>1?'they':'it')+' will not sound the same at '+fs()+' Hz.');
+  if(isGanged(data.amps[amp]))ch=0;
+  drawTabs();drawMix();drawGains();drawDelays();loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded '+esc(name)+'. Apply to hear it, then Commit to keep'+
+       ' it.'+lockNote(kept,moved)+(notes.length?' '+notes.join(' '):''),
+       'info');
+}
+/* ---- REW filter settings ----
+   The text REW saves from the EQ window ("Filter Settings file"), which is
+   also what Equalizer APO reads:
+     Filter  1: ON  PK       Fc   11796 Hz  Gain -10.00 dB  Q    1.6
+   REW gives a peaking filter's Q as the equaliser it was fitted for defines
+   it. Most use RBJ's, bandwidth = Fc/Q; the ones listed here use
+   bandwidth = sqrt(gain)*Fc/Q, gain being linear and taken as a boost.
+   Both name the same filters as eqBq() with a different Q, which is why a
+   peaking filter can be matched exactly rather than approximately. */
+var REW_SQRT_Q=['dcx2496','crown','d&b','dspeaker','umc-200','twk-88','hypex',
+                'jrultr','rephase','rockford'];
+function rewNum(s){
+  var m=/^([0-9]*\.?[0-9]+)(k?)$/i.exec(s);
+  return m?parseFloat(m[1])*(m[2]?1000:1):NaN;
+}
+/* Our q for a peaking filter that RBJ's cookbook builds with Q at rate sr.
+   The two share every pole but the bandwidth's: eqBq() widens a cut by its
+   gain and never prewarps, so q takes both back. */
+function rewPeakQ(Q,gain,freq,sr){
+  var t0=2*P*freq/sr;
+  return Q*Math.pow(10,Math.abs(gain)/40)*t0/Math.sin(t0);
+}
+/* Our frequency for the shelf RBJ's cookbook builds at f0 with Q 0.7071,
+   which is REW's LS and HS. shelfBq() makes the same filter but puts its
+   frequency 3 dB short of the shelf once the gain passes 6 dB, where RBJ's
+   stays at the midpoint, so the two differ by sqrt(gN*gD) on the bilinear
+   transform's warped scale. */
+function rewShelfFreq(f0,gain,sr,low){
+  var gg=gain?shelfG(gain):[1,1],m=Math.sqrt(gg[0]*gg[1]);
+  return Math.atan(Math.tan(P*f0/sr)*(low?1/m:m))*sr/P;
+}
+function rewRead(text,sr){
+  var lines=String(text).split(/\r?\n/),out=[],notes=[],eq='',pre=null;
+  var sqrtQ=false,i,m;
+  for(i=0;i<lines.length;i++){
+    var ln=lines[i].trim();
+    if((m=/^equali[sz]er:\s*(.*)$/i.exec(ln))){
+      eq=m[1].trim();
+      var low=eq.toLowerCase();
+      sqrtQ=REW_SQRT_Q.some(function(k){return low.indexOf(k)>=0;});
+      continue;
+    }
+    if((m=/^preamp:\s*(-?[0-9]*\.?[0-9]+)\s*db/i.exec(ln))){
+      pre=(pre||0)+parseFloat(m[1]);
+      continue;
+    }
+    m=/^filter\s*(\d+)\s*:\s*(on|off)\b\s*(.*)$/i.exec(ln);
+    if(!m)continue;
+    var n=m[1],rest=m[3].replace(/\s+/g,' ').trim();
+    if(m[2].toUpperCase()==='OFF'||!rest||/^none\b/i.test(rest))continue;
+    var at=rest.search(/\bFc\b/i);
+    var type=(at<0?rest:rest.slice(0,at)).replace(/ /g,'').toUpperCase();
+    var p={},tok=(at<0?'':rest.slice(at)).split(' '),k;
+    for(k=0;k<tok.length;k++){
+      var key=tok[k].toLowerCase();
+      if(key==='fc'&&k+1<tok.length)p.fc=rewNum(tok[++k]);
+      else if(key==='gain'&&k+1<tok.length)p.gain=parseFloat(tok[++k]);
+      else if(key==='q'&&k+1<tok.length)p.q=rewNum(tok[++k]);
+      else if(key==='bw'&&tok[k+1]&&tok[k+1].toLowerCase()==='oct'&&
+              k+2<tok.length){p.oct=rewNum(tok[k+2]);k+=2;}
+      else if(key==='bw'||key.indexOf('bw/')===0)
+        return {err:'filter '+n+' gives a bandwidth REW only uses for '+
+                'Behringer units. Fit it for the Generic equaliser instead.'};
+    }
+    var where='filter '+n,b=blankBq();
+    if(!(p.fc>0))return {err:where+' has no frequency.'};
+    if(p.fc>sr*0.49){
+      notes.push('Filter '+n+' at '+p.fc+' Hz is past what '+sr+' Hz can '+
+                 'carry, so it sits at '+Math.floor(sr*0.49)+' Hz.');
+      p.fc=Math.floor(sr*0.49);
+    }
+    b.freq=p.fc;
+    var gained=type==='PK'||type==='PEQ'||type==='MODAL'||
+              /^(LS|HS)(Q|C)?$/.test(type);
+    if(gained){
+      if(!isFinite(p.gain))return {err:where+' has no gain.'};
+      if(p.gain<G_MIN||p.gain>G_MAX){
+        notes.push('Filter '+n+' asks for '+p.gain+' dB; a section stops at '+
+                   (p.gain<0?G_MIN:'+'+G_MAX)+' dB.');
+        p.gain=clamp(p.gain,G_MIN,G_MAX);
+      }
+    }
+    if(gained&&/^[LH]S/.test(type)){
+      var low=type.charAt(0)==='L',f=rewShelfFreq(p.fc,p.gain,sr,low);
+      if(f>sr*0.49){
+        notes.push('Filter '+n+' needs '+Math.round(f)+' Hz here to match '+
+                   'REW, past what '+sr+' Hz can carry, so it sits at '+
+                   Math.floor(sr*0.49)+' Hz.');
+        f=Math.floor(sr*0.49);
+      }
+      /* Only Q 0.7071 is RBJ's S of 1, the one shape a section has. */
+      if(p.q>0&&Math.abs(p.q/Math.SQRT1_2-1)>0.01)
+        notes.push('Filter '+n+' is a shelf with Q '+p.q+', but a section\'s '+
+                   'shelf has Q 0.707, so its slope is '+
+                   (p.q>Math.SQRT1_2?'gentler':'steeper')+' than REW fitted.');
+      b.type=low?T_LOSHELF:T_HISHELF;b.gain=p.gain;
+      b.freq=Number(f.toPrecision(6));
+    }else if(gained){
+      if(p.oct>0){
+        var x=Math.pow(2,p.oct);
+        p.q=Math.sqrt(x)/(x-1);
+      }
+      if(!(p.q>0))return {err:where+' has no Q.'};
+      /* A sqrt-gain Q is RBJ's divided by the square root of the gain. */
+      var Q=sqrtQ&&!p.oct?p.q/Math.pow(10,Math.abs(p.gain)/40):p.q;
+      var q=rewPeakQ(Q,p.gain,p.fc,sr);
+      if(q>Q_MAX||q<Q_MIN){
+        notes.push('Filter '+n+' needs Q '+q.toPrecision(3)+' here to '+
+                   'match REW, past the '+(q>Q_MAX?Q_MAX:Q_MIN)+' a section '+
+                   'can take, so it is '+(q>Q_MAX?'wider':'narrower')+
+                   ' than REW fitted.');
+        q=clamp(q,Q_MIN,Q_MAX);
+      }
+      b.type=T_PEAK_Q;b.gain=p.gain;b.q=Number(q.toPrecision(5));
+    }else if(/^(LP|HP)(Q|1)?$/.test(type)){
+      b.type=type.charAt(0)==='L'?T_LP:T_HP;
+      if(/1$/.test(type))b.sub=S_BW1;
+      else if(p.q>0){
+        b.sub=S_VARQ;b.q=clamp(p.q,Q_MIN,Q_MAX);
+      }else if(/Q$/.test(type))return {err:where+' has no Q.'};
+      else b.sub=S_BW2;
+    }else{
+      return {err:where+' is &ldquo;'+esc(rest.slice(0,at<0?rest.length:at)
+              .trim())+'&rdquo;, which this page cannot match. Peaking, shelf, '+
+              'low pass and high pass filters load; set it by hand.'};
+    }
+    out.push(b);
+  }
+  if(!out.length)
+    return {err:'it holds no filters that are switched on.'};
+  if(out.length>SLOTS)
+    return {err:'it has '+out.length+' filters, but an output has '+SLOTS+
+            ' slots.'};
+  if(/configurable/i.test(eq))
+    notes.push('REW does not record which Q a Configurable PEQ uses; RBJ\'s '+
+               'was assumed.');
+  return {eq:eq,filters:out,preamp:pre,notes:notes};
+}
+/* Into the output on screen, or both while they are ganged, replacing its
+   chain: REW's filters are a whole correction, fitted on their own. */
+function rewStage(r,name){
+  var am=data.amps[amp],gang=isGanged(am),mask=lockMask(amp,ch),c,i;
+  var notes=r.notes.slice(),src=[],k=0;
+  storeRows();
+  /* REW's filters fill the unlocked slots in order. */
+  for(i=0;i<SLOTS;i++)
+    src.push(!(mask&(1<<i))&&k<r.filters.length?r.filters[k++]:blankBq());
+  var m=k===r.filters.length&&lockMerge(chan(),src,mask);
+  if(!m){
+    show($('msg'),'Could not import '+esc(name)+': '+
+         lockFull(gang?chainLabel(am):outLabel(ch),mask),'err');
+    return;
+  }
+  for(c=0;c<2;c++)
+    if(gang||c===ch)am.channels[c]=JSON.parse(JSON.stringify(m.chain));
+  if(r.preamp!==null){
+    var g=clamp(r.preamp,data.gain_min,data.gain_max);
+    if(g!==r.preamp)
+      notes.push('Its preamp of '+r.preamp+' dB is set as '+g+' dB, the '+
+                 'nearest level the output takes.');
+    for(c=0;c<2;c++)if(gang||c===ch)am.gains[c]=g;
+  }
+  drawGains();loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded '+r.filters.length+' filter'+
+       (r.filters.length>1?'s':'')+' from '+esc(name)+
+       (r.eq?' ('+esc(r.eq)+')':'')+' into '+
+       (gang?esc(chainLabel(am)):outLabel(ch))+', converted for '+fs()+
+       ' Hz. Apply to hear it, then Commit to keep it.'+
+       lockNote(lockCount(mask),m.moved)+
+       (notes.length?' '+notes.join(' '):''),'info');
+}
+function importEq(input){
+  var file=input.files&&input.files[0];
+  /* Cleared so that picking the same file again still fires onchange. */
+  input.value='';
+  if(!file||!data)return;
+  var rd=new FileReader();
+  rd.onerror=function(){
+    show($('msg'),'Could not read '+esc(file.name)+'.','err');
+  };
+  rd.onload=function(){
+    var text=String(rd.result),j,r;
+    try{j=JSON.parse(text);}catch(e){j=undefined;}
+    if(j===undefined&&/^\s*filter\s*\d+\s*:/im.test(text)){
+      r=rewRead(text,fs());
+      if(!r.err){rewStage(r,file.name);return;}
+    }else{
+      r=j===undefined?{err:'it is neither an EQ file nor REW filter '+
+                           'settings.'}:eqRead(j);
+    }
+    if(r.err){
+      show($('msg'),'Could not import '+esc(file.name)+': '+r.err,'err');
+      return;
+    }
+    eqStage(r,file.name);
+  };
+  rd.readAsText(file);
+}
+
+function load(){
+  return fetch('/api/bq').then(function(r){return r.json();}).then(function(d){
+    data=d;
+    snapLive();
+    if(amp>=data.amps.length)amp=0;
+    if(isGanged(data.amps[amp]))ch=0;
+    var left=autoShape();
+    drawTabs();drawMix();drawGains();drawDelays();loadRows();plot();showPreamp();
+    drawAb();
+    if(left)
+      show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
+           ' this page offers reproduces the coefficients. They are still'+
+           ' exact and still what the part is running.','info');
+  });
+}
+var resizeTimer=0;
+window.addEventListener('resize',function(){
+  clearTimeout(resizeTimer);
+  resizeTimer=setTimeout(plot,150);
+});
+window.onload=function(){
+  $('rows').innerHTML=(function(){
+    var h='';
+    for(var i=0;i<SLOTS;i++)h+=bqRow(i);
+    return h;
+  })();
+  load().then(function(){
+    /* Only to name exported files, so it waits its turn behind the tuning
+       rather than taking another socket alongside it. */
+    fetch('/api/system/info').then(function(r){return r.json();})
+      .then(function(j){devName=(j.info&&j.info.device_name)||'';})
+      .catch(function(){}).then(loadPower);
+  },function(e){
+    show($('msg'),'Could not read the current tuning: '+e.message,'err');
+  });
+};
+</script></body></html>

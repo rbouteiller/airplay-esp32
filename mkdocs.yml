@@ -9,7 +9,9 @@ site_url: https://rbouteiller.github.io/airplay-esp32/
 repo_url: https://github.com/rbouteiller/airplay-esp32
 repo_name: rbouteiller/airplay-esp32
 edit_uri: edit/main/docs/
-copyright: Non-commercial use only. Not affiliated with Apple Inc.
+copyright: >-
+  Copyright &copy; 2026 Rémi Bouteiller and the airplay-esp32 contributors —
+  free software under GPL-3.0-or-later. Not affiliated with Apple Inc.
 
 theme:
   name: material
@@ -126,6 +128,8 @@ nav:
       - ST7789 TFT display: features/tft-display.md
       - Hardware buttons: features/buttons.md
       - HybridFlow DSP (TAS57xx): features/hybridflow.md
+      - TAS58xx DAC: features/tas58xx.md
+      - Software EQ: features/software-eq.md
       - AirPlay tuning: features/airplay-tuning.md
   - Reference:
       - Build environments: reference/build-environments.md

@@ -2,7 +2,7 @@
 
 Boards with a USB OTG port can present themselves to an attached computer as a **stereo USB
 speaker**. Audio sent by the host plays through the same output path AirPlay uses, sharing
-the DAC's DSP, EQ and volume control.
+its channel mode, EQ and volume control.
 
 !!! warning "Needs USB OTG and a device-role port"
 
@@ -20,7 +20,8 @@ consumer-control interface that sends media keys back to the host.
 - AirPlay is suspended as soon as the host starts streaming
 - The output is handed back once the host stream has been idle for
   `CONFIG_USB_AUDIO_SINK_IDLE_MS`, 2000 ms by default
-- Host volume and mute are applied to the DAC, so the computer's own volume slider works
+- Host volume and mute follow the computer's own slider — on the DAC where it has a volume
+  control, and in software where it does not
 - [Hardware buttons](buttons.md) send play/pause, track skip, volume and mute to the host
   over HID, since UAC itself carries no transport controls
 
@@ -48,6 +49,7 @@ are computed for 48 kHz. AirPlay's 44.1 kHz stream is resampled on the way out.
 | --- | --- |
 | `esp32s3-uac` | ESP32-S3 + PCM5102A |
 | `esparagus-audio-brick-dual-uac` | [Esparagus Audio Brick Dual](../boards/esparagus-audio-brick-dual-dac.md) |
+| `louder-esp32-s3-mini-uac` | [Louder-ESP32-Mini](../boards/louder-esp32.md#usb-audio) |
 
 USB audio is enabled by layering `config/sdkconfig.defaults.uac` onto a board's defaults. To
 add it to a [custom board](../boards/custom.md), put that file **last** in your
@@ -67,8 +69,11 @@ a composite function.
 
 ## Caveats
 
-- **macOS** needs `CONFIG_UAC_SUPPORT_MACOS=y`. A single descriptor cannot satisfy macOS and
-  Windows/Linux simultaneously, so this is a build-time choice.
+- **macOS** and Windows want the rate feedback in different formats (10.14 and 16.16).
+  The firmware guesses the host from the order it reads the descriptors in, which is
+  logged as `USB mounted (host looks like …)`, and picks the format to suit, so one
+  build plays on both. `CONFIG_UAC_SUPPORT_MACOS=y` forces the macOS format for every
+  host if the guess is ever wrong.
 - **No USB console.** TinyUSB claims the USB PHY, so USB-Serial-JTAG cannot also act as a
   console. Logs stay on UART0, and you must hold BOOT while resetting to reflash over USB.
   [OTA updates](../reference/ota.md) avoid the problem entirely.

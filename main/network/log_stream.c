@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * WebSocket-based log streaming over HTTP.
  *
@@ -8,6 +11,7 @@
 
 #include "log_stream.h"
 #include "spiram_task.h"
+#include "web_server.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -101,10 +105,35 @@ static int log_vprintf_hook(const char *fmt, va_list args) {
 /*  WebSocket handler                                                  */
 /* ------------------------------------------------------------------ */
 
+#ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+/* Identity tag for a session that handshook on /ws/logs.  Only the address is
+ * ever compared; nothing dereferences it, so reading it from the broadcast
+ * task cannot race a session teardown. */
+static const char s_log_client_tag[] = "log_stream/ws";
+
+/* httpd frees a session context with free() when no free function is given,
+ * and the tag above is static storage, so it needs a no-op. */
+static void log_client_tag_free(void *ctx) {
+  (void)ctx;
+}
+
+/* The server answers the WebSocket handshake itself and does not invoke the
+ * URI handler for it, so this is where a viewer is recognised.  Tagging the
+ * session is what keeps log frames off the other WebSocket endpoints: every
+ * socket on the server looks alike to httpd_ws_get_fd_info(), and writing a
+ * log frame into, say, the Sendspin socket both corrupts that protocol and
+ * interleaves with its own writes.  Without the option there is only ever
+ * one WebSocket endpoint, so every WebSocket socket is a viewer. */
+static esp_err_t ws_log_connected(httpd_req_t *req) {
+  req->sess_ctx = (void *)s_log_client_tag;
+  req->free_ctx = log_client_tag_free;
+  return ESP_OK;
+}
+#endif
+
 static esp_err_t ws_log_handler(httpd_req_t *req) {
-  /* The server completes the WebSocket handshake internally; depending on the
-   * IDF build the handshake GET may or may not reach here.  Return OK for it
-   * and do nothing — clients are tracked by the broadcast task, not here. */
+  /* Only a plain HTTP GET reaches here now; a real handshake is handled by
+   * the server and reported through ws_log_connected() above. */
   if (req->method == HTTP_GET) {
     return ESP_OK;
   }
@@ -141,10 +170,10 @@ static void broadcast_task(void *arg) {
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(BROADCAST_INTERVAL_MS));
 
-    /* Discover active WebSocket sessions fresh each tick.  No connect-time
-     * registration (see ws_log_handler) and no stale-fd list: a client
-     * that disconnected simply stops appearing here, so log frames can
-     * never be sent to a reused fd now serving an unrelated request. */
+    /* Discover active viewers fresh each tick.  A client that disconnected
+     * simply stops appearing here, so log frames can never be sent to a
+     * reused fd now serving an unrelated request: httpd clears the session
+     * context when it frees the session, so the tag cannot outlive it. */
     int fds[CONFIG_LWIP_MAX_SOCKETS];
     size_t fd_count = CONFIG_LWIP_MAX_SOCKETS;
     if (httpd_get_client_list(s_server, &fd_count, fds) != ESP_OK) {
@@ -154,9 +183,15 @@ static void broadcast_task(void *arg) {
     int ws_fds[CONFIG_LWIP_MAX_SOCKETS];
     size_t ws_count = 0;
     for (size_t i = 0; i < fd_count; i++) {
-      if (httpd_ws_get_fd_info(s_server, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
-        ws_fds[ws_count++] = fds[i];
+      if (httpd_ws_get_fd_info(s_server, fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        continue;
       }
+#ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+      if (httpd_sess_get_ctx(s_server, fds[i]) != (void *)s_log_client_tag) {
+        continue;
+      }
+#endif
+      ws_fds[ws_count++] = fds[i];
     }
     if (ws_count == 0) {
       continue; /* leave data in the ring as backlog for the next viewer */
@@ -217,6 +252,14 @@ esp_err_t log_stream_init(void) {
   return ESP_OK;
 }
 
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+/* A browser lets any site open a WebSocket to any address, so the handshake
+ * is where another site is turned away; afterwards the stream is just sent. */
+static esp_err_t ws_log_allowed(httpd_req_t *req) {
+  return web_request_trusted(req) ? ESP_OK : ESP_FAIL;
+}
+#endif
+
 esp_err_t log_stream_register(httpd_handle_t server) {
   s_server = server;
 
@@ -225,6 +268,12 @@ esp_err_t log_stream_register(httpd_handle_t server) {
       .method = HTTP_GET,
       .handler = ws_log_handler,
       .is_websocket = true,
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+      .ws_pre_handshake_cb = ws_log_allowed,
+#endif
+#ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+      .ws_post_handshake_cb = ws_log_connected,
+#endif
   };
   esp_err_t err = httpd_register_uri_handler(server, &ws_uri);
   if (err != ESP_OK) {

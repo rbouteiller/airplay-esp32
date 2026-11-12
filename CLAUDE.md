@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ESP32 AirPlay 2 Receiver — firmware that turns ESP32/ESP32-S3/ESP32-P4 boards into AirPlay 2 speakers. Supports ALAC and AAC decoding, Bluetooth A2DP (ESP32 only), W5500 Ethernet (Esparagus Audio Brick), OLED/TFT displays, hardware buttons, and OTA updates.
+ESP32 AirPlay 2 Receiver — firmware that turns ESP32/ESP32-S2/ESP32-S3/ESP32-C5/ESP32-P4 boards into AirPlay 2 speakers. Supports ALAC and AAC decoding, Bluetooth A2DP (ESP32 only), USB Audio Class in both directions, S/PDIF, W5500 Ethernet (Esparagus Audio Brick), OLED/TFT displays, hardware buttons, and OTA updates. The documentation site also lives in this repo, under `docs/`.
+
+**Every supported board must have PSRAM.** A module without it will not run this firmware — the jitter buffer, the AAC decoder's scratch and the timeline all live in external RAM.
 
 ## Build & Flash
 
@@ -30,20 +32,61 @@ idf.py -p /dev/ttyUSB0 monitor
 
 | Environment | Board | Notes |
 |---|---|---|
-| `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default |
+| `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default, 16MB flash |
+| `esp32s3-uac` | Same, as a USB speaker | Extends esp32s3 + `defaults.uac` |
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
+| `esp32c5-xiao` | Seeed XIAO ESP32-C5 | The ESP-IDF native flow works too |
+| `esp32wrover-dev` | Freenove ESP32-WROVER devkit | 4MB, Bluetooth |
+| `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 16MB |
 | `squeezeamp` | ESP32 + TAS5756 DAC/amp | 8MB flash |
 | `squeezeamp-bt` | Same + Bluetooth A2DP | |
 | `squeezeamp-4m` | SqueezeAMP with 4MB flash | |
-| `esparagus-audio-brick` | ESP32 + TAS5825M DAC/amp | |
-| `esparagus-audio-brick-bt` | Same + Bluetooth + Ethernet | |
-| `esparagus-audio-brick-s3` | ESP32-S3 + TAS5825M | |
-| `esparagus-audio-brick-dual-dac` | ESP32-S3 + 2x TAS5825M (rev D) | Stereo @0x4C + PBTL mono sub @0x4D |
-| `esparagus-louder` | ESP32 + TAS5825M + extra gain | |
+| `smartamp` | ESP32 + Bluetooth | 4MB |
+| `hifi-esp32` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin; Ethernet + OLED |
+| `hifi-esp32-bt` | Same + Bluetooth | |
+| `hifi-esp32-plus` | ESP32 + PCM5122 DAC | Rev J1+ only: I2C-controlled DAC (0x4D) run from BCK, XSMT on GPIO 13; Ethernet + OLED |
+| `hifi-esp32-plus-bt` | Same + Bluetooth | |
+| `hifi-esparagus` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin, no Ethernet/display |
+| `hifi-esparagus-bt` | Same + Bluetooth | |
+| `hifi-esp32-s3` | ESP32-S3 + PCM5100 DAC | Ethernet + OLED |
+| `hifi-esp32-s3-plus` | ESP32-S3 + PCM5122 DAC | Rev H1+ only: HiFi-ESP32-S3 pins plus the DAC's I2C bus (42/41, 0x4D) and XSMT on GPIO 4 |
+| `hifi-esparagus-s3` | ESP32-S3 + PCM5100 DAC | OLED only, no Ethernet |
+| `loud-esp32` | ESP32 + MAX98357A I2S amp | No I2C; enable pin gated by playback play/pause, not just boot-released |
+| `loud-esp32-bt` | Same + Bluetooth | |
+| `loud-esp32-s3` | ESP32-S3 + dual MAX98357A | |
+| `loud-esparagus` | ESP32 + dual MAX98357A | No Ethernet/display |
+| `loud-esparagus-bt` | Same + Bluetooth | |
+| `esparagus-echo` | ESP32-S3 + dual MAX98357A | Ethernet, no display |
+| `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by playback play/pause |
+| `amped-esp32-bt` | Same + Bluetooth | |
+| `amped-esp32-s3` | ESP32-S3 + PCM5100 + TPA3110/TPA3128 | |
+| `amped-esp32-plus` | ESP32 + PCM5122 (I2C) + TPA3118 | Rev J1+ I2C pinout; shares the `hifi-esp32-plus` board dir |
+| `amped-esp32-plus-bt` | Same + Bluetooth | |
+| `amped-esp32-s3-plus` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Different pinout from the ESP32 revision |
+| `amped-esparagus-plus-s3` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Rev H1+ pinout; rotary encoder + ST7789 TFT; no released binary |
+| `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
+| `amped-esparagus-bt` | Same + Bluetooth | |
+| `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |
+| `esparagus-audio-brick-bt` | Same + Bluetooth | |
+| `esparagus-audio-brick-s3` | ESP32-S3 + TAS5825M/TAS5805M | Different pinout from the ESP32 revision |
+| `esparagus-audio-brick-dual-dac` | ESP32-S3 + 2x TAS58xx ("Audio Brick Dual", rev D hardware) | Stereo @0x4C + PBTL mono sub @0x4D |
+| `esparagus-audio-brick-dual-uac` | Same + USB speaker | |
+| `louder-esp32-plus` | ESP32 + TAS5825M DAC/amp | |
+| `louder-esp32-plus-bt` | Same + Bluetooth | |
+| `louder-esp32-s3-plus` | ESP32-S3 + TAS5825M | |
+| `louder-esp32-s3-pro` | ESP32-S3 + TAS5825M | Louder-ESP32-S3-Plus pins + RGB LED + a 320x240 ST7789 TFT (BL on GPIO 42) instead of the OLED; the fan (GPIO 1/2) is not driven |
+| `esparagus-louder` | ESP32 + TAS5825M/TAS5805M | |
 | `esparagus-louder-bt` | Louder + Bluetooth | |
 | `esparagus-louder-s3` | ESP32-S3 + Louder | |
+| `louder-esp32` | ESP32 + TAS5805M DAC/amp | |
+| `louder-esp32-bt` | Same + Bluetooth | |
+| `louder-esp32-s3` | ESP32-S3 + TAS5805M | |
+| `louder-esp32-s3-mini` | Louder-ESP32-Mini: ESP32-S3 + TAS5805M | Bridged (PBTL) in copper: `CONFIG_TAS58XX_FORCE_PBTL` is not optional |
+| `louder-esp32-s3-mini-uac` | Same, as a USB speaker | Extends louder-esp32-s3-mini + `defaults.uac` |
 
-Board configs live in `config/` (the generated `sdkconfig` stays at the project root). Sdkconfig defaults are layered via `cmake_extra_args` (left-to-right override). Custom board config: create `config/sdkconfig.user.<name>` + `user_platformio.ini` to extend any environment without modifying the main config.
+Bluetooth Classic only exists on the original ESP32, so the S3 revision of a board never has a `-bt` environment.
+
+Board configs live in `config/` (the generated `sdkconfig` stays at the project root). Sdkconfig defaults are layered via `cmake_extra_args` (left-to-right override). Custom board config: create `config/sdkconfig.user.<name>` + `user_platformio.ini` to extend any environment without modifying the main config; `dma80`, `s3-custom`, `soundlink` and `wrover` are worked examples.
 
 ## Architecture
 
@@ -52,25 +95,31 @@ main/
 ├── main.c                  # Entry point — initializes NVS, WiFi, starts AirPlay services
 ├── settings.c              # NVS persistence for device name, WiFi credentials, volume
 ├── audio/                  # Audio pipeline
-│   ├── audio_receiver.c    # RTSP session manager — orchestrates streams (buffered/unbuffered)
+│   ├── audio_receiver.c    # RTSP session manager — orchestrates streams (buffered/realtime)
 │   ├── audio_stream.c      # Base stream abstraction
 │   ├── audio_stream_buffered.c   # AirPlay 2 AAC (deep jitter buffer)
 │   ├── audio_stream_realtime.c     # AirPlay 1 ALAC (low latency UDP)
 │   ├── audio_decoder.c     # ALAC and AAC decoders
-│   ├── audio_buffer.c      # Frame buffering between receiver and output
-│   ├── audio_timing.c      # PTP-based timing — early/late frame handling
+│   ├── audio_decode_worker.c # Decoder task fed from the receive path
+│   ├── audio_buffer.c      # Decoder scratch space (the sorted PCM ring is gone)
+│   ├── audio_timeline.c    # RTP-addressed PCM store — holds the decoded audio
+│   ├── audio_engine_v2.c   # Owns the epoch, timeline, clock map and scheduler
+│   ├── audio_scheduler.c   # Anchor/preroll/play/pause/recover state machine + drift servo
+│   ├── audio_clock_map.c   # Sender time ↔ RTP mapping (PTP for AP2, NTP for AP1)
+│   ├── audio_epoch.c       # Generation counter that invalidates stale work
+│   ├── audio_timing.c      # Clock plumbing shared by the streams
 │   ├── audio_resample.c    # Sample rate conversion (44.1→48kHz)
 │   ├── audio_output.c      # I2S output
+│   ├── audio_eq.c          # Software EQ (/bq page) for DACs without a DSP
 │   ├── audio_output_spdif.c # S/PDIF output
-│   ├── audio_output_usb.c  # USB audio output
+│   ├── audio_output_usb.c  # USB audio *source* — board enumerates as a mic
+│   ├── usb_audio_sink.c    # USB audio *sink* — board enumerates as a speaker
 │   ├── audio_crypto.c      # AirPlay encryption
-│   ├── a2dp_sink.c         # Bluetooth A2DP sink
-│   └── eq_events.c         # EQ parameter changes (TAS58xx)
+│   └── a2dp_sink.c         # Bluetooth A2DP sink
 ├── rtsp/                   # RTSP protocol server
 │   ├── rtsp_server.c       # RTSP connection handler
 │   ├── rtsp_conn.c         # Connection management
 │   ├── rtsp_handlers.c     # RTSP method handlers (OPTIONS, SETUP, PLAY, etc.)
-│   ├── rtsp_events.c       # RTSP event handling (including BT passthrough)
 │   ├── rtsp_crypto.c       # RTSP-level encryption
 │   ├── rtsp_fairplay.c     # Apple FairPlay integration
 │   └── rtsp_rsa.c          # RSA crypto
@@ -81,6 +130,11 @@ main/
 │   ├── hap_crypto.c        # HAP encryption
 │   └── srp.c               # SRP-6a key exchange
 ├── plist/                  # Apple Property List parsing
+├── sendspin/               # Sendspin player role (Kconfig-gated, experimental)
+│   ├── sendspin.c          # WebSocket endpoint, protocol state machine, mDNS
+│   ├── sendspin_time.c     # Server clock estimator (offset + skew least-squares fit)
+│   └── sendspin_player.c   # Re-blocks chunks into its own audio_engine_v2 timeline
+├── usb/                    # TinyUSB composite device (UAC + HID transport controls)
 ├── network/                # Network stack
 │   ├── wifi.c              # WiFi AP+STA, captive portal, auto-reconnect
 │   ├── ethernet.c          # W5500 SPI Ethernet driver
@@ -93,6 +147,9 @@ main/
 │   └── log_stream.c        # Remote log streaming
 ├── dacp_client.c           # DACP (Digital Audio Control Protocol) — button/remote commands
 ├── playback_control.c      # Unified playback control abstraction
+├── playback_events.c       # Per-source playback state, fanned out as an aggregate
+├── bt_coex.c               # Frees the Bluetooth stack's DRAM when AirPlay takes over
+├── spiram_task.h           # Task-creation wrappers (stacks must stay in internal RAM)
 ├── buttons.c               # Hardware button input with debounce + auto-repeat
 └── led.c                   # LED status indicator
 
@@ -100,18 +157,26 @@ components/
 ├── dac/                    # Abstract DAC API (Kconfig-selected implementation)
 │   └── dac.c               # Dispatch layer → TAS57xx or TAS58xx driver
 ├── dac_tas57xx/            # TI TAS57xx (TAS5756/5754/5751) DAC driver with hybrid flow DSP
-├── dac_tas58xx/            # TI TAS58xx (TAS5825M) DAC driver with on-chip DSP + 15-band EQ
+├── dac_tas58xx/            # TI TAS58xx (TAS5825M/TAS5805M) driver with on-chip DSP + biquad chains
+├── dac_es8311/             # Everest ES8311 codec driver
+├── husb238a/               # HUSB238A USB-PD trigger: asks a USB-C charger for up to 20 V
 ├── display/                # Display drivers
 │   ├── display.c           # Common display API
 │   ├── display_st7789.c    # ST7789 TFT with LVGL 9 rendering (ESP32-S3)
 │   └── display_stub.c      # No-op stub when display disabled
-├── boards/                 # Board support (HAL)
+├── boards/                 # Board support (HAL) + partition tables
 │   ├── board_common.c      # Shared board utilities
 │   ├── esp32-generic/      # ESP32 generic board init
+│   ├── esp32s2-generic/    # ESP32-S2 generic board init
 │   ├── esp32s3-generic/    # ESP32-S3 generic board init
+│   ├── esp32c5-xiao/       # Seeed XIAO ESP32-C5 board init
 │   ├── waveshare-esp32p4/  # Waveshare ESP32-P4 board init
+│   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
-│   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32 + TAS5825M + W5500)
+│   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
+│   ├── hifi-esp32-plus/    # PCM5122 over I2C: HiFi-ESP32-Plus(-S3), Amped-ESP32-Plus(-S3)
+│   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo, Amped-ESP32(-S3), Amped-Esparagus (RTSP-gated amp enable pin)
+│   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
 ├── audio-resampler/        # sinc-based audio resampler (44.1→48kHz)
 └── board_utils/            # Board-level utilities
@@ -119,17 +184,36 @@ components/
 
 ## Key Conventions
 
+- **PSRAM is not optional**: `CONFIG_SPIRAM=y` is set once, in the base `config/sdkconfig.defaults`, and no board layer turns it off — the board files only pick the mode and speed (`CONFIG_SPIRAM_MODE_OCT` on the S3/P4, the 80 MHz quad default elsewhere). The `# CONFIG_SPIRAM=y` line in `config/sdkconfig.defaults.esp32s2` is a *comment* and overrides nothing, so the S2 gets PSRAM like everything else. A Kconfig `depends on SPIRAM` is therefore always satisfied and is not a real gate.
 - **CMake/Kconfig**: Board selection is via `CONFIG_` Kconfig options. DAC driver is auto-selected (`CONFIG_DAC_TAS57XX` or `CONFIG_DAC_TAS58XX`). Display, buttons, BT, Ethernet are all Kconfig-gated.
+- **A board without an I2C DAC can still register one.** `dac_ops_t` (`components/dac/include/dac.h`) doesn't require I2C — `loud-esp32/board.c` registers a driver whose `set_power_mode` just drives `CONFIG_DAC_ENABLE_GPIO` (the amp's single active-high enable/unmute pin — SD_MODE on the MAX98357A boards, UNMUTE on the PCM5100+TPA3110/TPA3128 Amped boards) from aggregate `playback_events` play/pause/disconnect, the same events Esparagus Audio Brick uses to drive TAS58xx over I2C. This is a different pin from `CONFIG_DAC_PDN_GPIO`, which boards with an I2C DAC drive high once at boot and never touch again — `DAC_ENABLE_GPIO` is toggled on every playback state change because it's the *only* control surface the amp has.
 - **Component structure**: Each component has its own `CMakeLists.txt` with `idf_component_register()`.
 - **Git submodules**: `u8g2` (OLED graphics) and `u8g2-hal-esp-idf` (ESP-IDF HAL for u8g2) are submodules — always clone with `--recursive`.
-- **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = hybrid flow DSP binaries for TAS57xx.
-- **Audio pipeline**: AudioReceiver (rtsp) → decoder → AudioBuffer → AudioOutput (I2S/SPDIF/USB). Buffered streams (AAC) use deep jitter buffer; realtime streams (ALAC) use low-latency UDP with early/late timing thresholds.
-- **AirPlay/Bluetooth coexistence**: Mutually exclusive at runtime. BT connection suspends AirPlay; disconnect resumes it.
+- **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = DSP binaries. Only the four `base-hf<n>-<rate>.bin` hybrid-flow bases are tracked; tuned PPC3 dumps are user-supplied and deliberately untracked.
+- **Web UI**: separate pages (`/` Overview, `/config` Configuration, `/network`, `/bq`, `/hf`, `/logs`) served from SPIFFS through `STATIC_FILES` in `web_server.c`. Each loads `/shell.js` as the first thing in `<body>`; it draws the navigation, the status strip (polls `/api/status` every 5 s: link, now playing, volume, pending-restart list), the restart banner and the log drawer, and gives pages `Shell.get/post` (one request at a time: the server has 3 sockets), `Shell.info()`, `Shell.tick()` and `Shell.refresh()`. `app.css` styles Overview, Configuration and Network; the shell styles itself (`sh-` classes) so `bq.html`/`hf.html` keep their own CSS. A setting that needs a restart belongs in the `restart` list of `status_handler`. Pages and firmware update separately (app OTA leaves SPIFFS alone), so feature-detect from `/api/system/info`.
+- **Audio pipeline**: receiver → decode worker → **RTP-addressed timeline** → scheduler → AudioOutput (I2S/SPDIF/USB). Both the buffered (AAC) and realtime (ALAC) paths now run through engine v2; the old sorted PCM pool is gone. The scheduler anchors on the sender's clock (PTP for AirPlay 2, NTP for AirPlay 1), prerolls, then closes a drift servo against the DMA play position.
+- **AirPlay/Bluetooth coexistence**: Mutually exclusive at runtime. BT connection suspends AirPlay; disconnect resumes it. `bt_coex.c` releases the BT stack's DRAM once AirPlay owns the output.
+- **Output source indirection**: the playback task in every backend pulls through `audio_output_read_source()` (`audio_output_common.c`), which defaults to `audio_receiver_read` until something calls `audio_output_set_source()`. That is how Sendspin renders from its own engine without touching the AirPlay path. `audio_output_stop()` has a weak no-op default there too — only the I2S backend has a real stop, because only it has a DMA channel to hand over.
+- **Sendspin**: `CONFIG_SENDSPIN_ENABLE` defaults **on** wherever there is PSRAM, but compiling it in is not the same as running it — `settings_sendspin_enabled()` gates `sendspin_init()`, defaults to off, and only takes effect on a restart, so a board pays none of the ~448 KB until someone turns it on from the web UI (`/api/sendspin/mode`). The symbol survives only as a flash escape hatch: `smartamp` and `esp32wrover-dev` set it `=n` because Bluetooth plus a 1.92 MB app slot leaves 4–5 % free before Sendspin and ~1 % after. It puts a `/sendspin` WebSocket on the existing web server and advertises `_sendspin._tcp` on port 80. **PCM and FLAC everywhere; Opus on the S3/P4 only** (`CONFIG_SENDSPIN_OPUS`) — on the original ESP32 the decoder's state lands in PSRAM and a 20 ms packet takes ~7.7 ms to decode, which starves the httpd task that decodes it. Opus also needs a far deeper timeline (1024 blocks, 2 MB) because the server meters its queue in *bytes*, so the same budget buys ~10x the duration and anything past the window is rejected and later concealed. Pairing (static PIN via CPace, and the pairing PSK) and in-band re-handshaking are in place, so a session can be authenticated rather than merely encrypted; until a server pairs, the Sentinel PSK keeps it unpaired. It owns a *separate* `audio_engine_v2_t` from `audio_receiver.c`, because the receiver's is deliberately never torn down. Chunks must be re-cut into fixed 512-frame blocks: `audio_engine_v2_push_pcm()` rejects more than `frame_samples`, and `audio_timeline_phase_blocked()` requires block-aligned RTP. **AirPlay outranks it.** `audio_receiver_set_format()`/`audio_receiver_end_session()` drive an edge-triggered activity callback into `main.c`, which calls `sendspin_set_output_available()`; those two are the claim/release pair because both are immediate, whereas `PLAYBACK_EVENT_DISCONNECTED` can sit behind the RTSP DACP grace period for minutes. The release is deliberately *not* on `audio_receiver_stop()`, which also runs for a stream-level TEARDOWN — and that is a pause, so releasing there would have Music Assistant playing out loud the moment the phone pauses. Two more things suppress the release: an RTSP connection being *replaced* (`slot->is_old`) never releases, because `is_old` is set before the replacement is accepted and its SETUP already owns the claim; and `on_airplay_audio_active(false)` bails out while Bluetooth or the USB sink is streaming, since it is their `stop_airplay_services()` that ended the AirPlay session in the first place. The AirPlay services now stay up while Sendspin streams, so only the playback task changes hands. Reporting `available:false` on its own leaves the server's queue *stopped*, and a stopped queue never restarts itself — so the takeover also sends a `client/command` `pause` through the controller role and the release sends a `play`, queued rather than sent inline so the tick reports the state first. A gap in delivery is **not** a reason to re-anchor: the anchor still maps server time onto RTP, so `sendspin_player_skip_to()` moves the write position and the timeline conceals the hole. Only a rewind rebuilds the map, because only then has RTP stopped being a continuous function of server time.
+- **Sendspin has no cleartext mode.** Only `client/init`, `server/init` and `noise/handshake` travel in the open, as WebSocket *text* frames; everything after the split is a Noise transport message in a *binary* frame whose first decrypted byte is the Sendspin message type. `sendspin_noise.c` implements `Noise_KKpsk2_25519_ChaChaPoly_SHA256` on libsodium primitives — the server is the initiator, the board the responder. The prologue is the **raw wire bytes** of the two init messages, never a re-encoding. Without pairing the PSK is the spec's published **Sentinel** value, so a session is encrypted but not authenticated; `unpaired_access.enabled` is what tells the server we will accept that. Two easy-to-miss details: in a PSK-modified pattern every `e` token does `MixHash` **then** `MixKey`, and `MixKey`/`MixKeyAndHash` reset the nonce counter to 0. Nothing at all may leave the client between `client/init` and the first `server/activate`, not even a `client/time`.
+- **One processing path to I2S**: every source goes through `process_pcm()` in `audio_output.c` — channel mode, then the software EQ (`CONFIG_SOFTWARE_EQ`), then software volume (skipped under `CONFIG_DAC_CONTROLS_VOLUME`). AirPlay and Sendspin get it from the playback task; USB and Bluetooth sinks call `audio_output_write_pcm()`, which also carries a frame split across a ring-buffer wrap. A source that calls `audio_output_write()` directly skips all three, and must write in the I2S word size. That is 16-bit unless `CONFIG_I2S_32BIT_OUTPUT` is set: then the EQ hands over unrounded float (`audio_eq_process_float()`), the volume is applied at full precision, and the only rounding is into the 32-bit word. 16-bit words are still made in place, bit for bit as before.
+- **USB audio, two directions**: `defaults.usb` (`CONFIG_AUDIO_OUTPUT_USB`) makes the board a USB *source* — it appears as a microphone and AirPlay audio leaves over USB. `defaults.uac` (`CONFIG_USB_AUDIO_SINK`) makes it a USB *speaker* — the host plays into the same I2S DAC, which stops the AirPlay services while it streams. The UAC descriptor advertises a single rate, so `CONFIG_UAC_SAMPLE_RATE` must equal `CONFIG_OUTPUT_SAMPLE_RATE_HZ`.
 - **Eth/WiFi failover**: Ethernet preferred at boot; WiFi fallback if no cable. Hot-swap at runtime.
+- **Task stacks stay in internal RAM** (`main/spiram_task.h`): flash operations disable the cache, so a stack in SPIRAM trips `esp_task_stack_is_sane_cache_disabled()`. Large *local* buffers are the opposite problem — `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is only 3584 bytes, so anything of that order belongs in a `heap_caps_calloc(..., MALLOC_CAP_SPIRAM)` allocation. Overflowing it corrupts whatever was allocated next, which shows up as unrelated driver failures.
+
+## TAS58xx notes
+
+- **Two parts, one driver.** The model is guessed from the I2C address (0x4C–0x4F → TAS5825M, 0x2C–0x2F → TAS5805M), then confirmed against the die ID in register 0x67; a disagreement is logged as a warning.
+- **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo: `dac_tas58xx_can_route()` is false, `dac_tas58xx_set_mix()` returns `ESP_ERR_NOT_SUPPORTED`, init drops a stored routing, and `/api/bq` reports the amp as `mix_fixed` so the page greys the control out. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
+- **A TAS5805M's biquads run at 96 kHz, not the I2S rate.** Its ROM flow converts every input to 96 kHz (88.2 kHz for the 44.1 kHz family) ahead of the EQ (TI SLOA263A, Process Flow 1), so `bq_design_fs()` designs its sections at `tas5805m_dsp_rate()` and `/api/bq` reports that rate. Designed at the I2S rate instead, every section plays an octave high at 48 kHz. Designed at 96 kHz, our coefficients match the PPC3-generated ones for this part to within 3 LSB. A TAS5825M's sections run at the I2S rate, because its DSP_CTRL (0x46) rate field is left at 00, the input rate. The two parts' 0x46 differ: on the TAS5805M it is undocumented and picks the ROM program (0x01 Flow 1, 0x11 the 48 kHz program), so both init sequences write it explicitly.
+- **PPC3 dump filenames**, searched most specific first: `tas5825m_fw<i>-<rate>.bin` → `tas5825m_fw-<rate>.bin` → `tas5825m_fw<i>.bin` → `tas5825m_fw.bin`. The unindexed names only stand in for device 0. `components/dac_tas58xx/ppc3_convert.py` produces them from a PPC3 export.
+- **`GET /api/bq/readback` shows what the chip holds.** `dac_tas58xx_bq_readback()` reads every section back out of coefficient RAM (each page's share separately, so a section that crosses a page checks the auto-increment the writes rely on) next to the block the chain designs at the current rate, and the endpoint lists the sections that differ, with the amp's power state, mute and EQ bypass. The chain is written on entering PLAY, so read while playing: an idle amp still holds the last stream's rate.
+- **Fault handling.** A clock fault is expected when the I2S clock stops at the end of a track, so it is logged and cleared rather than muting the amplifier; channel and global2 faults still mute. Rev D has no fault line at all and is polled instead.
+- **The analog gain follows the supply unless set by hand; the digital gain is the user's.** AGAIN (0x54) sets where digital full scale lands: 29.5 V peak at 0 dB, down to −15.5 dB, and the output clips at about 93 % of PVDD. `dac_tas58xx_clean_db()` gives the analog gain that matches a supply (−11 dB at 9 V, −4.5 dB at 20 V); below about 5.2 V it runs out at −15.5 dB and loud passages clip. With `dac_tas58xx_set_analog_auto()` on and a supply known (`dac_tas58xx_set_supply_mv()`, fed by the HUSB238A callback or the TAS5825M's PVDD readback), the driver writes that gain; while the supply is unknown it plays at `CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY` (−16, the 5 V level, on the Mini config). The digital gain (`dac_tas58xx_set_full_volume_db()`, the level AirPlay's full volume maps to) is 0 dB unless set by hand, and nothing moves it for EQ boosts: the EQ page shows the room left. Running the supply match digitally at 0 dB analog left the output stage's own artefacts (faint clicks and a moving noise floor at very low volume) 11 dB higher than needed on 9 V. Automatic voltage (the highest offer up to `CONFIG_HUSB238A_MAX_VOLTS`) and automatic analog gain are both on unless turned off (NVS `pd_auto`, `again_auto`); setting either by hand turns its own off. Stored: `full_vol` and `analog_gain`, half-dB steps. The supply and both gains are set on the Speaker page (`/`), the digital gain also on `/bq` (`/api/audio/digital-gain` takes `{"db"}`, `{"analog_db"}` or `{"analog_auto": bool}`; `/api/power/usb-pd` takes `{"auto": bool}`). The HUSB238A trigger forgets on power loss and is asked again on every boot, and only for the fixed 5–20 V offers, never EPR.
 
 ## Code Quality
 
-**Requirements**: ESP-IDF >= 5.5 (tested against v5.5.2). Older versions may need workarounds.
+**Requirements**: ESP-IDF >= 6.1. CI and PlatformIO use a platform/toolchain matching that minimum.
 
 **Formatting**: LLVM-style, 2-space indent, 80-char column limit. See `.clang-format`.
 
@@ -137,11 +221,16 @@ components/
 
 **Pre-commit hook**: auto-formats staged C/H files with clang-format, runs clang-tidy (requires `build/compile_commands.json`). Install via `git config core.hooksPath .githooks`.
 
-**CI** (`.github/workflows/ci-release.yml`): On push/PR to `main`:
-- `format-check`: clang-format dry-run on all C/H files (excludes `components/u8g2`)
-- `lint-check`: clang-tidy on build output (requires ESP-IDF v5.5 toolchain)
-- `build`: compiles 4 target configs (esp32s3, squeezeamp-bt, squeezeamp-4m, esparagus-audio-brick-bt)
-- `release`: auto-creates GitHub release with merged firmware bins (only on push)
+**CI** (`.github/workflows/`), five workflows:
+- `ci.yml` — on push to `main`, and on every PR to `main` or `staging`. A `changes` job skips the firmware jobs for a Markdown-only PR; `format-check` (clang-format), `lint-check` (clang-tidy against an esp32s3 build), `output-backends` (links the spdif and usb backends, which the release matrix never covers) and `build` follow. **`ci-gate` is the one required check** — it runs unconditionally and treats skipped as fine, so branch protection does not have to list every matrix job.
+- `build.yml` — reusable, and the entry point for the release matrix. The matrix itself is `.github/workflows/targets.json`, because a matrix has to be JSON before `fromJSON` can filter it. Every entry there gets a published `airplay2-receiver-<name>.bin` and needs a matching `docs/firmware/<name>.json`. Entries flagged `"core": true` are the subset a **pull request** builds — one per chip and per `components/boards/` directory; a push to `main`, a push to `staging` and a tag build the lot. `fail-fast: false`, so a broken board no longer cancels the rest. Targets: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, the esparagus ones (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3, echo) and the Sonocotta dock boards (hifi-, loud-, amped-, louder- variants). **An ESP32 board's published binary is always the Bluetooth one** — the non-BT envs still exist, they just are not released.
+- `release.yml` — on a `v*` tag. Refuses to release unless the tag matches `version.txt` and points at a commit on `main`, then publishes the merged binaries.
+- `beta.yml` — on push to `staging`. Same matrix, published to a rolling `beta` pre-release that is deleted and recreated each time so the tag follows the staging tip. Because the matrix does not fail fast, `publish` runs on `always()` and ships whatever built, warning about each missing target; it only errors when nothing built at all. Fails if `version.txt` on staging is not strictly greater than the latest release, so **bump `version.txt` on staging right after a release**.
+- `docs.yml` — `zensical build --strict --clean`, bundles the latest release binaries into `site/firmware/` and the beta ones into `site/firmware/beta/` for the browser installer, and deploys to Pages. **`docs-build` is a required check**, so its `pull_request` trigger is deliberately unfiltered.
+
+A release created with `GITHUB_TOKEN` does not fire the `release` event, so `release.yml` and `beta.yml` both `gh workflow run docs.yml` explicitly. `workflow_dispatch` is one of only two events that escape the recursion guard.
+
+The `pull_request` triggers in `ci.yml` and `docs.yml` are unfiltered on purpose: a required check whose workflow never fires sits "Expected" forever and blocks the merge. Both list `staging` as well as `main`, because **PRs are raised against `staging`** — a branch filter of just `main` means a PR to `staging` gets no checks at all.
 
 **Local tooling** (in `scripts/`):
 ```bash
@@ -150,4 +239,28 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**No unit tests**: This is embedded firmware — no test framework is in place. Manual testing on hardware is required.
+**Host tests**: `tests/pcm51xx/run.py`, `tests/tas5805m_rate/run.py`, `tests/ptp_clock/run.py`, `tests/audio_eq/run.py`, `tests/rtp_resend/run.py`, `tests/bplist/run.py`, `tests/husb238a/run.py`, `tests/audio_scheduler/run.py`, `tests/tas58xx_peak/run.py` and `tests/tas58xx_bq/run.py` compile the real driver, TAS5805M filter-rate, PTP filter, EQ, resend-tracker, binary-plist, USB-PD trigger, scheduler, filter-peak and TAS58xx filter-design code with the host C compiler, using small mocks where needed, and run in CI's `format-check` job. The TAS5805M suite also uses Node.js to check the actual EQ page and driver/UI round trips. `tests/bq_page/run.py` also needs Node.js: it lifts the filter code out of `data/www/bq.html` and checks the page draws exactly what the firmware designs. There is no test framework beyond that; everything else needs testing on hardware.
+
+## Documentation site
+
+The site is built with **Zensical**, not mkdocs — it reads `mkdocs.yml` natively, and mkdocs is not installed.
+
+```bash
+python3 -m venv ~/.venvs/airplay-docs
+~/.venvs/airplay-docs/bin/pip install -r docs/requirements.txt
+~/.venvs/airplay-docs/bin/zensical build --strict --clean   # ~0.5 s
+~/.venvs/airplay-docs/bin/zensical serve                    # http://localhost:8000
+```
+
+`--strict` turns a broken internal link into a build failure, which is the main thing worth checking locally. A new page **must** be added to `nav:` in `mkdocs.yml` or it is unreachable. Output lands in `site/`, which is gitignored.
+
+VS Code's built-in Markdown preview does not understand `!!!` admonitions or `===` tabs and renders them as code blocks. That is a preview limitation, not a broken page — check with a real build before "fixing" the source.
+
+## Adding a board
+
+1. `config/sdkconfig.defaults.<board>` with the pins and Kconfig selections.
+2. A `[env:<board>]` in `platformio.ini`, layering that file after `config/sdkconfig.defaults`.
+3. A board directory under `components/boards/` if it needs its own init.
+4. A page under `docs/boards/` **and** an entry in `nav:`.
+5. For a board that should ship prebuilt firmware: an entry in `.github/workflows/targets.json` **and** a matching `docs/firmware/<name>.json` ESP Web Tools manifest, whose `parts[0].path` must equal `airplay2-receiver-<name>.bin`. Set `"core": true` only if the board brings new board-support code or a new chip — that flag is what a pull request builds. The docs workflow drops any manifest whose binary is missing from the release.
+6. An install card (stable + beta buttons) in `docs/getting-started/flashing.md`.

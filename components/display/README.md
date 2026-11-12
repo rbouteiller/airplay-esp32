@@ -31,7 +31,8 @@ LVGL 9 + the AirPlay audio pipeline + WiFi together exceed the internal SRAM bud
 
 The `idf_component.yml` enforces this — LVGL and `esp_lvgl_port` are only declared as dependencies when `target == esp32s3`. Non-S3 builds are completely unaffected: the managed components are not downloaded, not compiled, and the OLED driver continues to work unchanged.
 
-**Tested on:** ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM) with IDF 5.5.3.
+**Hardware validated on:** ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM). Current project
+builds require ESP-IDF 6.1 or newer.
 
 ---
 
@@ -108,7 +109,10 @@ The ST7789 driver loads a full-screen background image from SPIFFS at startup
 progress bar) are drawn on top of it. If no file is present, the screen
 defaults to solid black — all widgets still render correctly.
 
-### Replacing the Background
+### Adding a Background
+
+None ships with the firmware: a background costs 106 KB of SPIFFS, which does
+not fit alongside the web UI in a 4 MB layout, and `data/bg/` is gitignored.
 
 1. Design your image and export as a PNG (any size — it will be resized)
 2. Run the conversion script from the project root:

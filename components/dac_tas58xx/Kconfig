@@ -1,12 +1,30 @@
 if DAC_TAS58XX
 
-    config TAS58XX_MAX_VOLUME
-        int "Maximum DAC volume (dB)"
-        range -100 0
+    config TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY
+        int "Analog gain while the supply is unknown (dB)"
+        range -16 0
         default -10
         help
-            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
-            The TAS5825M DIG_VOL register range is +24 dB to -103 dB.
-            A value of -10 means AirPlay full volume maps to -10 dB on the DAC.
+            The amplifier's analog gain follows its supply, as a USB-PD
+            trigger agrees it or a TAS5825M measures it. Until the board knows
+            the supply it plays at this gain. 0 dB is 29.5 V peak at digital
+            full scale; -10 dB is 9.3 V. -16 is the 5 V level, which plays at
+            the bottom of the range, -15.5 dB.
+
+    config TAS58XX_FORCE_PBTL
+        bool "Force PBTL (mono) mode on primary amplifier"
+        default n
+        help
+            Force the primary TAS58xx amplifier into PBTL (mono) mode.
+            When enabled, the PBTL setting cannot be changed from the web UI.
+            Only available for TAS5825M/TAS5805M (not other DACs).
+            The amplifier must be wired for PBTL mode in hardware.
+
+            Set it for a board that ties OUT_A+ to OUT_A- and OUT_B+ to
+            OUT_B- in copper, such as the Louder-ESP32-Mini. That wiring must
+            never run as a stereo pair: each tied pair of half-bridges would
+            be driven against each other. A bridged TAS5805M plays the left
+            I2S channel, so the output channel mode defaults to mono (L+R)
+            on such a board.
 
 endif # DAC_TAS58XX

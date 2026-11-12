@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <string.h>
 
 #include "hap.h"
@@ -6,10 +9,58 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "mbedtls/aes.h"
+#include "psa/crypto.h"
 #include "sodium.h"
 
 static const char *TAG = "hap_verify";
+
+// AES-128-CTR keystream XOR. Encrypt and decrypt are the same operation in
+// CTR mode, which is how the legacy mbedtls code this replaced used
+// mbedtls_aes_setkey_enc()/mbedtls_aes_crypt_ctr() for both directions.
+static int aes_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
+                         const uint8_t *input, size_t len, uint8_t *output) {
+  psa_crypto_init();
+
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+  psa_set_key_algorithm(&attr, PSA_ALG_CTR);
+
+  mbedtls_svc_key_id_t key_id;
+  if (psa_import_key(&attr, key, 16, &key_id) != PSA_SUCCESS) {
+    return -1;
+  }
+
+  psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+  psa_status_t status = psa_cipher_encrypt_setup(&op, key_id, PSA_ALG_CTR);
+  if (status == PSA_SUCCESS) {
+    status = psa_cipher_set_iv(&op, iv, 16);
+  }
+
+  size_t out_len = 0;
+  if (status == PSA_SUCCESS) {
+    status = psa_cipher_update(&op, input, len, output, len, &out_len);
+  }
+
+  size_t finish_len = 0;
+  uint8_t finish_buf[16];
+  if (status == PSA_SUCCESS) {
+    status =
+        psa_cipher_finish(&op, finish_buf, sizeof(finish_buf), &finish_len);
+  }
+
+  psa_cipher_abort(&op);
+  psa_destroy_key(key_id);
+
+  if (status != PSA_SUCCESS) {
+    return -1;
+  }
+
+  if (finish_len > 0) {
+    memcpy(output + out_len, finish_buf, finish_len);
+  }
+  return 0;
+}
 
 esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
                              size_t input_len, uint8_t *output,
@@ -215,18 +266,11 @@ esp_err_t hap_pair_verify_m1_raw(hap_session_t *session, const uint8_t *input,
 
   memcpy(output, session->session_public_key, 32);
 
-  mbedtls_aes_context aes_ctx;
-  mbedtls_aes_init(&aes_ctx);
-  mbedtls_aes_setkey_enc(&aes_ctx, aes_key, 128);
-
-  uint8_t stream_block[16] = {0};
-  size_t nc_off = 0;
-  uint8_t nonce_counter[16];
-  memcpy(nonce_counter, aes_iv, sizeof(nonce_counter));
-
-  mbedtls_aes_crypt_ctr(&aes_ctx, sizeof(signature), &nc_off, nonce_counter,
-                        stream_block, signature, output + 32);
-  mbedtls_aes_free(&aes_ctx);
+  if (aes_ctr_crypt(aes_key, aes_iv, signature, sizeof(signature),
+                    output + 32) != 0) {
+    ESP_LOGE(TAG, "AES-CTR encrypt failed");
+    return ESP_FAIL;
+  }
 
   *output_len = 96;
   session->pair_verify_state = PAIR_VERIFY_STATE_M2;
@@ -279,19 +323,11 @@ esp_err_t hap_pair_verify_m3_raw(hap_session_t *session, const uint8_t *input,
   }
 
   uint8_t client_signature[64];
-  mbedtls_aes_context aes_ctx;
-  mbedtls_aes_init(&aes_ctx);
-  mbedtls_aes_setkey_enc(&aes_ctx, aes_key, 128);
-
-  uint8_t stream_block[16] = {0};
-  size_t nc_off = 0;
-  uint8_t nonce_counter[16];
-  memcpy(nonce_counter, aes_iv, sizeof(nonce_counter));
-
-  mbedtls_aes_crypt_ctr(&aes_ctx, sizeof(client_signature), &nc_off,
-                        nonce_counter, stream_block, encrypted_sig,
-                        client_signature);
-  mbedtls_aes_free(&aes_ctx);
+  if (aes_ctr_crypt(aes_key, aes_iv, encrypted_sig, sizeof(client_signature),
+                    client_signature) != 0) {
+    ESP_LOGE(TAG, "AES-CTR decrypt failed");
+    return ESP_FAIL;
+  }
 
   ESP_LOGW(TAG, "Skipping signature verification (transient pairing)");
 

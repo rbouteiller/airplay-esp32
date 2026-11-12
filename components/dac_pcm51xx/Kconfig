@@ -1,0 +1,29 @@
+if DAC_PCM51XX
+
+    config PCM51XX_MAX_VOLUME
+        int "Maximum DAC volume (dB)"
+        range -100 0
+        default 0
+        help
+            Digital volume in dB that corresponds to AirPlay volume 0 dB.
+            The PCM512x digital volume register runs from 0 dB down to
+            -103 dB in 0.5 dB steps; the boost range above 0 dB is not used.
+            Line-level boards normally leave this at 0.
+
+    config PCM51XX_I2C_ADDR
+        hex "PCM512x I2C address"
+        range 0x4C 0x4F
+        default 0x4D
+        help
+            7-bit I2C address selected by the ADR1/ADR2 straps.
+            Sonocotta HiFi-ESP32-Plus and Amped-ESP32-Plus use 0x4D.
+
+    config PCM51XX_ANALOG_GAIN_MINUS_6DB
+        bool "Use -6 dB analog gain (1V RMS output)"
+        default n
+        help
+            The PCM512x analog output stage can run at 0 dB (2V RMS, the
+            chip's default) or -6 dB (1V RMS). Enable this to match a
+            board designed around the lower, 1V RMS output level.
+
+endif # DAC_PCM51XX

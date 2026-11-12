@@ -1,0 +1,118 @@
+name: Beta
+
+# Rolling pre-release built from the tip of staging. Same matrix as a real
+# release, published to a single `beta` tag that is recreated on every push, so
+# the browser installer always offers exactly one beta per board.
+on:
+  push:
+    branches: [staging]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      beta: true
+
+  publish:
+    needs: build
+    # build.yml does not fail fast, so a broken board leaves the rest of the
+    # matrix green. Publish whatever did build rather than withholding every
+    # beta because one target is out of action; the red build job still marks
+    # the run as failed.
+    if: always() && needs.build.result != 'cancelled' && needs.build.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Needed for the `gh workflow run` below. Only workflow_dispatch and
+      # repository_dispatch escape the GITHUB_TOKEN recursion guard, which is
+      # why the docs rebuild is dispatched rather than triggered by the tag.
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: beta-artifacts
+          pattern: firmware-*
+          merge-multiple: true
+
+      - name: Report targets that did not build
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r name; do
+            if [ ! -f "beta-artifacts/airplay2-receiver-$name.bin" ]; then
+              echo "::warning::$name did not build, no beta binary published for it"
+              missing=$((missing + 1))
+            fi
+          done < <(jq -r '.[].name' .github/workflows/targets.json)
+          if [ ! -d beta-artifacts ] || [ -z "$(ls -A beta-artifacts 2>/dev/null)" ]; then
+            echo "::error::No target built, nothing to publish"
+            exit 1
+          fi
+          echo "$missing target(s) missing from this beta."
+
+      - name: Publish the rolling beta pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < version.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version.txt must contain MAJOR.MINOR.PATCH, got '$version'"
+            exit 1
+          fi
+
+          # staging must stay ahead of the last release, or a beta tester who
+          # installs this would appear to downgrade.
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "$latest" ]; then
+            released="${latest#v}"
+            newest="$(printf '%s\n%s\n' "$version" "$released" | sort -V | tail -1)"
+            if [ "$version" = "$released" ] || [ "$newest" != "$version" ]; then
+              echo "::error::version.txt ($version) must be greater than the latest release ($released). Bump it on staging."
+              exit 1
+            fi
+          fi
+
+          beta="${version}-beta.$(git rev-parse --short HEAD)"
+          echo "Publishing $beta"
+
+          cat > notes.md <<EOF
+          Rolling beta built from the tip of \`staging\` ($GITHUB_SHA).
+
+          Untested, may not boot, and is replaced by the next push to staging.
+          For a supported build use the [latest release](https://github.com/$GITHUB_REPOSITORY/releases/latest).
+
+          Free software under [GPL-3.0-or-later](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/LICENSE),
+          with the Espressif binary component [exception](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/LICENSE-EXCEPTION).
+          The complete corresponding source is this repository at $GITHUB_SHA.
+          EOF
+
+          # Recreated rather than updated so the tag follows the staging tip.
+          gh release delete beta --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create beta \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "$beta" \
+            --notes-file notes.md \
+            beta-artifacts/*.bin
+
+      - name: Republish the docs site so the installer picks up the new beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * Source-agnostic playback controller.
  *
@@ -19,7 +22,7 @@
 
 #include "dac.h"
 #include "dacp_client.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "rtsp_server.h"
 #include "settings.h"
 
@@ -27,6 +30,14 @@
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
+#endif
+
+#ifdef CONFIG_USB_AUDIO_SINK
+#include "usb_hid_control.h"
+#endif
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
 #endif
 
 static const char *TAG = "playback_ctrl";
@@ -46,7 +57,16 @@ esp_err_t playback_control_init(void) {
 }
 
 void playback_control_set_source(playback_source_t source) {
-  s_muted = false;
+  if (s_muted) {
+    // The muting source is on its way out, so clearing the flag alone would
+    // leave the DAC parked at the mute floor for whoever takes the output
+    // next. Restore the level here rather than emitting a playing event.
+    s_muted = false;
+    settings_set_volume(s_pre_mute_db);
+    dac_set_volume(s_pre_mute_db);
+  }
+  // After the restore, so a level changed while muted is what gets written.
+  settings_persist_volume();
   s_source = source;
   ESP_LOGI(TAG, "Source set to %d", source);
 }
@@ -80,27 +100,49 @@ static float db_to_dacp_percent(float db) {
   return ((db - VOLUME_MIN_DB) / (VOLUME_MAX_DB - VOLUME_MIN_DB)) * 100.0f;
 }
 
-static void airplay_adjust_volume(float step_db) {
+static float dacp_percent_to_db(float percent) {
+  if (percent <= 0.0f) {
+    return VOLUME_MIN_DB;
+  }
+  if (percent >= 100.0f) {
+    return VOLUME_MAX_DB;
+  }
+  return VOLUME_MIN_DB + (percent / 100.0f) * (VOLUME_MAX_DB - VOLUME_MIN_DB);
+}
+
+// Apply a level to the DAC without disturbing mute, and keep the cached
+// setting in step so the web UI and the level getter agree.
+static void apply_level(float db) {
+  if (s_muted) {
+    s_pre_mute_db = db;
+  } else {
+    settings_set_volume(db);
+  }
+}
+
+// A level set on this device (buttons, web UI). An AirPlay session has to hear
+// about it as well as the DAC: on a DAC with no volume control of its own, the
+// session's level is what scales the samples.
+static void set_local_level(float db) {
+  apply_level(db);
+  if (s_source == PLAYBACK_SOURCE_AIRPLAY) {
+    airplay_set_volume(db);
+    // Notify AirPlay client via DACP (best-effort, don't block local action)
+    dacp_send_volume(db_to_dacp_percent(db));
+  }
+}
+
+static void local_adjust_volume(float step_db) {
   float current_db;
-  if (settings_get_volume(&current_db) != ESP_OK) {
-    current_db = -15.0f; // default 50 %
+  (void)settings_get_volume(&current_db);
+  if (s_muted) {
+    current_db = s_pre_mute_db;
   }
 
   float new_db = clamp_volume(current_db + step_db);
-  airplay_set_volume(new_db);
-
-  if (s_muted) {
-    // Update saved level so unmute restores the new volume
-    s_pre_mute_db = new_db;
-  } else {
-    dac_set_volume(new_db);
-  }
-
-  ESP_LOGI(TAG, "AirPlay volume: %.1f -> %.1f dB%s", current_db, new_db,
+  ESP_LOGI(TAG, "Volume: %.1f -> %.1f dB%s", current_db, new_db,
            s_muted ? " (muted)" : "");
-
-  // Notify AirPlay client via DACP (best-effort, don't block local action)
-  dacp_send_volume(db_to_dacp_percent(new_db));
+  set_local_level(new_db);
 }
 
 // ============================================================================
@@ -121,26 +163,28 @@ void playback_control_play_pause(void) {
       ESP_LOGI(TAG, "AirPlay play/pause sent via DACP");
     } else {
       // Fallback: mute/unmute the DAC locally when no DACP session
-      if (!s_muted) {
-        if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
-          s_pre_mute_db = -15.0f; // default 50 %
-        }
-        dac_set_volume(VOLUME_MIN_DB);
-        s_muted = true;
-        rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
-        ESP_LOGI(TAG, "AirPlay muted locally (was %.1f dB)", s_pre_mute_db);
-      } else {
-        dac_set_volume(s_pre_mute_db);
-        s_muted = false;
-        rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
-        ESP_LOGI(TAG, "AirPlay unmuted locally (%.1f dB)", s_pre_mute_db);
-      }
+      playback_control_set_muted(!s_muted);
     }
     break;
   }
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     bt_a2dp_send_playpause();
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_PLAY_PAUSE);
+    break;
+#endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    // The protocol has no toggle, so pick the command from what the server
+    // last said the group was doing.
+    if (!sendspin_send_command(sendspin_is_playing() ? SENDSPIN_CMD_PAUSE
+                                                     : SENDSPIN_CMD_PLAY)) {
+      playback_control_set_muted(!s_muted);
+    }
     break;
 #endif
   default:
@@ -152,11 +196,17 @@ void playback_control_play_pause(void) {
 void playback_control_volume_up(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    airplay_adjust_volume(VOLUME_STEP_DB);
+  case PLAYBACK_SOURCE_SENDSPIN:
+    local_adjust_volume(VOLUME_STEP_DB);
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     bt_a2dp_send_volume_up();
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_VOLUME_UP);
     break;
 #endif
   default:
@@ -167,11 +217,17 @@ void playback_control_volume_up(void) {
 void playback_control_volume_down(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    airplay_adjust_volume(-VOLUME_STEP_DB);
+  case PLAYBACK_SOURCE_SENDSPIN:
+    local_adjust_volume(-VOLUME_STEP_DB);
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     bt_a2dp_send_volume_down();
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_VOLUME_DOWN);
     break;
 #endif
   default:
@@ -190,6 +246,16 @@ void playback_control_next(void) {
     bt_a2dp_send_next();
     break;
 #endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_NEXT);
+    break;
+#endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    sendspin_send_command(SENDSPIN_CMD_NEXT);
+    break;
+#endif
   default:
     break;
   }
@@ -206,33 +272,72 @@ void playback_control_prev(void) {
     bt_a2dp_send_prev();
     break;
 #endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_PREV);
+    break;
+#endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    sendspin_send_command(SENDSPIN_CMD_PREVIOUS);
+    break;
+#endif
   default:
     break;
   }
 }
 
+void playback_control_set_muted(bool muted) {
+  if (muted == s_muted) {
+    return;
+  }
+  if (muted) {
+    (void)settings_get_volume(&s_pre_mute_db);
+    dac_set_volume(VOLUME_MIN_DB);
+    s_muted = true;
+    playback_events_emit(s_source, PLAYBACK_EVENT_PAUSED, NULL);
+    ESP_LOGI(TAG, "Muted locally (was %.1f dB)", s_pre_mute_db);
+  } else {
+    s_muted = false;
+    // Muting left the cached level alone, so settings_set_volume() may see no
+    // change and skip the DAC. Drive it directly to leave the mute floor.
+    settings_set_volume(s_pre_mute_db);
+    dac_set_volume(s_pre_mute_db);
+    playback_events_emit(s_source, PLAYBACK_EVENT_PLAYING, NULL);
+    ESP_LOGI(TAG, "Unmuted locally (%.1f dB)", s_pre_mute_db);
+  }
+}
+
+void playback_control_set_volume_db(float db) {
+  db = clamp_volume(db);
+  set_local_level(db);
+  ESP_LOGI(TAG, "Volume set to %.1f dB%s", db, s_muted ? " (muted)" : "");
+}
+
+void playback_control_set_volume_percent(int percent) {
+  const float db = clamp_volume(dacp_percent_to_db((float)percent));
+  apply_level(db);
+  // Not persisted here: a server dragging a slider sends a command per step.
+  // The level is committed at the next pause or when the session ends.
+  ESP_LOGI(TAG, "Volume set to %d%% (%.1f dB)%s", percent, db,
+           s_muted ? " (muted)" : "");
+}
+
 void playback_control_toggle_mute(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    if (!s_muted) {
-      if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
-        s_pre_mute_db = -15.0f; // default 50 %
-      }
-      dac_set_volume(VOLUME_MIN_DB);
-      s_muted = true;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
-      ESP_LOGI(TAG, "AirPlay muted locally (was %.1f dB)", s_pre_mute_db);
-    } else {
-      dac_set_volume(s_pre_mute_db);
-      s_muted = false;
-      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
-      ESP_LOGI(TAG, "AirPlay unmuted locally (%.1f dB)", s_pre_mute_db);
-    }
+  case PLAYBACK_SOURCE_SENDSPIN:
+    playback_control_set_muted(!s_muted);
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
     // Bluetooth uses AVRCP absolute volume — no dedicated mute. Log.
     ESP_LOGI(TAG, "Bluetooth: mute toggle not supported (use source device)");
+    break;
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+  case PLAYBACK_SOURCE_USB:
+    usb_hid_control_send(USB_HID_KEY_MUTE);
     break;
 #endif
   default:
@@ -249,9 +354,15 @@ int playback_control_get_volume_percent(void) {
   if (s_muted) {
     return 0;
   }
+  return playback_control_get_level_percent();
+}
+
+int playback_control_get_level_percent(void) {
   float db;
-  if (settings_get_volume(&db) != ESP_OK) {
-    db = -15.0f;
+  if (s_muted) {
+    db = s_pre_mute_db;
+  } else {
+    (void)settings_get_volume(&db);
   }
   return (int)(db_to_dacp_percent(clamp_volume(db)) + 0.5f);
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 
 #include "esp_err.h"
@@ -65,6 +68,20 @@ typedef struct {
 esp_err_t audio_receiver_init(void);
 
 /**
+ * Called when an AirPlay session takes the audio path and again when it lets
+ * go, so the arbitration in main.c can stand the other inputs down.
+ */
+typedef void (*audio_receiver_activity_cb_t)(bool active);
+void audio_receiver_set_activity_callback(audio_receiver_activity_cb_t cb);
+
+/**
+ * Give up the claim on the audio path. Called on a full TEARDOWN and when the
+ * RTSP connection goes away -- not on audio_receiver_stop(), which also runs
+ * for a stream-level teardown, and that is a pause.
+ */
+void audio_receiver_end_session(void);
+
+/**
  * Set audio format from ANNOUNCE SDP
  */
 void audio_receiver_set_format(const audio_format_t *format);
@@ -115,22 +132,27 @@ void audio_receiver_flush(void);
 
 /**
  * Flush audio buffer for a mid-stream seek (FLUSH / immediate FLUSHBUFFERED).
- * Identical to audio_receiver_flush() but also sets timing.post_flush so
- * that audio_timing_read plays frames immediately after the seek instead of
- * silencing them during the phone's pre-buffer window (which can be several
- * seconds with AirPlay 2 buffered streams).  Mirrors shairport-sync's
- * first_packet_timestamp==0 behaviour: post-flush frames play unconditionally
- * until the anchor reports on-time (early_us < TIMING_THRESHOLD_US).
+ * Identical to audio_receiver_flush(): the timeline re-prerolls from whatever
+ * anchor the sender supplies next, so the seek costs no more than the new
+ * stream's own lead time.
  */
 void audio_receiver_seek_flush(void);
 
 /**
+ * Flush for a plain RTSP FLUSH.  On the realtime stream only audio from
+ * before the flush point is stale, so packets arriving after it are kept
+ * rather than discarded until the next anchor.  until_rtp, when valid, is
+ * the flush point from the request's RTP-Info.  On the buffered stream this
+ * is audio_receiver_seek_flush().
+ */
+void audio_receiver_realtime_flush(bool until_valid, uint32_t until_rtp);
+
+/**
  * Arm a deferred flush for AirPlay 2 FLUSHBUFFERED with flushFromSeq.
  *
- * Instead of discarding the buffer immediately, audio_timing_read will
- * continue playing normally until it encounters a frame whose rtp_timestamp
- * >= flush_until_ts, at which point it bulk-flushes the remainder and sets
- * post_flush so the next track starts without delay.
+ * Instead of discarding the buffer immediately, the decode task keeps queueing
+ * normally until it sees a frame whose rtp_timestamp >= flush_until_ts, at
+ * which point it drops what is held and starts a fresh epoch.
  *
  * @param flush_until_ts  RTP timestamp boundary from flushUntilTS plist key.
  */

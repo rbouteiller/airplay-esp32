@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "buttons.h"
@@ -10,6 +13,7 @@
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
 #include "playback_control.h"
+#include "playback_events.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "settings.h"
@@ -21,7 +25,22 @@
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
 #include "bt_coex.h"
-#include "rtsp_events.h"
+#endif
+
+#ifdef CONFIG_USB_AUDIO_SINK
+#include "usb_audio_sink.h"
+#endif
+
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
+#endif
+
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
+#endif
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
@@ -46,6 +65,37 @@ static const char *TAG = "main";
 
 static bool s_airplay_started = false;
 static bool s_airplay_infrastructure_ready = false;
+static bool s_audio_output_ready = false;
+
+/* Task stacks and ordinary malloc() need byte-addressable internal RAM.
+ * MALLOC_CAP_INTERNAL on its own also counts the leftover IRAM that is added
+ * to the heap, which is 32-bit access only, so it reports headroom no stack
+ * can ever use. */
+#define MAIN_DRAM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+
+// DRAM is the binding constraint on ESP32 targets carrying WiFi and the BT
+// controller at once.  Logging it per startup stage attributes a shortage to
+// the subsystem that caused it instead of to whoever allocates next.
+static void log_dram(const char *stage) {
+  ESP_LOGI(TAG, "DRAM after %-14s: %6lu free, %6lu largest, %6lu SPIRAM", stage,
+           (unsigned long)heap_caps_get_free_size(MAIN_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(MAIN_DRAM_CAPS),
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+// audio_output_init() creates the I2S channel and must run exactly once.
+// AirPlay does it lazily, but it is not the only consumer: the USB sink
+// writes to the same channel and can start with no network at all.
+static esp_err_t ensure_audio_output(void) {
+  if (s_audio_output_ready) {
+    return ESP_OK;
+  }
+  esp_err_t err = audio_output_init();
+  if (err == ESP_OK) {
+    s_audio_output_ready = true;
+  }
+  return err;
+}
 
 static void start_airplay_services(void) {
   if (s_airplay_started) {
@@ -65,7 +115,7 @@ static void start_airplay_services(void) {
 
     ESP_ERROR_CHECK(hap_init());
     ESP_ERROR_CHECK(audio_receiver_init());
-    ESP_ERROR_CHECK(audio_output_init());
+    ESP_ERROR_CHECK(ensure_audio_output());
     mdns_airplay_init();
     s_airplay_infrastructure_ready = true;
   }
@@ -77,8 +127,9 @@ static void start_airplay_services(void) {
   s_airplay_started = true;
   playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
   ESP_LOGI(TAG, "AirPlay ready");
+  log_dram("airplay");
 }
-#ifdef CONFIG_BT_A2DP_ENABLE
+#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK)
 static void stop_airplay_services(void) {
   if (!s_airplay_started) {
     return;
@@ -130,7 +181,6 @@ static void network_monitor_task(void *pvParameters) {
     }
 
     had_eth = eth_up;
-    has_network = eth_up || wifi_is_connected();
 
     if (has_network == had_network) {
       continue;
@@ -139,7 +189,16 @@ static void network_monitor_task(void *pvParameters) {
     if (has_network) {
       ESP_LOGI(TAG, "Network up (eth=%s, wifi=%s)", eth_up ? "yes" : "no",
                wifi_up ? "yes" : "no");
-      start_airplay_services();
+      // Starting AirPlay here would put its playback task back on I2S
+      // underneath whoever is already driving it; each owner restarts the
+      // services itself once it goes idle.
+      bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+      output_owned = output_owned || usb_audio_sink_is_streaming();
+#endif
+      if (!output_owned) {
+        start_airplay_services();
+      }
       if (dns_running) {
         dns_server_stop();
         dns_running = false;
@@ -155,8 +214,99 @@ static void network_monitor_task(void *pvParameters) {
   }
 }
 
+#ifdef CONFIG_USB_AUDIO_SINK
+// The USB host and AirPlay cannot both drive I2S, so hand the output
+// over for as long as the host is streaming.  Called from the sink's
+// writer task.
+static void on_usb_audio_state_changed(bool streaming) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!streaming);
+#endif
+  if (streaming) {
+    ESP_LOGI(TAG, "USB audio streaming — disabling AirPlay");
+    stop_airplay_services();
+    playback_control_set_source(PLAYBACK_SOURCE_USB);
+  } else {
+    ESP_LOGI(TAG, "USB audio idle — re-enabling AirPlay");
+    playback_control_set_source(PLAYBACK_SOURCE_NONE);
+#ifdef CONFIG_BT_A2DP_ENABLE
+    if (bt_a2dp_sink_is_connected()) {
+      // Bluetooth owns the output while connected; leave it alone.
+      playback_control_set_source(PLAYBACK_SOURCE_BLUETOOTH);
+      return;
+    }
+#endif
+    if (ethernet_is_connected() || wifi_is_connected()) {
+      start_airplay_services();
+    }
+  }
+}
+#endif
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+// Sendspin drives the same I2S channel as AirPlay through its own scheduler, so
+// ownership swaps whole rather than mixing: the two run off different clocks --
+// Apple's PTP domain and the Sendspin server's -- and one DMA ring cannot
+// honour both.  AirPlay's services stay up throughout so a phone can always
+// take the speaker back; see on_airplay_audio_active().  Called from the
+// WebSocket handler when the server starts or ends a stream.
+static void on_sendspin_activity(bool active) {
+  if (active) {
+    ESP_LOGI(TAG, "Sendspin stream started");
+    playback_control_set_source(PLAYBACK_SOURCE_SENDSPIN);
+    return;
+  }
+
+  ESP_LOGI(TAG, "Sendspin stream ended");
+  playback_control_set_source(playback_events_active_source());
+  if (s_airplay_started) {
+    // The stream end stopped the playback task; AirPlay still wants it.
+    audio_output_start();
+  } else if (ethernet_is_connected() || wifi_is_connected()) {
+    start_airplay_services();
+  }
+}
+
+// AirPlay wins any contest for the output.  Telling Sendspin the output is
+// gone ends the stream through the protocol, so the server knows to stop
+// sending rather than being left to infer it from a dropped socket.
+static void on_airplay_audio_active(bool active) {
+  if (!active) {
+#ifdef CONFIG_BT_A2DP_ENABLE
+    if (bt_a2dp_sink_is_connected()) {
+      // Bluetooth took the output and stopping the RTSP server is what ended
+      // the AirPlay session, so this release is an echo of that takeover, not
+      // the speaker going free.
+      return;
+    }
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+    if (usb_audio_sink_is_streaming()) {
+      return;
+    }
+#endif
+    ESP_LOGI(TAG, "AirPlay session ended — output released to Sendspin");
+    sendspin_set_output_available(true);
+    return;
+  }
+
+  ESP_LOGI(TAG, "AirPlay session — taking the output from Sendspin");
+  // Register AirPlay as a source before Sendspin drops its own, so the
+  // aggregate never falls to nothing in between: that would emit DISCONNECTED
+  // and power-cycle the amplifier on every takeover.
+  playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_CONNECTED, NULL);
+  sendspin_set_output_available(false);
+  // sendspin_player_stream_end() stops the playback task on its way out.
+  audio_output_start();
+  playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
+}
+#endif
+
 #ifdef CONFIG_BT_A2DP_ENABLE
 static void on_bt_state_changed(bool connected) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!connected);
+#endif
   if (connected) {
     ESP_LOGI(TAG, "BT connected — disabling AirPlay");
     stop_airplay_services();
@@ -172,31 +322,36 @@ static void on_bt_state_changed(bool connected) {
   }
 }
 
-static void on_airplay_client_event(rtsp_event_t event,
-                                    const rtsp_event_data_t *data,
-                                    void *user_data) {
+// Bluetooth hides itself while anything else owns the output, so this reacts to
+// the aggregate rather than to AirPlay alone: with Sendspin in the picture the
+// edge that matters is often raised by it, and filtering on the source would
+// leave the radio suspended and the device undiscoverable after it stopped.
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
   if (bt_a2dp_sink_is_connected()) {
     return;
   }
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
-    ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
+  case PLAYBACK_EVENT_CONNECTED:
+    ESP_LOGI(TAG, "Network audio session started — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_CONNECTED);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PLAYING);
     break;
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     // Session still active — BT stays suspended and hidden so the phone
     // reconnects to AirPlay rather than falling back to BT.
-    ESP_LOGI(TAG, "AirPlay paused — keeping BT suspended and hidden");
+    ESP_LOGI(TAG, "Network audio paused — keeping BT suspended and hidden");
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PAUSED);
     break;
-  case RTSP_EVENT_DISCONNECTED:
-    ESP_LOGI(TAG, "AirPlay client disconnected — BT resumes after idle delay");
+  case PLAYBACK_EVENT_DISCONNECTED:
+    ESP_LOGI(TAG, "Network audio ended — BT resumes after idle delay");
     bt_a2dp_sink_set_discoverable(true);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_DISCONNECTED);
     break;
@@ -224,49 +379,76 @@ void app_main(void) {
   if (settings_get_sub_offset(&sub_off) == ESP_OK) {
     dac_tas57xx_set_sub_offset_db(sub_off);
   }
-#elif defined(CONFIG_DAC_TAS58XX)
-  // Load persisted sub level offset (pre-init safe; applied on first volume).
-  float sub_off;
-  if (settings_get_sub_offset(&sub_off) == ESP_OK) {
-    dac_tas58xx_set_sub_offset_db(sub_off);
-  }
-  float sub_xo;
-  if (settings_get_sub_crossover(&sub_xo) == ESP_OK) {
-    dac_tas58xx_set_sub_crossover_hz(sub_xo);
-  }
-  static float sub_eq[2][SETTINGS_WAY_BANDS];
-  if (settings_get_sub_eq(sub_eq) == ESP_OK) {
-    dac_tas58xx_sub_eq_set_gains(TAS58XX_WAY_LOW, sub_eq[0]);
-    dac_tas58xx_sub_eq_set_gains(TAS58XX_WAY_HIGH, sub_eq[1]);
-  }
-  // Second-amplifier role must be known before the DAC is initialised.
-  uint8_t dual_mode;
-  if (settings_get_dual_mode(&dual_mode) == ESP_OK) {
-    if (!TAS58XX_BIAMP_SUPPORTED && dual_mode == TAS58XX_DUAL_BIAMP) {
-      dual_mode = TAS58XX_DUAL_SUB;
+  float ch_trim[SETTINGS_CHANNELS];
+  if (settings_get_channel_trim(ch_trim) == ESP_OK) {
+    for (int ch = 0; ch < SETTINGS_CHANNELS; ch++) {
+      dac_tas57xx_set_channel_trim_db(ch, ch_trim[ch]);
     }
-    dac_tas58xx_set_dual_mode((tas58xx_dual_mode_t)dual_mode);
   }
-  float biamp_xo;
-  if (settings_get_biamp_crossover(&biamp_xo) == ESP_OK) {
-    dac_tas58xx_set_biamp_crossover_hz(biamp_xo);
+#elif defined(CONFIG_DAC_TAS58XX)
+  // Digital gain, 0 dB unless set by hand.
+  float full_volume_db;
+  if (settings_get_full_volume_db(&full_volume_db) == ESP_OK) {
+    dac_tas58xx_set_full_volume_db(full_volume_db);
   }
-  bool biamp_swap;
-  if (settings_get_biamp_swap(&biamp_swap) == ESP_OK) {
-    dac_tas58xx_set_biamp_swap(biamp_swap);
+  // Unless set by hand, the analog gain matches the supply, as a USB-PD
+  // trigger agrees it or as a TAS5825M measures it.
+  float analog_db;
+  if (settings_get_analog_gain_db(&analog_db) == ESP_OK) {
+    dac_tas58xx_set_analog_gain_db(analog_db);
   }
-  static float biamp_eq[2][2][SETTINGS_WAY_BANDS];
-  if (settings_get_biamp_eq(biamp_eq) == ESP_OK) {
-    for (int spk = 0; spk < 2; spk++) {
-      dac_tas58xx_biamp_set_gains(spk, TAS58XX_WAY_LOW, biamp_eq[spk][0]);
-      dac_tas58xx_biamp_set_gains(spk, TAS58XX_WAY_HIGH, biamp_eq[spk][1]);
+  dac_tas58xx_set_analog_auto(settings_get_analog_auto());
+  // Amplifier wiring must be known before the DAC is initialised.
+  bool first_pbtl;
+  if (settings_get_first_pbtl(&first_pbtl) == ESP_OK) {
+    dac_tas58xx_set_first_pbtl(first_pbtl);
+  }
+  bool second_pbtl;
+  if (settings_get_second_pbtl(&second_pbtl) == ESP_OK) {
+    dac_tas58xx_set_second_pbtl(second_pbtl);
+  }
+  // Per-output level and mute (pre-init safe; folded into the input mixer).
+  float amp_gain[SETTINGS_AMP_OUTPUTS];
+  if (settings_get_amp_gain(amp_gain) == ESP_OK) {
+    for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+      dac_tas58xx_set_gain_db(i / SETTINGS_AMP_CHANNELS,
+                              i % SETTINGS_AMP_CHANNELS, amp_gain[i]);
+    }
+  }
+  uint8_t amp_mute[SETTINGS_AMP_OUTPUTS];
+  if (settings_get_amp_mute(amp_mute) == ESP_OK) {
+    for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+      dac_tas58xx_set_ch_mute(i / SETTINGS_AMP_CHANNELS,
+                              i % SETTINGS_AMP_CHANNELS, amp_mute[i] != 0);
+    }
+  }
+  // Input routing, likewise picked up when the chips are brought up.
+  uint8_t amp_mix[SETTINGS_AMPS];
+  if (settings_get_amp_mix(amp_mix) == ESP_OK) {
+    for (int amp = 0; amp < SETTINGS_AMPS; amp++) {
+      dac_tas58xx_set_mix(amp, (tas58xx_mix_t)amp_mix[amp]);
     }
   }
 #endif
   spiffs_storage_init();
+#ifdef CONFIG_SOFTWARE_EQ
+  // Ahead of the web server, which serves the tuning, and of the first
+  // audio, which runs through it. Without it the audio passes through flat.
+  esp_err_t eq_err = audio_eq_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ init failed: %s", esp_err_to_name(eq_err));
+  }
+#elif defined(CONFIG_SOFTWARE_EQ_AB)
+  // Flat until the /bq page switches it in.
+  esp_err_t eq_err = eq_ab_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ A/B init failed: %s", esp_err_to_name(eq_err));
+  }
+#endif
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();
+  log_dram("spiffs+log");
 
   // Initialize board-specific hardware (includes I2C/SPI bus for display and
   // DAC)
@@ -287,6 +469,7 @@ void app_main(void) {
   // Initialize LVGL-dependent board resources (e.g., touch input) after
   // display/LVGL port is ready.
   iot_board_init_lvgl_resources();
+  log_dram("board+display");
 
   // Try ethernet first
   bool eth_available = false;
@@ -312,6 +495,7 @@ void app_main(void) {
   } else if (err != ESP_ERR_NOT_SUPPORTED) {
     ESP_LOGW(TAG, "Ethernet init failed: %s", esp_err_to_name(err));
   }
+  log_dram("ethernet");
 
   // Start WiFi only if ethernet is not available
   if (!eth_available) {
@@ -328,14 +512,56 @@ void app_main(void) {
   } else {
     ESP_LOGI(TAG, "Ethernet connected — skipping WiFi");
   }
+  log_dram("eth+wifi");
 
   // Start services that work on any interface
+#ifdef CONFIG_SENDSPIN_ENABLE
+  // Before the web server: it registers the /sendspin endpoint as it starts.
+  if (settings_sendspin_enabled()) {
+    esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
+    if (sendspin_err != ESP_OK) {
+      ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+    } else {
+      audio_receiver_set_activity_callback(on_airplay_audio_active);
+    }
+    log_dram("sendspin");
+  } else {
+    ESP_LOGI(TAG, "Sendspin disabled in settings");
+  }
+#endif
   web_server_start(80);
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
                      NULL);
+  log_dram("web server");
+
+#ifdef CONFIG_USB_AUDIO_SINK
+  {
+    // Before AirPlay: its tasks and buffers need internal RAM, and on a board
+    // carrying a display and Ethernet as well, AirPlay starting first left
+    // too little for the TinyUSB task to be created.
+    //
+    // The host can stream with no network configured, in which case
+    // start_airplay_services() has never run and I2S is still unopened.
+    esp_err_t out_err = ensure_audio_output();
+    if (out_err != ESP_OK) {
+      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
+    }
+    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
+    if (usb_err != ESP_OK) {
+      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
+    }
+    log_dram("usb audio");
+  }
+#endif
 
   bool connected = eth_available || wifi_is_connected();
-  if (connected) {
+  bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+  // A host already streaming owns the output; the sink restarts AirPlay
+  // itself once it goes idle.
+  output_owned = usb_audio_sink_is_streaming();
+#endif
+  if (connected && !output_owned) {
     start_airplay_services();
   }
 
@@ -351,20 +577,16 @@ void app_main(void) {
       if (bt_coex_start() != ESP_OK) {
         ESP_LOGE(TAG, "BT coexistence task start failed");
       }
-      rtsp_events_register(on_airplay_client_event, NULL);
+      playback_events_register(on_playback_event, NULL);
     }
   }
+  log_dram("bluetooth");
 #endif
 
   // Boot baseline: free internal DRAM once WiFi (and BT, where enabled) are
   // resident but before any stream is active.  Compare against the
   // "Buffered start" log to see the headroom available for WiFi/TCP buffers.
-  ESP_LOGI(TAG,
-           "Boot baseline: free heap %lu internal (largest block %lu), "
-           "%lu SPIRAM",
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  log_dram("boot baseline");
 
   buttons_init();
 

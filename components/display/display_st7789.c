@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * @file display_st7789.c
  * @brief ST7789 TFT display driver using esp_lcd + LVGL 9 (esp_lvgl_port)
@@ -23,7 +26,7 @@
 #include "audio_output.h"
 #include "board_common.h"
 #include "playback_control.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
@@ -484,8 +487,10 @@ static void ui_update(void) {
 // RTSP event callback
 // ============================================================================
 
-static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
-                          void *user_data) {
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)user_data;
 
   // All mutations of s_display happen under the state mutex so reads in
@@ -494,7 +499,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
   STATE_LOCK();
 
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     s_display.state = DISPLAY_STATE_CONNECTED;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -505,20 +510,20 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     s_display.state = DISPLAY_STATE_PLAYING;
     s_display.sync_time_us = esp_timer_get_time();
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     s_display.position_secs = get_estimated_position();
     s_display.sync_time_us = 0;
     s_display.state = DISPLAY_STATE_PAUSED;
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     s_display.state = DISPLAY_STATE_STANDBY;
     memset(s_display.title, 0, sizeof(s_display.title));
     memset(s_display.artist, 0, sizeof(s_display.artist));
@@ -529,7 +534,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.dirty = true;
     break;
 
-  case RTSP_EVENT_METADATA:
+  case PLAYBACK_EVENT_METADATA:
     if (data) {
       bool track_changed = data->metadata.title[0] &&
                            strcmp(data->metadata.title, s_display.title) != 0;
@@ -684,7 +689,7 @@ void display_init(void *bus) {
   esp_lcd_panel_handle_t panel_handle = NULL;
   esp_lcd_panel_dev_config_t panel_cfg = {
       .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
-      .rgb_endian = LCD_RGB_ENDIAN_RGB,
+      .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
       .bits_per_pixel = 16,
   };
   ESP_ERROR_CHECK(
@@ -755,7 +760,7 @@ void display_init(void *bus) {
   s_display.state = DISPLAY_STATE_STANDBY;
   s_display.dirty = true;
 
-  rtsp_events_register(on_rtsp_event, NULL);
+  playback_events_register(on_playback_event, NULL);
 
   // Pinned to Core 0 — audio runs on Core 1
   xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);

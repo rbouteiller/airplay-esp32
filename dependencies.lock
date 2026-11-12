@@ -1,40 +1,6 @@
 dependencies:
-  espressif/cmake_utilities:
-    component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.1'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.1
-  espressif/esp_audio_codec:
-    component_hash: 16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.5.0
-  espressif/esp_lvgl_port:
-    component_hash: 8c57ca912f5c52ed29cd0fb5c9709f1ed65a91ec4c02f947d90e524bd9358433
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4'
-    - name: lvgl/lvgl
-      registry_url: https://components.espressif.com
-      require: public
-      version: '>=8,<10'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.3.3
-  espressif/led_strip:
-    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
     - name: idf
       require: private
@@ -42,9 +8,29 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 3.0.3
+    version: 1.7.19~2
+  espressif/esp_audio_codec:
+    component_hash: a5b9275af74247e3ce536d16a7080e4d77207a185b63e1bea368eb4d57176c2b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.6.2
+  espressif/led_strip:
+    component_hash: 027f68f2b57b0dca1d68dff6cc1139d9093825aa808c2bc3ca42bb2ce530fce9
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.1.1
   espressif/libsodium:
-    component_hash: b51f5836f044d8b7fbb1784257605c47ff7356f701377b005912fe6a2f12db37
+    component_hash: d4066b373fc6d4c5196db42aeea7faef4ac7f3080af96c2b74e2476c08b78dc1
     dependencies:
     - name: idf
       require: private
@@ -52,9 +38,9 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.21
+    version: 1.0.22~1
   espressif/mdns:
-    component_hash: 8bcf12e37c58c1d584aef32a02b92548124c7a3a9fcf548d3235c844a035e0f0
+    component_hash: 2fa43caa78cc170842255bc7bf71f306bc815cae12e9496bfb12372423019ac7
     dependencies:
     - name: idf
       require: private
@@ -62,66 +48,42 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.11.1
-  espressif/tinyusb:
-    component_hash: a40b7f67df6ac254a4afd96c6401cc56f2059ae747d6d7e66b568bca53ad0edc
+    version: 1.15.1
+  espressif/w5500:
+    component_hash: f76a95ce7a6029cf93aa39d47067588b24263852031f11c71e5d192ad915ec07
     dependencies:
+    - name: espressif/wiznet_common
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.1.0
     - name: idf
       require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32h4
-    - esp32s31
-    version: 0.19.0~3
-  espressif/usb_device_uac:
-    component_hash: e4665bee61baaee5e06acae662438ffd5ad794ce6d44b10c30173e9940b80896
-    dependencies:
-    - name: espressif/cmake_utilities
-      registry_url: https://components.espressif.com
-      require: private
-      version: '*'
-    - name: espressif/tinyusb
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.19.0~3
-    - name: idf
-      require: private
-      version: '>=5.0'
+      version: '>=6.0'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32s31
-    - esp32h4
-    version: 1.3.1
+    version: 2.0.1
+  espressif/wiznet_common:
+    component_hash: c32814cb872f0dca09f0c97ab231f9264a65bacc13fab6baf65f71959269a73d
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.1.0
   idf:
     source:
       type: idf
-    version: 5.5.4
-  lvgl/lvgl:
-    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
-    dependencies: []
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 9.5.0
+    version: 6.1.0
 direct_dependencies:
+- espressif/cjson
 - espressif/esp_audio_codec
-- espressif/esp_lvgl_port
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
-- espressif/usb_device_uac
-- lvgl/lvgl
-manifest_hash: 5e907f6a7449f560ee0d6d407fb03dcb729d61b80a1c9ce03ed2d34a9545e5d2
-target: esp32s3
-version: 2.0.0
+- espressif/w5500
+manifest_hash: 40a54e8dbe79f3373a2b42d16865822a1c7b6e0f1fbbae4979424df27f7aabdf
+target: esp32c5
+version: 3.0.0

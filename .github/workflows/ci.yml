@@ -10,7 +10,7 @@ on:
   # blocks the merge. The workflow therefore always starts on a pull request and
   # decides for itself whether there is any firmware work to do.
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   workflow_dispatch:
 
 jobs:
@@ -62,6 +62,47 @@ jobs:
       - name: Check formatting
         run: scripts/format.sh --check
 
+      - name: Test PCM512x failure handling
+        run: python3 tests/pcm51xx/run.py
+
+      - name: Install Node.js for EQ page regression tests
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Test the rate a TAS5805M's filters are designed at
+        run: python3 tests/tas5805m_rate/run.py
+
+      - name: Test the PTP offset filter
+        run: python3 tests/ptp_clock/run.py
+
+      - name: Test software EQ against a reference
+        run: python3 tests/audio_eq/run.py
+
+      - name: Test the per-output delay
+        run: python3 tests/audio_delay/run.py
+
+      - name: Test the realtime stream's resend requests
+        run: python3 tests/rtp_resend/run.py
+
+      - name: Test AirPlay device names in binary plists
+        run: python3 tests/bplist/run.py
+
+      - name: Test the USB-PD trigger against a simulated charger
+        run: python3 tests/husb238a/run.py
+
+      - name: Test the drift servo's trims on a tone
+        run: python3 tests/audio_scheduler/run.py
+
+      - name: Test how far a TAS58xx filter chain lifts full scale
+        run: python3 tests/tas58xx_peak/run.py
+
+      - name: Test every TAS58xx filter shape, as designed and as packed
+        run: python3 tests/tas58xx_bq/run.py
+
+      - name: Test the EQ page draws the filters the firmware designs
+        run: python3 tests/bq_page/run.py
+
   lint-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -71,35 +112,13 @@ jobs:
         with:
           submodules: "recursive"
 
-      - name: Build and generate compile_commands.json
+      # Needs ESP-IDF's clang toolchain; see scripts/lint.sh.
+      - name: Run clang-tidy
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.5
+          esp_idf_version: v6.1
           target: esp32s3
-          command: idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3" build
-
-      - name: Install clang-tidy
-        run: sudo apt-get update && sudo apt-get install -y clang-tidy
-
-      - name: Run clang-tidy
-        run: |
-          COMPILE_DB="build"
-          WARNINGS=0
-          while IFS= read -r -d '' file; do
-            echo "Checking $file..."
-            OUTPUT=$(clang-tidy -p "$COMPILE_DB" "$file" 2>&1 || true)
-            FILTERED=$(echo "$OUTPUT" | grep -v "file not found \[clang-diagnostic" || true)
-            if echo "$FILTERED" | grep -q ": warning:"; then
-              echo "$FILTERED" | grep -E "(: warning:|: note:)"
-              WARNINGS=1
-            fi
-          done < <(find main components -path components/u8g2 -prune -o \( -name "*.c" -o -name "*.h" \) -print0)
-          if [ "$WARNINGS" -ne 0 ]; then
-            echo ""
-            echo "clang-tidy found issues"
-            exit 1
-          fi
-          echo "All files pass clang-tidy checks"
+          command: scripts/lint.sh
 
   # The release matrix in build.yml only covers I2S/DAC boards, so a backend
   # that misses part of the audio_output API links fine there and breaks only
@@ -117,6 +136,10 @@ jobs:
           - name: usb
             target: esp32s3
             sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb"
+          # Not an output backend, but no release board turns it on either.
+          - name: software-eq
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac;config/sdkconfig.defaults.software-eq"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -125,13 +148,18 @@ jobs:
       - name: Build ${{ matrix.name }} output backend
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.5
+          esp_idf_version: v6.1
           target: ${{ matrix.target }}
           command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build
 
+  # A pull request builds the "core" subset of the target list: enough to cover
+  # every board support directory and every chip, without a job per board
+  # variant. A push to main builds the full release matrix.
   build:
     needs: [format-check, lint-check]
     uses: ./.github/workflows/build.yml
+    with:
+      scope: ${{ github.event_name == 'pull_request' && 'core' || 'release' }}
 
   # The one required status check for this workflow. Branch protection cannot
   # depend on the jobs above directly: they are skipped on a docs-only pull
@@ -140,7 +168,8 @@ jobs:
   # the whole workflow into a single pass/fail, treating skipped as fine.
   ci-gate:
     if: always()
-    needs: [changes, format-check, lint-check, output-backends, build]
+    needs:
+      [changes, format-check, lint-check, output-backends, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check upstream results

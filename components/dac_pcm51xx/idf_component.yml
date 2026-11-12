@@ -1,0 +1,2 @@
+description: TI PCM512x (PCM5121/PCM5122/PCM5141/PCM5142) I2C-controlled DAC driver
+version: "1.0.0"

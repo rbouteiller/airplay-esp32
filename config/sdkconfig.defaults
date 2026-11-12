@@ -4,6 +4,12 @@
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+# Internal RAM, not PSRAM, is what runs out: with a display, Ethernet,
+# Wi-Fi, AirPlay and USB audio all resident, the TinyUSB task could not be
+# created. Let .bss go to PSRAM. That moves the static state of the Wi-Fi,
+# lwIP and Bluetooth libraries, and LVGL's pool
+# (components/display/lvgl_mem.lf), out of internal RAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # FLASH mode
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -47,6 +53,17 @@ CONFIG_LWIP_SO_RCVBUF=y
 # The mailbox holds pbuf pointers only (~4 bytes/slot), so this is cheap
 # and cuts realtime UDP loss to ~1-2%.
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+
+# TCP receive window.  Throughput on a socket is bounded by window / round
+# trip, and a phone in Wi-Fi power save answers in 100-300 ms: at the 5760-byte
+# default (four segments) that is realtime or less for 256 kbps AAC, so the
+# audio a phone sends after a seek trickled in behind the clock and the start
+# had to skip.  The mailbox gates the window just as hard (ESP-IDF recommends
+# TCP_WND / MSS + 2).  The buffered reader keeps the socket drained into a
+# PSRAM queue, so unread segments do not pin Wi-Fi RX buffers.  The BT and S2
+# layers set their own, tighter values.
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: 2017 Neil Kolban
+// SPDX-FileCopyrightText: 2020 Markus Frey
+// SPDX-License-Identifier: Apache-2.0
+//
+// Vendored from https://github.com/mkfrey/u8g2-hal-esp-idf and modified for
+// this project. See LICENSE in this directory.
+
 #ifndef U8G2_ESP32_HAL_H
 #define U8G2_ESP32_HAL_H
 /*

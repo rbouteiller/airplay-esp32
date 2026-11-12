@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 
 #include "esp_err.h"
@@ -18,7 +21,8 @@ typedef struct {
   esp_err_t (*deinit)(void);
   void (*set_volume)(float volume_db);
   void (*set_power_mode)(dac_power_mode_t mode);
-  void (*on_i2s_started)(void);
+  void (*on_i2s_stopping)(void);
+  void (*on_i2s_started)(uint32_t sample_rate_hz);
   void (*enable_speaker)(bool enable);
   void (*enable_line_out)(bool enable);
 } dac_ops_t;
@@ -52,9 +56,17 @@ void dac_set_volume(float volume_db);
 void dac_set_power_mode(dac_power_mode_t mode);
 
 /**
- * Notify the DAC driver that the I2S master clock and bit clocks are active.
+ * Notify the DAC driver that the I2S clocks are about to stop for a retune,
+ * so it can quiet its outputs first. dac_on_i2s_started() follows once they
+ * run again.
  */
-void dac_on_i2s_started(void);
+void dac_on_i2s_stopping(void);
+
+/**
+ * Notify the DAC driver that the I2S master clock and bit clocks are active,
+ * and at what rate they are running.
+ */
+void dac_on_i2s_started(uint32_t sample_rate_hz);
 
 /**
  * Enable or disable the speaker output

@@ -21,15 +21,14 @@ Change them under **Board Configuration → Pin Configuration** in `menuconfig`.
 
 ## Building
 
-There is no prebuilt binary for this board — build it yourself.
+Prebuilt stable and beta firmware are available from the
+[browser installer](../getting-started/flashing.md#generic-boards).
 
 === "PlatformIO"
 
-    The official `platformio/espressif32` platform does **not** support the ESP32-C5, so
-    every environment uses the community
-    [pioarduino](https://github.com/pioarduino/platform-espressif32) platform, pinned in
-    `platformio.ini`. It bundles ESP-IDF 5.5.5 and PlatformIO downloads it automatically
-    on the first build — no extra setup needed.
+    The PlatformIO platform and toolchain are pinned in
+    `platformio.ini` and downloaded automatically on the first build — no extra setup needed.
+
 
     ```bash
     pio run -e esp32c5-xiao -t upload

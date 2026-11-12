@@ -1,9 +1,14 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <errno.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -16,13 +21,15 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE          12
-#define AUDIO_RECV_STACK_SIZE    12288
-#define AUDIO_CTRL_STACK_SIZE    4096
-#define RESEND_WINDOW_BITS       64
-#define RESEND_RETRY_INTERVAL_US 250000 // Match common RAOP resend cadence
-#define RESEND_ERROR_BACKOFF_US  300000 // Backoff after sendto failure
-#define MAX_RESEND_GAP           RESEND_WINDOW_BITS
+#define RTP_HEADER_SIZE 12
+// Must fit the ~11 KB largest free block that survives the Bluetooth teardown,
+// so keep it under that even though the heap has ~40 KB free at this point.
+#define AUDIO_RECV_STACK_SIZE   8192
+#define AUDIO_CTRL_STACK_SIZE   4096
+#define RESEND_ERROR_BACKOFF_US 300000 // Backoff after sendto failure
+// Requests per pass over the missing packets, one per run of them.
+#define RESEND_MAX_REQUESTS 16
+#define RESEND_REPORT_US    1000000
 
 #if CONFIG_FREERTOS_UNICORE
 #define AUDIO_TASK_CORE 0
@@ -83,89 +90,6 @@ static const uint8_t *parse_rtp(const uint8_t *packet, size_t len,
   return packet + header_len;
 }
 
-static uint64_t resend_mask_for_count(uint16_t count) {
-  return count >= RESEND_WINDOW_BITS ? UINT64_MAX : ((1ULL << count) - 1ULL);
-}
-
-static void resend_slide_window(audio_receiver_state_t *state) {
-  while (state->resend_missing_mask != 0 &&
-         (state->resend_missing_mask & 1ULL) == 0) {
-    state->resend_missing_mask >>= 1;
-    state->resend_window_first++;
-  }
-
-  if (state->resend_missing_mask == 0) {
-    state->resend_last_request_time_us = 0;
-  }
-}
-
-static bool resend_mark_received(audio_receiver_state_t *state, uint16_t seq) {
-  if (state->resend_missing_mask == 0) {
-    return false;
-  }
-
-  uint16_t offset = (uint16_t)(seq - state->resend_window_first);
-  if (offset >= RESEND_WINDOW_BITS) {
-    return false;
-  }
-
-  uint64_t bit = 1ULL << offset;
-  if ((state->resend_missing_mask & bit) == 0) {
-    return false;
-  }
-
-  state->resend_missing_mask &= ~bit;
-  resend_slide_window(state);
-  return true;
-}
-
-static void resend_track_missing(audio_receiver_state_t *state,
-                                 uint16_t first_seq, uint16_t count) {
-  if (count == 0 || count > MAX_RESEND_GAP) {
-    return;
-  }
-
-  if (state->resend_missing_mask == 0) {
-    state->resend_window_first = first_seq;
-    state->resend_missing_mask = resend_mask_for_count(count);
-    return;
-  }
-
-  uint16_t offset = (uint16_t)(first_seq - state->resend_window_first);
-  if (offset >= RESEND_WINDOW_BITS || offset + count > RESEND_WINDOW_BITS) {
-    // A newer gap is outside the small recovery window; abandon stale holes.
-    state->resend_window_first = first_seq;
-    state->resend_missing_mask = resend_mask_for_count(count);
-    return;
-  }
-
-  state->resend_missing_mask |= resend_mask_for_count(count) << offset;
-}
-
-static bool resend_next_range(const audio_receiver_state_t *state,
-                              uint16_t *first_seq, uint16_t *count) {
-  if (state->resend_missing_mask == 0 || !first_seq || !count) {
-    return false;
-  }
-
-  uint64_t mask = state->resend_missing_mask;
-  uint16_t first = state->resend_window_first;
-  while ((mask & 1ULL) == 0) {
-    mask >>= 1;
-    first++;
-  }
-
-  uint16_t range_count = 0;
-  while ((mask & 1ULL) != 0 && range_count < RESEND_WINDOW_BITS) {
-    range_count++;
-    mask >>= 1;
-  }
-
-  *first_seq = first;
-  *count = range_count;
-  return range_count > 0;
-}
-
 /* Send an AirTunes retransmission request for missing sequence numbers.
    AirPlay 1 docs describe this as an RTP header without SSRC; in practice
    (and in Shairport) the RTP timestamp word is split into first_seq/count:
@@ -207,75 +131,124 @@ static bool send_resend_request(audio_receiver_state_t *state,
   }
 }
 
-static void resend_request_range(audio_receiver_state_t *state,
-                                 uint16_t first_seq, uint16_t count) {
-  if (send_resend_request(state, first_seq, count)) {
-    state->resend_last_request_time_us = esp_timer_get_time();
+// Carries out a reset another task asked for, before the tracker is used.
+static void resend_sync(audio_receiver_state_t *state) {
+  const uint32_t generation =
+      __atomic_load_n(&state->resend_generation, __ATOMIC_ACQUIRE);
+  if (generation != state->resend_generation_seen) {
+    state->resend_generation_seen = generation;
+    rtp_resend_reset(&state->resend, AUDIO_TIMELINE_RT_FRAME_SAMPLES);
   }
 }
 
-static void resend_retry_if_due(audio_receiver_state_t *state) {
-  uint16_t first_seq = 0;
-  uint16_t count = 0;
-  if (!resend_next_range(state, &first_seq, &count)) {
+/* Once a second while packets go astray, what became of them.  queue_max is
+ * the most still waiting on the socket after a read: the socket drops what
+ * does not fit, so a queue near its limit means this task fell behind, and
+ * a short one that the packets never reached the board.  ask_ms is the time
+ * this task spent sending requests, which it cannot spend reading. */
+static void resend_report(audio_receiver_state_t *state, int64_t now) {
+  if (now - state->resend_report_us < RESEND_REPORT_US) {
     return;
   }
+  state->resend_report_us = now;
 
-  int64_t now = esp_timer_get_time();
-  if (state->resend_last_request_time_us == 0 ||
-      (now - state->resend_last_request_time_us) >= RESEND_RETRY_INTERVAL_US) {
-    resend_request_range(state, first_seq, count);
+  rtp_resend_counts_t *c = &state->resend.counts;
+  const uint32_t events = c->skipped + c->resent + c->late + c->expired +
+                          c->unwanted + state->resend_rejected;
+  if (events != 0U) {
+    ESP_LOGI(
+        TAG,
+        "loss: rx=%" PRIu32 " skipped=%" PRIu32 " resent=%" PRIu32
+        " late=%" PRIu32 " expired=%" PRIu32 " unwanted=%" PRIu32
+        " asked=%" PRIu32 " in %" PRIu32 " open=%" PRIu32 " gave_up=%" PRIu32
+        " ask_ms=%" PRIu32 " queue_max=%" PRIu32 " B rejected=%" PRIu32,
+        c->received, c->skipped, c->resent, c->late, c->expired, c->unwanted,
+        c->asked, c->requests, rtp_resend_outstanding(&state->resend),
+        c->gave_up, (uint32_t)(state->resend_send_us / 1000),
+        state->resend_queue_max, state->resend_rejected);
   }
+  memset(c, 0, sizeof(*c));
+  state->resend_send_us = 0;
+  state->resend_queue_max = 0;
+  state->resend_rejected = 0;
 }
 
-static bool track_regular_rtp_sequence(audio_receiver_state_t *state,
-                                       uint16_t seq) {
-  if (!state->rtp_sequence_valid) {
-    state->rtp_sequence_valid = true;
-    state->stats.last_seq = seq;
-    return true;
-  }
+/* Asks for the missing packets that could still play and are due to be
+ * asked for; rtp_resend.h has the limits.  Runs after every packet and on
+ * every receive timeout, so a hole is asked for as soon as it opens.
+ *
+ * Reading comes first: while packets wait on the socket (backlog), nothing
+ * is asked for.  A request sent then delays the read that would have shown
+ * the packet was already here, and lets the socket overflow. */
+static void resend_service(audio_receiver_state_t *state, bool backlog) {
+  const int64_t now = esp_timer_get_time();
+  const bool can_ask =
+      !backlog && state->retransmit_enabled && state->control_socket > 0 &&
+      (state->last_resend_error_time_us == 0 ||
+       now - state->last_resend_error_time_us >= RESEND_ERROR_BACKOFF_US);
 
-  uint16_t expected_seq = (uint16_t)(state->stats.last_seq + 1);
-  int16_t delta = (int16_t)(seq - expected_seq);
-  if (delta == 0) {
-    state->stats.last_seq = seq;
-    return true;
-  }
-
-  if (delta > 0) {
-    uint16_t gap = (uint16_t)delta;
-    if (gap <= MAX_RESEND_GAP) {
-      state->stats.packets_dropped += gap;
-      resend_track_missing(state, expected_seq, gap);
-      resend_request_range(state, expected_seq, gap);
-    } else {
-      ESP_LOGD(TAG, "RTP gap too large for resend: seq=%u expected=%u gap=%u",
-               seq, expected_seq, gap);
+  uint32_t cursor_rtp = 0;
+  const bool playing =
+      audio_engine_v2_play_cursor(&state->engine_v2, &cursor_rtp);
+  rtp_resend_range_t ranges[RESEND_MAX_REQUESTS];
+  const size_t n =
+      rtp_resend_collect(&state->resend, (uint32_t)(now / 1000), playing,
+                         cursor_rtp, ranges, can_ask ? RESEND_MAX_REQUESTS : 0);
+  for (size_t i = 0; i < n; i++) {
+    if (!send_resend_request(state, ranges[i].first, ranges[i].count)) {
+      break;
     }
-    state->stats.last_seq = seq;
-    return true;
+  }
+  if (n > 0) {
+    state->resend_send_us += (uint32_t)(esp_timer_get_time() - now);
   }
 
-  if (resend_mark_received(state, seq)) {
-    return true;
-  }
+  resend_report(state, now);
+}
 
-  ESP_LOGD(TAG, "Dropping stale RTP packet seq=%u expected=%u", seq,
-           expected_seq);
-  return false;
+/* What became of the packets, every PKT_REPORT_US while any fail to decrypt
+ * or the engine is not playing them.  Only this task touches the counts. */
+#define PKT_REPORT_US 5000000LL
+static struct {
+  int64_t since_us;
+  uint32_t received, decrypt_failed, rejected, accepted;
+} s_pkt;
+
+static void packet_report(audio_receiver_state_t *state,
+                          const audio_stream_t *stream, int64_t now) {
+  if (now - s_pkt.since_us < PKT_REPORT_US) {
+    return;
+  }
+  uint32_t cursor_rtp = 0;
+  const bool playing =
+      audio_engine_v2_play_cursor(&state->engine_v2, &cursor_rtp);
+  if (s_pkt.received != 0U && (s_pkt.decrypt_failed != 0U || !playing)) {
+    ESP_LOGW(TAG,
+             "packets: rx=%" PRIu32 " decrypt_failed=%" PRIu32
+             " rejected=%" PRIu32 " accepted=%" PRIu32
+             " playing=%d encrypt=%d key_len=%u gates=%d/%d",
+             s_pkt.received, s_pkt.decrypt_failed, s_pkt.rejected,
+             s_pkt.accepted, playing ? 1 : 0, (int)stream->encrypt.type,
+             (unsigned)stream->encrypt.key_len,
+             state->discard_before_rtp_valid ? 1 : 0,
+             state->discard_above_rtp_valid ? 1 : 0);
+  }
+  memset(&s_pkt, 0, sizeof(s_pkt));
+  s_pkt.since_us = now;
 }
 
 static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
                                     struct sockaddr_in *src_addr,
                                     socklen_t *addr_len) {
   audio_receiver_state_t *state = audio_stream_state(stream);
+  packet_report(state, stream, esp_timer_get_time());
 
   ssize_t len = recvfrom(state->data_socket, packet, MAX_RTP_PACKET_SIZE, 0,
                          (struct sockaddr *)src_addr, addr_len);
   if (len < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      resend_retry_if_due(state);
+      resend_sync(state);
+      resend_service(state, false);
       return true;
     }
     if (stream->running) {
@@ -289,6 +262,12 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   }
 
   state->stats.packets_received++;
+  s_pkt.received++;
+  int queued = 0;
+  if (ioctl(state->data_socket, FIONREAD, &queued) == 0 &&
+      (uint32_t)queued > state->resend_queue_max) {
+    state->resend_queue_max = (uint32_t)queued;
+  }
 
   const uint8_t *rtp_data = packet;
   size_t rtp_len = (size_t)len;
@@ -313,17 +292,18 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
     return true;
   }
 
-  if (is_retransmit) {
-    if (!resend_mark_received(state, seq)) {
-      ESP_LOGD(TAG, "Dropping stale retransmit seq=%u", seq);
-      return true;
-    }
-    resend_retry_if_due(state);
-  } else if (!track_regular_rtp_sequence(state, seq)) {
+  resend_sync(state);
+  const rtp_resend_verdict_t verdict =
+      rtp_resend_on_packet(&state->resend, seq, timestamp, is_retransmit);
+  resend_service(state, queued > 0);
+  if (verdict == RTP_RESEND_UNWANTED) {
+    ESP_LOGD(TAG, "Dropping unwanted %s seq=%u",
+             is_retransmit ? "retransmit" : "packet", seq);
     return true;
-  } else {
+  }
+  if (verdict == RTP_RESEND_NEWEST) {
+    state->stats.last_seq = seq;
     state->stats.last_timestamp = timestamp;
-    resend_retry_if_due(state);
   }
 
   state->blocks_read++;
@@ -339,6 +319,7 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
     if (decrypted_len < 0) {
       state->stats.decrypt_errors++;
       state->stats.packets_dropped++;
+      s_pkt.decrypt_failed++;
       return true;
     }
     audio_data = state->decrypt_buffer;
@@ -347,6 +328,10 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
 
   if (!audio_stream_process_frame(state, timestamp, audio_data, audio_len)) {
     state->stats.packets_dropped++;
+    state->resend_rejected++;
+    s_pkt.rejected++;
+  } else {
+    s_pkt.accepted++;
   }
 
   return true;
@@ -380,6 +365,8 @@ static void receiver_task(void *pvParameters) {
     }
   }
 
+  ESP_LOGI(TAG, "receiver task stack headroom: %u bytes",
+           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
   state->task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -531,8 +518,8 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   if (state->data_socket < 0) {
     return ESP_FAIL;
   }
-  // Keep the receive loop awake so resend_retry_if_due() can repeat NACKs
-  // even when no fresh RTP packets arrive.
+  // Keep the receive loop awake so resend_service() can repeat NACKs even
+  // when no fresh RTP packets arrive.
   struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
   setsockopt(state->data_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   state->data_port = bound_port;
@@ -551,9 +538,9 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
 
   stream->running = true;
 
-  ESP_LOGI(TAG, "Free heap: %lu internal (largest block %lu), %lu SPIRAM",
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+  ESP_LOGI(TAG, "Free heap: %lu DRAM (largest block %lu), %lu SPIRAM",
+           (unsigned long)heap_caps_get_free_size(AUDIO_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(AUDIO_DRAM_CAPS),
            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
   state->task_handle = NULL;

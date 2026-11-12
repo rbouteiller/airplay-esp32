@@ -1,0 +1,37 @@
+ADDITIONAL PERMISSION UNDER GNU GPL VERSION 3 SECTION 7
+(Espressif Binary Components)
+
+Copyright (C) 2026 Rémi Bouteiller and the airplay-esp32 contributors
+
+This additional permission is granted by the copyright holders of
+airplay-esp32 and applies to the whole of airplay-esp32 as distributed in
+this repository.
+
+If you modify airplay-esp32, or any covered work, by linking or combining it
+with Espressif Binary Components (or with modified versions of those
+components), the copyright holders of airplay-esp32 grant you additional
+permission to convey the resulting work. The Corresponding Source for a
+non-source form of such a combination shall include the source code for the
+parts of airplay-esp32 used, but need not include the source code of the
+Espressif Binary Components themselves.
+
+"Espressif Binary Components" means any software component supplied by
+Espressif Systems (Shanghai) Co., Ltd. that is required in order to build or
+run airplay-esp32 on an Espressif SoC, and that is either distributed in
+non-source form or distributed under license terms restricting its use or
+redistribution to Espressif Systems products. This includes, without
+limitation:
+
+  - espressif/esp_audio_codec — the ALAC and AAC decoder libraries, shipped
+    as precompiled archives under the "Espressif Modified MIT License",
+    which limits use and redistribution to Espressif Systems products.
+  - Any Wi-Fi, Bluetooth controller, or radio PHY library distributed with
+    ESP-IDF in non-source form.
+
+This permission does not extend the rights granted by the license of any
+Espressif Binary Component. It grants no right to use, copy, modify, or
+redistribute those components; for that, see their own license terms.
+
+As provided by section 7 of the GNU General Public License version 3, you
+may at your option remove this additional permission from a copy of
+airplay-esp32 that you convey, or from any part of it.

@@ -4,6 +4,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="components/boards/partitions-4m.csv"
 
+# Bluetooth plus a 1.92MB app slot leaves 1% free once Sendspin is added,
+# the same squeeze as smartamp.
+CONFIG_SENDSPIN_ENABLE=n
+
 # Heap poisoning — kept on for the dev board so OOB writes and use-after-
 # free are caught at the point of the bad access.  Costs ~9 bytes per
 # allocation and some CPU; production builds leave it

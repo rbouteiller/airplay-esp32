@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 
 #include <stdbool.h>
@@ -61,12 +64,30 @@ void audio_output_stop(void);
  * Can be used by any audio source (BT A2DP, etc.) when the AirPlay
  * playback task is stopped.
  *
- * @param data   PCM data buffer (interleaved stereo, 16-bit)
+ * @param data   PCM data buffer (interleaved stereo, in I2S words: 16-bit,
+ *               or 32-bit with CONFIG_I2S_32BIT_OUTPUT)
  * @param bytes  Number of bytes to write
  * @param wait   Maximum ticks to wait for I2S DMA space
  * @return ESP_OK on success
  */
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait);
+
+/**
+ * Write PCM through the same processing AirPlay gets (channel mode, software
+ * EQ, software volume) before it reaches I2S. For the USB and Bluetooth
+ * sinks, which run while the AirPlay playback task is idle.
+ *
+ * Partial frames are carried over to the next call, so @p bytes need not be
+ * a multiple of the frame size.
+ *
+ * @param data        PCM data (interleaved stereo, 16-bit)
+ * @param bytes       Number of bytes to write
+ * @param volume_q15  Software volume, 0..32768; ignored on DACs that control
+ *                    volume themselves
+ * @param wait        Maximum ticks to wait for I2S DMA space
+ */
+esp_err_t audio_output_write_pcm(const void *data, size_t bytes,
+                                 int32_t volume_q15, TickType_t wait);
 
 /**
  * Change the I2S sample rate (e.g. when BT negotiates 48 kHz)
@@ -116,6 +137,49 @@ uint32_t audio_output_get_hardware_latency_us(void);
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us);
 
 /**
+ * Local monotonic time (ns) at which the first sample of the NEXT backend
+ * write will be heard.
+ *
+ * Deliberately built on the stable modelled latency rather than the live
+ * cursor from audio_output_get_pipeline_us(): this is a *scheduling* input,
+ * consumed once per render to pick which RTP timestamp to emit next.  The
+ * live cursor steps at DMA descriptor boundaries, so feeding it in here would
+ * make the chosen timestamp jitter by a whole descriptor and repeatedly
+ * re-target the read cursor.  Error measurement still uses the live value.
+ */
+int64_t audio_output_get_next_playout_time_ns(int64_t now_us);
+
+/**
+ * Render callback used by a playback task to pull the next block of PCM.
+ *
+ * @param buffer  destination, interleaved stereo int16.
+ * @param samples capacity in frames.
+ * @return frames written; 0 means "nothing due yet", and the backend emits
+ *         silence for that slice.
+ */
+typedef size_t (*audio_output_source_fn)(int16_t *buffer, size_t samples);
+
+/**
+ * Redirect the playback task away from the AirPlay receiver.
+ *
+ * The three backends share one playback task and one DMA ring, so a second
+ * scheduler (currently only Sendspin) cannot simply write alongside it.  It
+ * installs itself here instead and the task pulls from it exactly as it does
+ * from audio_receiver_read().  Passing NULL restores the AirPlay receiver.
+ *
+ * Callers must have stopped the other source first: this only picks which
+ * renderer is asked for samples, it does not arbitrate ownership.
+ */
+void audio_output_set_source(audio_output_source_fn source);
+
+/**
+ * Pull the next block from whichever source is installed.  Backends call
+ * this instead of audio_receiver_read() so the redirection above applies
+ * uniformly to I2S, S/PDIF and USB.
+ */
+size_t audio_output_read_source(int16_t *buffer, size_t samples);
+
+/**
  * Number of output-underrun episodes since boot: the DMA clocked out
  * descriptors the playback task never filled, so that much output time was
  * emitted as silence and lost from the playout position.  Non-zero values
@@ -152,3 +216,14 @@ bool audio_output_channel_mode_locked(void);
  * STEREO means the (L+R)/2 mix and only LEFT and RIGHT pick a single channel.
  */
 bool audio_output_channel_mode_in_dsp(void);
+
+/**
+ * Whether one output can be delayed on its own (audio_delay.h): only where
+ * each I2S slot feeds one output, not bridged, beside a second amplifier, or
+ * with a DSP routing ahead of it that the software side cannot take over.
+ */
+bool audio_output_delay_supported(void);
+/** An output's delay in microseconds, 0 for none. */
+uint32_t audio_output_get_delay_us(int ch);
+/** Set and save an output's delay, clamped to AUDIO_DELAY_MAX_US. */
+esp_err_t audio_output_set_delay_us(int ch, uint32_t us);

@@ -2,15 +2,38 @@
 
 ## Requirements
 
-ESP-IDF **v5.5.5 or newer**. Sendspin, which is built into almost every image by default,
-needs the WebSocket post-handshake callback that landed in v5.5.5; on an older 5.5.x
-release build with `CONFIG_SENDSPIN_ENABLE=n`. PlatformIO gets a matching toolchain from
-the pioarduino platform pinned in `platformio.ini`, so no manual ESP-IDF install is needed
-for that route. Clone with submodules:
+ESP-IDF **v6.1 or newer**. PlatformIO installs the platform and matching toolchain pinned
+in `platformio.ini`, so no manual ESP-IDF install is needed for that route. Clone with
+submodules:
 
 ```bash
 git clone --recursive https://github.com/rbouteiller/airplay-esp32
 ```
+
+## Licensing of contributions
+
+airplay-esp32 is GPL-3.0-or-later. Contributions are accepted on the same terms — inbound
+equals outbound — so by opening a pull request you license your changes under
+GPL-3.0-or-later and agree that they may be distributed with the Espressif binary
+component exception in `LICENSE-EXCEPTION`. You keep the copyright on what you write.
+
+Please sign off your commits to certify that you have the right to submit them under
+[the Developer Certificate of Origin](https://developercertificate.org/):
+
+```bash
+git commit -s
+```
+
+New C and H files should start with the SPDX header used throughout the tree:
+
+```c
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+Do not paste code in from projects under a license that is incompatible with the GPL, and
+say where it came from when you bring in code that is compatible, so it can be recorded in
+`THIRD-PARTY-NOTICES.md`.
 
 ## Formatting
 
@@ -26,12 +49,17 @@ scripts/format.sh --check   # check without modifying
 ## Linting
 
 `clang-tidy` runs with the bugprone, performance, portability and readability checks
-configured in `.clang-tidy`. It needs `build/compile_commands.json`, so build once first.
+configured in `.clang-tidy`. Run it from an ESP-IDF environment; it installs `esp-clang`
+on first use (a stock `clang-tidy` can't parse the GCC build).
 
 ```bash
-scripts/lint.sh         # check
-scripts/lint.sh --fix   # attempt auto-fixes
+scripts/lint.sh               # check every source
+scripts/lint.sh main/foo.c    # check only these files
+scripts/lint.sh --fix         # attempt auto-fixes
 ```
+
+The configs listed in `scripts/lint.sh` together compile every source. A source none of
+them compiles fails the check, so a new board or driver needs a config there.
 
 ## Pre-commit hook
 
@@ -73,7 +101,7 @@ On every pull request to `main` or `staging`, and on every push to `main`:
 | Job | What it does |
 | --- | --- |
 | `format-check` | `clang-format` dry run over all C/H files, excluding `components/u8g2` |
-| `lint-check` | `clang-tidy` against the build output |
+| `lint-check` | `scripts/lint.sh`: `clang-tidy` over every source, across the configs that build them |
 | `output-backends` | Builds the S/PDIF and USB output backends so every backend keeps linking |
 | `build` | Builds the target matrix |
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 
 #include <stddef.h>
@@ -11,6 +14,17 @@
  * 1. Apple-Challenge: sign with RSA PKCS1 v1.5 (private encrypt)
  * 2. AES key decrypt: RSA OAEP-SHA1 (private decrypt of rsaaeskey)
  */
+
+/**
+ * Seed the RNG and parse the private key.
+ *
+ * Optional: every entry point does this lazily. Call it up front to keep the
+ * cost off the RTSP task, where it lands in the middle of the OPTIONS response
+ * a sender is waiting on.
+ *
+ * @return 0 on success, -1 on failure
+ */
+int rsa_init(void);
 
 /**
  * Build the Apple-Challenge response.

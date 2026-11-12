@@ -1,0 +1,11 @@
+# LVGL's built-in allocator keeps its whole pool (CONFIG_LV_MEM_SIZE_KILOBYTES,
+# 64 KB) as one static array, which otherwise lands in internal DRAM. Where the
+# board allows .bss in PSRAM, put it there: it holds widget and style objects,
+# not the DMA draw buffers, so a status display loses nothing that matters, and
+# the internal RAM it frees is what USB audio, AirPlay and Ethernet need on a
+# board that carries all of them.
+[mapping:lvgl_mem_extram]
+archive: liblvgl__lvgl.a
+entries:
+    if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        lv_mem_core_builtin (extram_bss)
