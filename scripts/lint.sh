@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# comm needs the same order as Python's sorted(): bytes, not the locale's.
+export LC_ALL=C
+
 # Compile debug logs in: log-only values aren't dead stores, and log calls
 # get checked.
 LINT_OPTIONS="CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y"
@@ -53,6 +56,9 @@ if ! clang-tidy --version 2>/dev/null | grep -q Espressif; then
   python "$IDF_PATH/tools/idf_tools.py" install esp-clang
   eval "$(python "$IDF_PATH/tools/idf_tools.py" export)"
 fi
+# The build compiles with whichever clang is first on PATH; the host's can't
+# target Xtensa, so put esp-clang ahead of it.
+PATH="$(dirname "$(command -v clang-tidy)"):$PATH"
 
 # Each config sets its own target; an inherited one (CI exports it) clashes.
 unset IDF_TARGET

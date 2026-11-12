@@ -1547,7 +1547,8 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
 #endif
 
   s_pvdd_dev = NULL;
-  for (int i = 0; i < s_dev_count && s_pvdd_dev == NULL; i++) {
+  for (int i = 0;
+       i < s_dev_count && i < TAS58XX_MAX_DEVICES && s_pvdd_dev == NULL; i++) {
     if (s_devs[i].model == TAS58XX_MODEL_TAS5825M) {
       s_pvdd_dev = &s_devs[i];
     }

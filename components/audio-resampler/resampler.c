@@ -152,7 +152,7 @@ static unsigned long gcd(unsigned long a, unsigned long b);
 
 Resample *resampleInit(int numChannels, int numTaps, int numFilters,
                        double lowpassRatio, int flags) {
-  Resample *cxt = calloc(1, sizeof(Resample));
+  Resample *cxt;
   int i;
 
   if (lowpassRatio > 0.0 && lowpassRatio < 1.0) {
@@ -169,6 +169,11 @@ Resample *resampleInit(int numChannels, int numTaps, int numFilters,
 
   if (numFilters < 1 || numFilters > 1024) {
     fprintf(stderr, "must be 1-1024 filters!\n");
+    return NULL;
+  }
+
+  cxt = calloc(1, sizeof(Resample));
+  if (!cxt) {
     return NULL;
   }
 
@@ -609,6 +614,8 @@ ResampleResult resampleProcess(Resample *cxt, const artsample_t *const *input,
     int half_taps = cxt->numTaps / 2, i;
     ResampleResult res = {0, 0};
     double offset2 = 0.0;
+    // Read once: the subsample() call below would make the analyzer forget it.
+    const int num_channels = cxt->numChannels;
 
     if (numInputFrames < 0) { // this is where flush is handled
       postfillAllChannels(cxt);
@@ -618,7 +625,7 @@ ResampleResult resampleProcess(Resample *cxt, const artsample_t *const *input,
       if (cxt->outputOffset + offset2 >= cxt->inputIndex - half_taps) {
         if (numInputFrames > 0) {
           if (cxt->inputIndex == cxt->numSamples) {
-            for (i = 0; i < cxt->numChannels; ++i) {
+            for (i = 0; i < num_channels; ++i) {
               memmove(cxt->buffers[i],
                       cxt->buffers[i] + cxt->numSamples - cxt->numTaps,
                       cxt->numTaps * sizeof(artsample_t));
@@ -628,7 +635,7 @@ ResampleResult resampleProcess(Resample *cxt, const artsample_t *const *input,
             cxt->inputIndex -= cxt->numSamples - cxt->numTaps;
           }
 
-          for (i = 0; i < cxt->numChannels; ++i) {
+          for (i = 0; i < num_channels; ++i) {
             cxt->buffers[i][cxt->inputIndex] = input[i][res.input_used];
           }
 
@@ -646,7 +653,7 @@ ResampleResult resampleProcess(Resample *cxt, const artsample_t *const *input,
           prefillAllChannels(cxt);
         }
 #endif
-        for (i = 0; i < cxt->numChannels; ++i) {
+        for (i = 0; i < num_channels; ++i) {
           output[i][res.output_generated] = (artsample_t)cxt->subsample(
               cxt, cxt->buffers[i], cxt->outputOffset + offset2);
         }
@@ -878,12 +885,13 @@ ResampleResult resampleProcessAndFlush(Resample *cxt,
                                        int numInputFrames,
                                        artsample_t *const *output,
                                        int numOutputFrames, double ratio) {
+  const int num_channels = cxt->numChannels;
   artsample_t **output_array =
-      (artsample_t **)calloc(sizeof(artsample_t *), cxt->numChannels);
+      (artsample_t **)calloc(sizeof(artsample_t *), num_channels);
   ResampleResult res = {0, 0}, fres;
   int c;
 
-  for (c = 0; c < cxt->numChannels; ++c) {
+  for (c = 0; c < num_channels; ++c) {
     output_array[c] = output[c];
   }
 
@@ -901,7 +909,7 @@ ResampleResult resampleProcessAndFlush(Resample *cxt,
     return res;
   }
 
-  for (c = 0; c < cxt->numChannels; ++c) {
+  for (c = 0; c < num_channels; ++c) {
     output_array[c] += res.output_generated;
   }
 
@@ -1202,7 +1210,7 @@ void resampleFree(Resample *cxt) {
 
 static unsigned long gcd(unsigned long a, unsigned long b) {
   while (b) {
-    unsigned long t = (a %= b);
+    unsigned long t = a % b;
     a = b;
     b = t;
   }
