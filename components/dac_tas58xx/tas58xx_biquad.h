@@ -96,6 +96,14 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
                        double out[5]);
 
 /**
+ * tas58xx_bq_design() for the part: a section whose coefficients would not
+ * fit its 5.27 words comes out as a pass-through, keeping only its polarity,
+ * since saturated it would play a different filter altogether.
+ */
+void tas58xx_bq_design_chip(const tas58xx_bq_t *bq, double sample_rate_hz,
+                            double out[5]);
+
+/**
  * Pack designed coefficients into the part's 5.27 big-endian layout.
  * Values outside the representable range are saturated.
  */
@@ -111,7 +119,7 @@ void tas58xx_bq_pack(const double coeff[5],
 void tas58xx_bq_unpack(const uint8_t in[TAS58XX_BQ_COEFF_BYTES],
                        tas58xx_bq_t *bq);
 
-/** Design and pack in one step. */
+/** tas58xx_bq_design_chip() and pack in one step. */
 void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
                               uint8_t out[TAS58XX_BQ_COEFF_BYTES]);
 
@@ -131,3 +139,12 @@ float tas58xx_bq_chain_peak_db(const double (*coeff)[5], int count,
 
 /** True when @p bq is structurally valid; @p why is optional. */
 bool tas58xx_bq_validate(const tas58xx_bq_t *bq, const char **why);
+
+/**
+ * Whether @p bq's coefficients fit the part's 5.27 words at every rate a
+ * chain is designed for: 44.1 and 48 kHz on a TAS5825M, 88.2 and 96 kHz
+ * behind a TAS5805M's converter. Past 16 a word saturates and the part plays
+ * a different filter altogether; a treble shelf boosted beyond about 18 dB
+ * with its corner below a few kHz is what gets there.
+ */
+bool tas58xx_bq_fits(const tas58xx_bq_t *bq);

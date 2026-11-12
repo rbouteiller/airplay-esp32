@@ -118,6 +118,15 @@ DSP input mixer ahead of the filters — so they only ever attenuate and cost no
 headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
 effect immediately and are stored in NVS, independently of the filter commit.
 
+On a board with one amplifier, **EQ runs on** in the same card can move the filters
+off the amplifier's DSP and onto the ESP32's software EQ, with the DSP's sections set
+flat. The software EQ turns the signal down ahead of the filters by as much as they
+boost, and the amplifier's volume gives that back, so the two sound the same unless
+one of them is wrong: a quick check of the DSP path by ear. The ESP32 runs the
+filters at the stream's rate (44.1 or 48 kHz) rather than the DSP's, so filters near
+the top of the audio band come out slightly different. The choice is stored in NVS
+(`CONFIG_SOFTWARE_EQ_AB`).
+
 ## PBTL (Mono) Mode
 
 TAS58xx amplifiers can be wired in **Parallel Bridge-Tied Load (PBTL)** mode to drive a

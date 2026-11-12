@@ -331,15 +331,34 @@ static bool s_forced_first_pbtl = CONFIG_TAS58XX_FORCE_PBTL;
 /* Cached master AirPlay volume so a level change can be re-applied alone. */
 static float s_last_airplay_db = -15.0f;
 
-/* DAC level for AirPlay full volume, the digital gain:
- * CONFIG_TAS58XX_MAX_VOLUME until one is set (dac_tas58xx_set_full_volume_db).
- */
-static float s_max_volume_db = (float)CONFIG_TAS58XX_MAX_VOLUME;
+/* DAC level for AirPlay full volume, the digital gain: 0 dB until one is set
+ * (dac_tas58xx_set_full_volume_db). The analog gain matches the supply. */
+static float s_max_volume_db = 0.0f;
 
-/* The amplifier's supply, 0 while unknown, and whether the digital gain
- * follows it and the chains (dac_tas58xx_set_auto_gain). */
+/* The amplifier's supply, 0 while unknown. */
 static int s_supply_mv;
-static bool s_auto_gain;
+
+/* While the software EQ plays the chains instead (dac_tas58xx_bq_set_flat),
+ * every section is written as a pass-through, and the level the software
+ * EQ takes off ahead of its filters is added back to the volume. */
+static bool s_bq_flat;
+static float s_makeup_db;
+
+/* The analog gain: the one that matches the supply, or the one set by hand
+ * (dac_tas58xx_set_analog_gain_db). s_analog_db is the last written, NAN
+ * until the first. */
+static bool s_analog_auto = true;
+static float s_analog_hand_db;
+static float s_analog_db = NAN;
+static float analog_gain_target(void);
+
+static uint8_t tas58xx_again_reg(void) {
+  return (uint8_t)lroundf(-analog_gain_target() * 2.0f) & 0x1F;
+}
+
+static void (*s_eq_listener)(void);
+/* The software EQ routes the input itself (dac_tas58xx_set_soft_routing()). */
+static bool s_soft_routing[TAS58XX_MAX_DEVICES];
 
 /* Per-output level trim (dB) and mute, folded into the input mixer gains. */
 static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
@@ -404,7 +423,8 @@ static bool bq_load_config(void);
 static bool bq_chain_is_flat(int dev);
 static bool bq_chain_is_from_dump(int dev);
 static bool tas58xx_seed_bq_from_hf(int idx);
-static void auto_gain_update(void);
+static void analog_gain_update(void);
+static void eq_changed(void);
 
 /* ---------- Detect ---------- */
 
@@ -817,6 +837,88 @@ static void tas58xx_fault_task(void *arg) {
 #endif /* CONFIG_SPKFAULT_GPIO < 0 */
 
 /*
+ * A TAS5825M measures its own supply (PVDD_ADC, V = code / 8.428), so a board
+ * whose USB-PD trigger is strapped out of the firmware's reach -- the
+ * Louder-ESP32-Pro's CH224K always asks for 20 V -- still tells the automatic
+ * gain what it plays on. The TAS5805M has no such register (0x5E reads 0).
+ *
+ * The ADC measures only in HIZ or PLAY with the I2S clocks running: it reads 0
+ * in DEEP_SLEEP, where the amplifier idles, and SLEEP holds whatever it last
+ * read. From DEEP_SLEEP, HIZ (outputs off) reads within 10 ms. So the supply
+ * is read as the clocks first start, from a sleeping amplifier lifted to HIZ
+ * for the purpose, and again in the HIZ step of every wake, before anything
+ * plays. The ESP32 on such a board runs off the same supply, so a different
+ * charger is a restart anyway.
+ */
+#define REG_PVDD_ADC      0x5E
+#define PVDD_ADC_PER_VOLT 8.428f
+/* Chargers step their voltages 3 V or more apart while the ADC resolves
+ * 0.12 V, so smaller moves leave the gain alone. */
+#define PVDD_REPORT_STEP_MV 1000
+#define PVDD_TRIES          10
+#define PVDD_TRY_MS         10
+
+/* The amplifier that reports the supply (the first TAS5825M; the amplifiers on
+ * a board share one), and its last reading, taken under REG_LOCK and reported
+ * once the lock is released (pvdd_report). */
+static tas58xx_dev_t *s_pvdd_dev = NULL;
+static int s_pvdd_read_mv = 0;
+
+/* Poll PVDD_ADC for a first reading. Assumes REG_LOCK is held, s_cur == dev
+ * and the amplifier in HIZ or PLAY with the clocks running. */
+static uint8_t pvdd_poll_locked(void) {
+  uint8_t code = 0;
+  for (int i = 0; i < PVDD_TRIES; i++) {
+    if (tas58xx_read_reg(REG_PVDD_ADC, &code) == ESP_OK && code > 0) {
+      return code;
+    }
+    vTaskDelay(pdMS_TO_TICKS(PVDD_TRY_MS));
+  }
+  return 0;
+}
+
+/* Measure the supply if dev reports it, lifting an amplifier that is not
+ * playing to HIZ for it and putting it back. The I2S clocks must be running.
+ * Assumes REG_LOCK is held and s_cur == dev. */
+static void pvdd_measure_locked(tas58xx_dev_t *dev) {
+  if (dev != s_pvdd_dev) {
+    return;
+  }
+  uint8_t ctrl2 = 0;
+  if (tas58xx_read_reg(REG_DEVICE_CTRL2, &ctrl2) != ESP_OK) {
+    return;
+  }
+  const uint8_t state = ctrl2 & CTRL2_STATE_MASK;
+  uint8_t code = 0;
+  if (state == CTRL2_HIZ || state == CTRL2_PLAY) {
+    code = pvdd_poll_locked();
+  } else {
+    tas58xx_write_reg(REG_DEVICE_CTRL2,
+                      (uint8_t)((ctrl2 & ~CTRL2_STATE_MASK) | CTRL2_HIZ));
+    code = pvdd_poll_locked();
+    tas58xx_write_reg(REG_DEVICE_CTRL2, ctrl2);
+    /* Leaving DEEP_SLEEP is as good as a reset: have the next wake set the
+     * part up from scratch, as it would have. */
+    dev->dsp_defaults_written = false;
+  }
+  if (code > 0) {
+    s_pvdd_read_mv =
+        (int)lroundf((float)code / PVDD_ADC_PER_VOLT * 10.0f) * 100;
+  }
+}
+
+/* Hand the last reading to the analog gain. REG_LOCK must not be held: the
+ * gain takes it. */
+static void pvdd_report(void) {
+  const int mv = s_pvdd_read_mv;
+  s_pvdd_read_mv = 0;
+  if (mv > 0 && abs(mv - dac_tas58xx_get_supply_mv()) >= PVDD_REPORT_STEP_MV) {
+    ESP_LOGI(TAG, "Supply measured at %.1f V", (float)mv / 1000.0f);
+    dac_tas58xx_set_supply_mv(mv);
+  }
+}
+
+/*
  * Enable the PBTL (mono) output stage for a bridged sub. This is a
  * control-port setting (DEVICE_CTRL1 bit 2) and must be established while the
  * device is still in HiZ, before the output stage drives the paralleled load.
@@ -1163,6 +1265,15 @@ static esp_err_t tas58xx_fixup_after_hf(tas58xx_dev_t *dev) {
   }
 
   /*
+   * A dump carries the analog gain it was tuned at, usually 0 dB, but the
+   * driver owns that register: it matches the supply, or holds the gain set
+   * by hand. Every replay (at init, on waking from deep sleep, and for a new
+   * rate) comes through here, and analog_gain_update() only writes when the
+   * target moves, so without this the dump's would stand until it did.
+   */
+  tas58xx_write_reg(REG_AGAIN, tas58xx_again_reg());
+
+  /*
    * The EVM brings GPIO1 out as SDOUT; on these boards it is the amp's fault
    * line into the MCU, which otherwise reads the data stream as a fault stuck
    * on and mutes. Only the TAS5825M has these pins.
@@ -1282,13 +1393,15 @@ static esp_err_t tas58xx_run_init_seq(tas58xx_dev_t *dev) {
   ESP_LOGI(TAG, "@0x%02X running init sequence (%s)...", dev->addr,
            dev->pbtl_mono ? "PBTL mono" : "BTL stereo");
   for (int i = 0; seq[i].reg != 0xFF; i++) {
-    err = tas58xx_write_reg(seq[i].reg, seq[i].value);
+    const uint8_t value =
+        seq[i].reg == REG_AGAIN ? tas58xx_again_reg() : seq[i].value;
+    err = tas58xx_write_reg(seq[i].reg, value);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Init failed at step %d: reg 0x%02X val 0x%02X: %s", i,
-               seq[i].reg, seq[i].value, esp_err_to_name(err));
+               seq[i].reg, value, esp_err_to_name(err));
       return err;
     }
-    ESP_LOGD(TAG, "  [%02d] reg 0x%02X <- 0x%02X", i, seq[i].reg, seq[i].value);
+    ESP_LOGD(TAG, "  [%02d] reg 0x%02X <- 0x%02X", i, seq[i].reg, value);
 
     // Pause after HiZ transition to let clocks settle
     if (seq[i].reg == REG_DEVICE_CTRL2 &&
@@ -1433,8 +1546,15 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
   }
 #endif
 
+  s_pvdd_dev = NULL;
+  for (int i = 0; i < s_dev_count && s_pvdd_dev == NULL; i++) {
+    if (s_devs[i].model == TAS58XX_MODEL_TAS5825M) {
+      s_pvdd_dev = &s_devs[i];
+    }
+  }
+
   /* The chains and the amplifiers are known now. */
-  auto_gain_update();
+  eq_changed();
   return ESP_OK;
 }
 
@@ -1444,6 +1564,7 @@ static esp_err_t tas58xx_deinit(void) {
 #if CONFIG_SPKFAULT_GPIO < 0
   s_fault_task_stop = true;
 #endif
+  s_pvdd_dev = NULL;
 
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
@@ -1510,7 +1631,8 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
-
+    /* The supply, before anything plays (pvdd_report once unlocked). */
+    pvdd_measure_locked(dev);
     /*
      * Per TAS5825M datasheet §7.6.2.2, exiting DEEP_SLEEP is similar
      * to a power-on-reset — all registers may revert to defaults.
@@ -1551,7 +1673,7 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
         tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
         tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
         tas58xx_write_reg(REG_AUTO_MUTE_TIME, AUTO_MUTE_TIME);
-        tas58xx_write_reg(REG_AGAIN, 0x00);
+        tas58xx_write_reg(REG_AGAIN, tas58xx_again_reg());
         if (dev->model == TAS58XX_MODEL_TAS5825M) {
           tas58xx_write_reg(REG_ANA_CTRL, 0x01); /* in-phase PWM, as at init */
         }
@@ -1645,6 +1767,7 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
   }
   s_cur = NULL;
   REG_UNLOCK();
+  pvdd_report();
 }
 
 /* Enable/disable (mute) output on a single chip. Assumes REG_LOCK held. */
@@ -1699,10 +1822,10 @@ static float tas58xx_map_volume_db(float volume_airplay_db) {
   }
 
   // Volume mapping (2:1 scaling):
-  //   AirPlay 0 dB    -> DAC s_max_volume_db (CONFIG_TAS58XX_MAX_VOLUME)
+  //   AirPlay 0 dB    -> DAC s_max_volume_db (the digital gain)
   //   AirPlay -25 dB  -> DAC (MAX - 50)
   //   AirPlay -30..-25 dB -> steep roll-off to mute
-  float max_db = s_max_volume_db;
+  float max_db = s_max_volume_db + s_makeup_db;
   float db_level;
 
   if (volume_airplay_db >= -25.0f) {
@@ -1755,7 +1878,7 @@ static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev) {
 // the input mixer, not here. Assumes REG_LOCK is held.
 static void tas58xx_apply_volume_locked(void) {
   /* Log the level the amp is actually set to: AirPlay's dB maps 2:1 onto it,
-   * offset by CONFIG_TAS58XX_MAX_VOLUME, so the two differ. */
+   * offset by the digital gain, so the two differ. */
   const uint8_t reg =
       tas58xx_db_to_reg(tas58xx_map_volume_db(s_last_airplay_db));
   if (reg == DIG_VOL_MUTE) {
@@ -1779,8 +1902,8 @@ static void tas58xx_apply_volume_locked(void) {
 #define SWING_PER_SUPPLY  0.93f
 
 float dac_tas58xx_clean_db(int supply_mv) {
-  /* The loudest level that still clears the supply, in the register's
-   * 0.5 dB steps. */
+  /* The loudest gain that still clears the supply, in AGAIN's 0.5 dB
+   * steps. */
   const float clean_db = 20.0f * log10f(SWING_PER_SUPPLY * (float)supply_mv /
                                         1000.0f / FULL_SCALE_PEAK_V);
   return fminf(floorf(clean_db * 2.0f) / 2.0f, 0.0f);
@@ -1802,7 +1925,6 @@ static bool full_volume_store_locked(float db) {
 }
 
 void dac_tas58xx_set_full_volume_db(float db) {
-  s_auto_gain = false;
   if (s_reg_mutex != NULL) {
     REG_LOCK();
   }
@@ -1814,20 +1936,11 @@ void dac_tas58xx_set_full_volume_db(float db) {
 
 void dac_tas58xx_set_supply_mv(int supply_mv) {
   s_supply_mv = supply_mv > 0 ? supply_mv : 0;
-  auto_gain_update();
+  analog_gain_update();
 }
 
 int dac_tas58xx_get_supply_mv(void) {
   return s_supply_mv;
-}
-
-void dac_tas58xx_set_auto_gain(bool on) {
-  s_auto_gain = on;
-  auto_gain_update();
-}
-
-bool dac_tas58xx_get_auto_gain(void) {
-  return s_auto_gain;
 }
 
 float dac_tas58xx_get_full_volume_db(void) {
@@ -1875,9 +1988,7 @@ esp_err_t dac_tas58xx_set_gain_db(int dev, int ch, float gain_db) {
   }
   s_ch_gain_db[dev][ch] = gain_db;
   ESP_LOGI(TAG, "Amp %d output %c level: %+.1f dB", dev, 'A' + ch, gain_db);
-  const esp_err_t err = tas58xx_refresh_mix(dev);
-  auto_gain_update();
-  return err;
+  return tas58xx_refresh_mix(dev);
 }
 
 float dac_tas58xx_get_gain_db(int dev, int ch) {
@@ -1896,9 +2007,7 @@ esp_err_t dac_tas58xx_set_ch_mute(int dev, int ch, bool mute) {
   s_ch_mute[dev][ch] = mute;
   ESP_LOGI(TAG, "Amp %d output %c %s", dev, 'A' + ch,
            mute ? "muted" : "unmuted");
-  const esp_err_t err = tas58xx_refresh_mix(dev);
-  auto_gain_update();
-  return err;
+  return tas58xx_refresh_mix(dev);
 }
 
 bool dac_tas58xx_get_ch_mute(int dev, int ch) {
@@ -2008,6 +2117,8 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix) {
   REG_UNLOCK();
 
   ESP_LOGI(TAG, "Amp %d input routing: %d", dev, (int)mix);
+  /* A software EQ playing the chains routes ahead of them, so it follows. */
+  eq_changed();
   return err;
 }
 
@@ -2016,6 +2127,34 @@ tas58xx_mix_t dac_tas58xx_get_mix(int dev) {
     return TAS58XX_MIX_STEREO;
   }
   return dev < s_dev_count ? s_devs[dev].mix : s_dev_mix[dev];
+}
+
+bool dac_tas58xx_get_soft_routing(int dev) {
+  return dev >= 0 && dev < TAS58XX_MAX_DEVICES && s_soft_routing[dev];
+}
+
+bool dac_tas58xx_can_soft_route(int dev) {
+  return dev >= 0 && dev < s_dev_count && !s_devs[dev].hf_mix_seen;
+}
+
+bool dac_tas58xx_set_soft_routing(int dev, bool on) {
+  if (dev < 0 || dev >= s_dev_count || s_reg_mutex == NULL) {
+    return false;
+  }
+  REG_LOCK();
+  /* A dump's routing is part of its tuning and stays with the chip. */
+  if (s_devs[dev].hf_mix_seen) {
+    on = false;
+  }
+  if (s_soft_routing[dev] != on) {
+    s_soft_routing[dev] = on;
+    s_cur = &s_devs[dev];
+    /* Only lands in PLAY; the PLAY transition re-applies it. */
+    (void)tas58xx_apply_input_mix();
+    s_cur = NULL;
+  }
+  REG_UNLOCK();
+  return on;
 }
 
 /* ---------- Public ops struct ---------- */
@@ -2176,6 +2315,36 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
   }
 
   return board_i2c_write(s_cur->handle, sub_addr, data, EQ_COEFF_BYTES);
+}
+
+/**
+ * Read a section's 20-byte block back out of coefficient RAM. The caller must
+ * already have selected the coefficient book. A section that starts near the
+ * end of a page carries on at 0x08 of the next, which a write reaches through
+ * the part's page auto-increment; each page's share is read on its own here,
+ * so the readback checks that layout rather than relying on it.
+ */
+static esp_err_t read_biquad_raw(uint8_t page, uint8_t sub_addr,
+                                 uint8_t out[EQ_COEFF_BYTES]) {
+  size_t done = 0;
+  while (done < EQ_COEFF_BYTES) {
+    esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+    if (err != ESP_OK) {
+      return err;
+    }
+    size_t len = 0x80u - sub_addr;
+    if (len > EQ_COEFF_BYTES - done) {
+      len = EQ_COEFF_BYTES - done;
+    }
+    err = board_i2c_read(s_cur->handle, sub_addr, out + done, len);
+    if (err != ESP_OK) {
+      return err;
+    }
+    done += len;
+    page++;
+    sub_addr = 0x08;
+  }
+  return ESP_OK;
 }
 
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
@@ -2563,6 +2732,29 @@ out:
   return err;
 }
 
+/** Whether the EQ block is bypassed, read from the part. */
+static esp_err_t read_eq_bypassed(bool *bypassed) {
+  esp_err_t err;
+  if (s_cur->model == TAS58XX_MODEL_TAS5805M) {
+    uint8_t value = 0;
+    err = select_default_page();
+    if (err == ESP_OK) {
+      err = tas58xx_read_reg(REG_DSP_MISC, &value);
+    }
+    *bypassed = (value & 0x01) != 0; /* bit0 = BYPASS_EQ */
+    return err;
+  }
+
+  uint8_t mode_data[EQ_MODE_SIZE] = {0};
+  err = select_book_page(EQ_MODE_BOOK, EQ_MODE_PAGE);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, EQ_MODE_REG, mode_data, EQ_MODE_SIZE);
+  }
+  *bypassed = (mode_data[7] & 0x01) != 0; /* bypass_eq word */
+  select_default_page();
+  return err;
+}
+
 /** Take the EQ block out of bypass so the programmed chain is audible. */
 static esp_err_t write_eq_mode(bool enable) {
   esp_err_t err;
@@ -2812,10 +3004,23 @@ out:
   return ok;
 }
 
+/* The block one section of a channel is written with. A ganged amplifier
+ * sends its left chain to both channels; the right chain stays in memory so
+ * un-ganging brings the old tuning back. */
+static void bq_design_slot(int dev, int ch, int slot,
+                           uint8_t out[EQ_COEFF_BYTES]) {
+  const int src = s_bq_ganged[dev] ? 0 : ch;
+  if (s_bq_flat) {
+    tas58xx_bq_t flat;
+    tas58xx_bq_init_bypass(&flat);
+    tas58xx_bq_design_packed(&flat, bq_design_fs(dev), out);
+    return;
+  }
+  tas58xx_bq_design_packed(&s_bq[dev][src][slot], bq_design_fs(dev), out);
+}
+
 /*
- * Design and write the current chip's whole biquad chain from s_bq. A ganged
- * amplifier sends its left chain to both channels; the right chain stays in
- * memory so un-ganging brings the old tuning back.
+ * Design and write the current chip's whole biquad chain from s_bq.
  * Assumes REG_LOCK is held, s_cur is set and the chip is in PLAY.
  */
 static esp_err_t bq_program_chain(void) {
@@ -2829,13 +3034,10 @@ static esp_err_t bq_program_chain(void) {
     bq_chain_defaults();
   }
 
-  const bool ganged = s_bq_ganged[dev];
-  const double fs = bq_design_fs(dev);
   for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
     uint8_t left[EQ_COEFF_BYTES], right[EQ_COEFF_BYTES];
-    tas58xx_bq_design_packed(&s_bq[dev][0][i], fs, left);
-    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i], fs,
-                             right);
+    bq_design_slot(dev, 0, i, left);
+    bq_design_slot(dev, 1, i, right);
     esp_err_t err = program_biquad_pair(i, left, right);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
@@ -2872,7 +3074,8 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   /* Routing anything but the pair straight through is a process-flow change,
    * which is a TAS5825M feature. The level and mute folded in below are only
    * gains, so those still reach a TAS5805M. */
-  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO) {
+  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO &&
+      !s_soft_routing[s_cur - s_devs]) {
     ESP_LOGW(TAG,
              "@0x%02X input routing only implemented for TAS5825M; "
              "chip will play the left channel only",
@@ -2906,9 +3109,15 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   static const int32_t UNITY_9_23 = 0x00800000; /*  0 dB */
   static const int32_t HALF_9_23 = 0x00400000;  /* -6 dB */
 
+  /* While the software EQ plays the chains it does the routing too, ahead of
+   * its filters, as the DSP does ahead of its EQ; the chip then passes the
+   * pair straight through. */
+  const int dev = (int)(s_cur - s_devs);
+  const tas58xx_mix_t mix =
+      s_soft_routing[dev] ? TAS58XX_MIX_STEREO : s_cur->mix;
   int32_t l_to_l = 0, r_to_l = 0, l_to_r = 0, r_to_r = 0;
   const char *desc;
-  switch (s_cur->mix) {
+  switch (mix) {
   case TAS58XX_MIX_MONO:
     l_to_l = r_to_l = l_to_r = r_to_r = HALF_9_23;
     desc = "mono L+R -6 dB";
@@ -2925,7 +3134,7 @@ static esp_err_t tas58xx_apply_input_mix(void) {
     /* Written rather than skipped so switching back off a summed routing
      * restores the pair instead of leaving the old gains in place. */
     l_to_l = r_to_r = UNITY_9_23;
-    desc = "stereo";
+    desc = s_soft_routing[dev] ? "stereo, routed by the software EQ" : "stereo";
     break;
   }
 
@@ -2941,7 +3150,6 @@ static esp_err_t tas58xx_apply_input_mix(void) {
 
   /* The mixer is a gain matrix, so the per-output level and mute are the same
    * knob as the routing: scale whichever paths feed that output. */
-  const int dev = (int)(s_cur - s_devs);
   const float sa = tas58xx_ch_scale(dev, 0);
   const float sb = tas58xx_ch_scale(dev, 1);
   l_to_l = (int32_t)lrintf((float)l_to_l * sa);
@@ -3052,6 +3260,107 @@ bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
   return true;
 }
 
+esp_err_t dac_tas58xx_bq_readback(int dev, int ch, tas58xx_bq_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  if (!s_bq_ready) {
+    bq_chain_defaults();
+  }
+  s_cur = &s_devs[dev];
+  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
+  const eq_bq_addr_t *addr =
+      is_5805 ? (ch ? tas5805m_eq_right_addr : tas5805m_eq_left_addr)
+              : (ch ? tas5825m_eq_right_addr : tas5825m_eq_left_addr);
+  out->design_rate_hz = (uint32_t)bq_design_fs(dev);
+
+  esp_err_t err = select_default_page();
+  if (err == ESP_OK) {
+    err = tas58xx_read_reg(REG_DEVICE_CTRL2, &out->ctrl2);
+  }
+  if (err == ESP_OK) {
+    err = read_eq_bypassed(&out->eq_bypassed);
+  }
+  if (err == ESP_OK) {
+    err = select_book_page(BQ_COEFF_BOOK, 0x00);
+  }
+  for (int i = 0; i < TAS58XX_BQ_SLOTS && err == ESP_OK; i++) {
+    bq_design_slot(dev, ch, i, out->expected[i]);
+    err = read_biquad_raw(addr[i].page, addr[i].sub_addr, out->actual[i]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
+}
+
+/* One big-endian word of DSP memory. The caller has selected the book. */
+static esp_err_t read_coeff32(uint8_t page, uint8_t sub_addr, int32_t *out) {
+  uint8_t b[4] = {0};
+  esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
+  if (err == ESP_OK) {
+    err = board_i2c_read(s_cur->handle, sub_addr, b, sizeof(b));
+  }
+  *out = (int32_t)(((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                   ((uint32_t)b[2] << 8) | b[3]);
+  return err;
+}
+
+esp_err_t dac_tas58xx_limit_readback(int dev, tas58xx_limit_readback_t *out) {
+  if (!out || dev < 0 || dev >= s_dev_count) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_reg_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (s_devs[dev].model != TAS58XX_MODEL_TAS5805M) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  memset(out, 0, sizeof(*out));
+
+  REG_LOCK();
+  s_cur = &s_devs[dev];
+  esp_err_t err = select_book_page(MIX_BOOK, 0x2C);
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x5C, &out->agl_release);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x60, &out->agl_attack);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x64, &out->agl_threshold);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x68, &out->agl_enable);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2C, 0x6C, &out->agl_alpha);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2D, 0x18, &out->agl_omega);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x18, &out->thd_boost);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x1C, &out->fine_vol[0]);
+  }
+  if (err == ESP_OK) {
+    err = read_coeff32(0x2E, 0x20, &out->fine_vol[1]);
+  }
+  select_default_page();
+  s_cur = NULL;
+  REG_UNLOCK();
+  return err;
+}
+
 esp_err_t dac_tas58xx_bq_set(int dev, int ch,
                              const tas58xx_bq_t in[TAS58XX_BQ_SLOTS]) {
   if (!in || dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
@@ -3062,6 +3371,14 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     const char *why = NULL;
     if (!tas58xx_bq_validate(&in[i], &why)) {
       ESP_LOGW(TAG, "BQ: dev %d ch %d slot %d rejected: %s", dev, ch, i, why);
+      return ESP_ERR_INVALID_ARG;
+    }
+    /* Played anyway it would only be a pass-through, which is not what was
+     * asked for either. */
+    if (!tas58xx_bq_fits(&in[i])) {
+      ESP_LOGW(TAG,
+               "BQ: dev %d ch %d slot %d rejected: too much boost for 5.27",
+               dev, ch, i);
       return ESP_ERR_INVALID_ARG;
     }
   }
@@ -3088,7 +3405,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     s_cur = NULL;
   }
   REG_UNLOCK();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3104,7 +3421,7 @@ void dac_tas58xx_bq_set_ganged(int dev, bool ganged) {
   }
   s_bq_ganged[dev] = ganged;
   bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
 }
 
 bool dac_tas58xx_bq_get_ganged(int dev) {
@@ -3120,7 +3437,7 @@ bool dac_tas58xx_bq_get_ganged(int dev) {
 esp_err_t dac_tas58xx_bq_reset(void) {
   bq_chain_defaults();
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
@@ -3241,91 +3558,111 @@ esp_err_t dac_tas58xx_bq_revert(void) {
     bq_chain_defaults();
   }
   const esp_err_t err = bq_reprogram_all();
-  auto_gain_update();
+  eq_changed();
   return err;
 }
 
-/* ==================  Automatic digital gain  ================== */
-
-/*
- * The highest point any chain that is playing lifts full scale to, with its
- * output's trim. A muted output plays nothing, and a chain shared by both
- * outputs counts at the louder of the two. 0 dB when nothing plays. Assumes
- * REG_LOCK is held once the driver is up.
- */
-static float eq_boost_locked(float *at_hz) {
-  static double coeff[TAS58XX_BQ_SLOTS][5];
-  float top = -INFINITY, top_hz = 0.0f;
-  if (!s_bq_ready) {
-    bq_chain_defaults();
+/* The chains, their ganging or the rate changed: tell whoever mirrors the
+ * chains (dac_tas58xx_set_eq_listener). */
+static void eq_changed(void) {
+  if (s_eq_listener != NULL) {
+    s_eq_listener();
   }
-  for (int dev = 0; dev < s_dev_count; dev++) {
-    const bool pbtl = dac_tas58xx_is_pbtl(dev);
-    const bool ganged = pbtl || s_bq_ganged[dev];
-    /* At the rate the chain plays at, as bq_program_chain() designs it. */
-    const double fs = bq_design_fs(dev);
-    for (int ch = 0; ch < (ganged ? 1 : TAS58XX_BQ_CHANNELS); ch++) {
-      /* Bridged, the chip drives one output from path A. */
-      float trim = -INFINITY;
-      for (int out = 0; out < TAS58XX_BQ_CHANNELS; out++) {
-        const bool carries = ganged ? (out == 0 || !pbtl) : out == ch;
-        if (carries && !s_ch_mute[dev][out]) {
-          trim = fmaxf(trim, s_ch_gain_db[dev][out]);
-        }
-      }
-      if (trim == -INFINITY) {
-        continue;
-      }
-      for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
-        tas58xx_bq_design(&s_bq[dev][ch][i], fs, coeff[i]);
-      }
-      float hz = 0.0f;
-      const float peak = tas58xx_bq_chain_peak_db((const double (*)[5])coeff,
-                                                  TAS58XX_BQ_SLOTS, fs, &hz) +
-                         trim;
-      if (peak > top) {
-        top = peak;
-        top_hz = hz;
-      }
-    }
-  }
-  if (at_hz) {
-    *at_hz = top_hz;
-  }
-  return top == -INFINITY ? 0.0f : top;
 }
 
-float dac_tas58xx_eq_boost_db(float *at_hz) {
-  if (s_reg_mutex != NULL) {
-    REG_LOCK();
-  }
-  const float boost = eq_boost_locked(at_hz);
-  if (s_reg_mutex != NULL) {
-    REG_UNLOCK();
-  }
-  return boost;
+void dac_tas58xx_set_eq_listener(void (*listener)(void)) {
+  s_eq_listener = listener;
 }
 
-/*
- * Set the digital gain to the loudest that stays clean: the level clean on
- * the supply, less the boost. A chain that only cuts leaves room above the
- * supply's level, up to 0 dB. Called after anything that moves either.
- */
-static void auto_gain_update(void) {
-  if (!s_auto_gain || s_supply_mv <= 0) {
+void dac_tas58xx_bq_set_flat(bool flat) {
+  if (flat == s_bq_flat) {
     return;
   }
+  s_bq_flat = flat;
+  ESP_LOGI(TAG, "EQ %s",
+           flat ? "set flat: the software EQ plays the chains"
+                : "back on the DSP");
+  bq_reprogram_all();
+}
+
+bool dac_tas58xx_bq_get_flat(void) {
+  return s_bq_flat;
+}
+
+static void tas58xx_apply_again_locked(void) {
+  for (int i = 0; i < s_dev_count; i++) {
+    s_cur = &s_devs[i];
+    tas58xx_write_reg(REG_AGAIN, tas58xx_again_reg());
+  }
+  s_cur = NULL;
+}
+
+/* The analog gain to play at: the one set by hand, or the one that matches
+ * the supply. Below about 5.2 V that runs out at the bottom of the range and
+ * loud passages clip. While the supply is unknown it is the board's
+ * CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY. */
+static float analog_gain_target(void) {
+  float db = s_analog_hand_db;
+  if (s_analog_auto) {
+    db = s_supply_mv > 0 ? dac_tas58xx_clean_db(s_supply_mv)
+                         : (float)CONFIG_TAS58XX_ANALOG_GAIN_UNKNOWN_SUPPLY;
+  }
+  return fmaxf(db, TAS58XX_ANALOG_GAIN_MIN_DB);
+}
+
+/* Write the analog gain where it has moved. Before dac_init() there is
+ * nothing to write: the init sequence takes it. REG_LOCK must not be held. */
+static void analog_gain_update(void) {
+  if (s_reg_mutex == NULL) {
+    return;
+  }
+  REG_LOCK();
+  const float db = analog_gain_target();
+  if (db != s_analog_db) {
+    s_analog_db = db;
+    tas58xx_apply_again_locked();
+    if (!s_analog_auto) {
+      ESP_LOGI(TAG, "Analog gain: %.1f dB, set by hand", db);
+    } else if (s_supply_mv > 0) {
+      ESP_LOGI(TAG, "Analog gain: %.1f dB, matching %.1f V", db,
+               (float)s_supply_mv / 1000.0f);
+    } else {
+      ESP_LOGI(TAG, "Analog gain: %.1f dB, supply unknown", db);
+    }
+  }
+  REG_UNLOCK();
+}
+
+void dac_tas58xx_set_analog_gain_db(float db) {
+  s_analog_hand_db =
+      roundf(fminf(fmaxf(db, TAS58XX_ANALOG_GAIN_MIN_DB), 0.0f) * 2.0f) / 2.0f;
+  s_analog_auto = false;
+  analog_gain_update();
+}
+
+float dac_tas58xx_get_analog_gain_db(void) {
+  return analog_gain_target();
+}
+
+void dac_tas58xx_set_analog_auto(bool on) {
+  s_analog_auto = on;
+  analog_gain_update();
+}
+
+bool dac_tas58xx_get_analog_auto(void) {
+  return s_analog_auto;
+}
+
+void dac_tas58xx_set_makeup_db(float db) {
+  db = fmaxf(db, 0.0f);
   if (s_reg_mutex != NULL) {
     REG_LOCK();
   }
-  float at_hz = 0.0f;
-  const float boost = eq_boost_locked(&at_hz);
-  const float clean = dac_tas58xx_clean_db(s_supply_mv);
-  if (full_volume_store_locked(floorf((clean - boost) * 2.0f) / 2.0f)) {
-    ESP_LOGI(TAG,
-             "Digital gain follows %.1f dB clean on %.1f V less %+.2f dB of "
-             "EQ at %.0f Hz",
-             clean, (float)s_supply_mv / 1000.0f, boost, at_hz);
+  if (db != s_makeup_db) {
+    s_makeup_db = db;
+    if (s_reg_mutex != NULL) {
+      tas58xx_apply_volume_locked();
+    }
   }
   if (s_reg_mutex != NULL) {
     REG_UNLOCK();
@@ -3447,8 +3784,21 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
     restore_parked();
     return;
   }
+
+  /* The supply ADC reads only with the clocks running, so this is the first
+   * chance to measure it, before anything plays. */
+  if (s_pvdd_dev != NULL) {
+    REG_LOCK();
+    s_cur = s_pvdd_dev;
+    pvdd_measure_locked(s_pvdd_dev);
+    s_cur = NULL;
+    REG_UNLOCK();
+    pvdd_report();
+  }
+
   if ((double)sample_rate_hz == s_bq_fs) {
     restore_parked();
+    pvdd_report();
     return;
   }
 
@@ -3488,5 +3838,6 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   }
   s_cur = NULL;
   REG_UNLOCK();
-  auto_gain_update();
+  pvdd_report();
+  eq_changed();
 }

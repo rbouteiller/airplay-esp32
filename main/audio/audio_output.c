@@ -4,6 +4,7 @@
 #include "audio_output.h"
 #include "rtsp_server.h"
 
+#include "audio_delay.h"
 #include "audio_resample.h"
 #include "dac.h"
 #include "led.h"
@@ -25,8 +26,11 @@
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
 #include "audio_eq.h"
+#endif
+#ifdef CONFIG_SOFTWARE_EQ_AB
+#include "eq_ab.h"
 #endif
 
 // SIDE NOTE; providing power from GPIO pins is capped ~20mA.
@@ -226,6 +230,32 @@ static void apply_volume(int16_t *buf, size_t frames, int32_t target) {
   (void)target;
 #endif
 }
+
+#ifdef CONFIG_AUDIO_EQ
+static inline int16_t to_pcm16(float v) {
+  if (v >= 32767.0f) {
+    return 32767;
+  }
+  if (v <= -32768.0f) {
+    return -32768;
+  }
+  /* Round to nearest: offset into positive range, where truncation is
+   * floor. */
+  return (int16_t)((int32_t)(v + 32768.5f) - 32768);
+}
+
+// The EQ's output may run past full scale, as it does for a boost on a
+// loud track. Rounding only after the volume means it clips only where the
+// volume leaves it past full scale, so turning down cures it.
+static void eq_volume_to_pcm16(const float *eq, size_t frames, int32_t target,
+                               int16_t *pcm) {
+  for (size_t i = 0; i < frames * 2; i += 2) {
+    const float gain = (float)volume_step(target) * (1.0f / 32768.0f);
+    pcm[i] = to_pcm16(eq[i] * gain);
+    pcm[i + 1] = to_pcm16(eq[i + 1] * gain);
+  }
+}
+#endif
 #else
 // A 16-bit sample times a Q15 volume is a 31-bit product, which a 32-bit
 // word holds exactly: without the EQ, the volume costs no precision at all.
@@ -238,7 +268,7 @@ static void volume_to_words(const int16_t *pcm, size_t frames, int32_t target,
   }
 }
 
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
 // Truncating is an error of 2^-31 of full scale, far below what a float
 // resolves, so only the range needs care.
 static inline int32_t to_word(float v) {
@@ -265,9 +295,9 @@ static void eq_volume_to_words(const float *eq, size_t frames, int32_t target,
 #endif
 #endif
 
-// Where process_pcm() leaves its output. 16-bit words need neither buffer;
-// 32-bit words need one of their own, and the EQ one to hand its unrounded
-// output over in.
+// Where process_pcm() leaves its output. 32-bit words need a buffer of their
+// own, and the EQ one to hand its unrounded output over in, at either word
+// size.
 typedef struct {
   int32_t *words;
   float *eq;
@@ -281,7 +311,8 @@ static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
   if (bufs->words == NULL) {
     return false;
   }
-#ifdef CONFIG_SOFTWARE_EQ
+#endif
+#ifdef CONFIG_AUDIO_EQ
   bufs->eq = malloc(frames * 2 * sizeof(float));
   if (bufs->eq == NULL) {
     free(bufs->words);
@@ -289,7 +320,7 @@ static bool out_bufs_alloc(out_bufs_t *bufs, size_t frames) {
     return false;
   }
 #endif
-#else
+#if !defined(CONFIG_I2S_32BIT_OUTPUT) && !defined(CONFIG_AUDIO_EQ)
   (void)frames;
 #endif
   return true;
@@ -330,6 +361,16 @@ static void apply_channel_mode(int16_t *buf, size_t frames) {
   }
 }
 
+static bool delay_layout_ok(bool now);
+
+// The delay runs on the words as they leave, so it holds one output back
+// whatever made them: routing, EQ and volume have all been applied.
+static const void *delayed(void *words, size_t frames) {
+  audio_delay_process((audio_delay_word_t *)words, frames,
+                      delay_layout_ok(true));
+  return words;
+}
+
 // Everything a source's PCM goes through on its way to I2S. The EQ runs
 // ahead of the volume so its filters see full-resolution samples. Returns
 // the words for I2S, @p frames of them: @p buf itself, made over in place,
@@ -338,21 +379,25 @@ static const void *process_pcm(int16_t *buf, size_t frames, int32_t volume_q15,
                                const out_bufs_t *bufs) {
   apply_channel_mode(buf, frames);
 #ifdef CONFIG_I2S_32BIT_OUTPUT
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   if (audio_eq_process_float(buf, bufs->eq, frames)) {
     eq_volume_to_words(bufs->eq, frames, volume_q15, bufs->words);
-    return bufs->words;
+    return delayed(bufs->words, frames);
   }
 #endif
   volume_to_words(buf, frames, volume_q15, bufs->words);
-  return bufs->words;
+  return delayed(bufs->words, frames);
+#else
+#ifdef CONFIG_AUDIO_EQ
+  if (audio_eq_process_float(buf, bufs->eq, frames)) {
+    eq_volume_to_pcm16(bufs->eq, frames, volume_q15, buf);
+    return delayed(buf, frames);
+  }
 #else
   (void)bufs;
-#ifdef CONFIG_SOFTWARE_EQ
-  audio_eq_process(buf, frames);
 #endif
   apply_volume(buf, frames, volume_q15);
-  return buf;
+  return delayed(buf, frames);
 #endif
 }
 
@@ -397,6 +442,7 @@ static void playback_task(void *arg) {
     if (flush_requested) {
       flush_requested = false;
       audio_resample_reset();
+      audio_delay_reset();
       // The DMA ring is left running.  Stopping the channel to discard its
       // few milliseconds also stops the bit clock, and an amplifier that
       // mutes on a clock loss (the MAX98357A) pops when it comes back, once
@@ -539,6 +585,23 @@ esp_err_t audio_output_init(void) {
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 
+  audio_delay_set_rate(s_output_rate);
+  uint16_t delay_us[AUDIO_DELAY_CHANNELS];
+  if (settings_get_output_delay_us(delay_us) == ESP_OK) {
+    for (int ch = 0; ch < AUDIO_DELAY_CHANNELS; ch++) {
+      audio_delay_set_us(ch, delay_us[ch]);
+    }
+    ESP_LOGI(TAG, "Loaded output delays: %u / %u us", (unsigned)delay_us[0],
+             (unsigned)delay_us[1]);
+  }
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* A delay makes the software side take a summed routing over, and the
+   * routing was decided at the amplifier's init, before the delays were
+   * known. Otherwise it waits for a rate or chain change, which a stream at
+   * the idle rate never makes, and the delay stays refused. */
+  eq_ab_refresh_routing();
+#endif
+
   return ESP_OK;
 }
 
@@ -551,6 +614,7 @@ void audio_output_start(void) {
   // AirPlay session, so the cursor carries an arbitrary submitted/sent skew.
   // Start the new session from a clean slate.
   output_cursor_reset();
+  audio_delay_reset();
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL,
                           AUDIO_PLAYBACK_TASK_PRIORITY, &playback_task_handle,
                           PLAYBACK_CORE);
@@ -571,11 +635,12 @@ void audio_output_stop(void) {
   } else {
     ESP_LOGI(TAG, "Playback task stopped");
   }
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   // The task stops mid-stream, so whatever writes next must not play the
   // tails it left in the filters.
   audio_eq_reset();
 #endif
+  audio_delay_reset();
 }
 
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
@@ -654,13 +719,14 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   s_output_rate = rate;
-#ifdef CONFIG_SOFTWARE_EQ
+#ifdef CONFIG_AUDIO_EQ
   // Corners are relative to the clock, so follow it. The stream breaks here
   // anyway, and this is where Bluetooth hands the output back without having
   // rung its tails out, so start the filters from rest.
   audio_eq_set_rate(rate);
   audio_eq_reset();
 #endif
+  audio_delay_set_rate(rate);
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
   dac_on_i2s_started(rate);
@@ -804,4 +870,61 @@ void audio_output_set_channel_mode(audio_channel_mode_t mode) {
 
 audio_channel_mode_t audio_output_get_channel_mode(void) {
   return channel_mode;
+}
+
+_Static_assert(AUDIO_DELAY_CHANNELS == SETTINGS_DELAY_OUTPUTS,
+               "one saved delay per output");
+_Static_assert(AUDIO_DELAY_MAX_US <= UINT16_MAX, "delays are saved as u16");
+
+/* Whether a delay on an I2S slot reaches that output alone. @p now: as the
+ * routing is at this moment, or as it would be once a delay is set (which on a
+ * TAS58xx makes the software side take a summed routing over). */
+static bool delay_layout_ok(bool now) {
+  if (audio_output_channel_mode_in_dsp()) {
+    return false;
+  }
+#ifdef CONFIG_DAC_TAS58XX
+  /* Bridged, or a second amplifier on the same slots: one slot feeds more
+   * than one output. */
+  if (dac_tas58xx_get_device_count() != 1 || dac_tas58xx_is_pbtl(0)) {
+    return false;
+  }
+  /* The chip routes ahead of its EQ, so a summed routing would spread the
+   * delayed slot over both outputs, unless the software side routes. */
+  if (dac_tas58xx_get_mix(0) != TAS58XX_MIX_STEREO) {
+#ifdef CONFIG_SOFTWARE_EQ_AB
+    return now ? dac_tas58xx_get_soft_routing(0)
+               : dac_tas58xx_can_soft_route(0);
+#else
+    (void)now;
+    return false;
+#endif
+  }
+#endif
+  (void)now;
+  return true;
+}
+
+bool audio_output_delay_supported(void) {
+  return delay_layout_ok(false);
+}
+
+uint32_t audio_output_get_delay_us(int ch) {
+  return audio_delay_get_us(ch);
+}
+
+esp_err_t audio_output_set_delay_us(int ch, uint32_t us) {
+  if (ch < 0 || ch >= AUDIO_DELAY_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  audio_delay_set_us(ch, us);
+#ifdef CONFIG_SOFTWARE_EQ_AB
+  /* With a delay set the software side has to do the routing. */
+  eq_ab_refresh_routing();
+#endif
+  uint16_t saved[AUDIO_DELAY_CHANNELS];
+  for (int c = 0; c < AUDIO_DELAY_CHANNELS; c++) {
+    saved[c] = (uint16_t)audio_delay_get_us(c);
+  }
+  return settings_set_output_delay_us(saved);
 }
