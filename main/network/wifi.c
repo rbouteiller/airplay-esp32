@@ -322,7 +322,11 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   memcpy(sta_config.sta.ssid, ssid, strnlen(ssid, sizeof(sta_config.sta.ssid)));
   memcpy(sta_config.sta.password, password,
          strnlen(password, sizeof(sta_config.sta.password)));
-  sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  // The threshold is the weakest security the STA will accept. A WPA2 floor
+  // with no password rules out exactly the networks that need none, so an
+  // open network could never be joined; only demand WPA2 when there is a key.
+  sta_config.sta.threshold.authmode =
+      password[0] != '\0' ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
   // Configure AP and save for later re-enable
   const char *default_ssid = ap_ssid ? ap_ssid : CONFIG_DEFAULT_AP_SSID;
