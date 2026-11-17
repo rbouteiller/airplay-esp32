@@ -98,3 +98,9 @@ void rtsp_get_device_id(char *device_id, size_t len);
 esp_err_t rtsp_start_event_port_task(int listen_socket);
 void rtsp_stop_event_port_task(void);
 int rtsp_event_port_listen_socket(void);
+
+// The accepted event connection for rtsp_events.c. lock returns
+// the socket (-1: none) and always takes the lock; call unlock afterwards.
+int rtsp_event_client_lock(void);
+void rtsp_event_client_unlock(void);
+bool rtsp_event_client_connected(void);

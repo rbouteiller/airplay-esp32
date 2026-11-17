@@ -139,6 +139,7 @@ esp_err_t hap_pair_setup_m3(hap_session_t *session, const uint8_t *input,
                     session->decrypt_key, 32);
     session->encrypt_nonce = 0;
     session->decrypt_nonce = 0;
+    hap_derive_event_keys(session, srp_key, srp_key_len);
     session->session_established = true;
   }
 

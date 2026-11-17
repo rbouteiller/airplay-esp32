@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sodium.h"
 
@@ -30,6 +31,7 @@
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 #include "plist.h"
+#include "rtsp_events.h"
 #include "rtsp_fairplay.h"
 #include "rtsp_rsa.h"
 #include "settings.h"
@@ -95,6 +97,9 @@ bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
 // ~2 s (88200 samples) ahead of this deadline.
 #define AIRPLAY_RT_LATENCY_DEFAULT_SAMPLES 11025
 static int event_client_socket = -1;
+// Guards event_client_socket between the event task (accept,
+// close) and rtsp_events.c (POST /command and its response)
+static SemaphoreHandle_t event_io_mutex = NULL;
 static int event_listen_socket = -1;
 static TaskHandle_t event_task_handle = NULL;
 static volatile bool event_task_should_stop = false;
@@ -241,10 +246,18 @@ static void event_port_task(void *pvParameters) {
         break; // Don't continue - socket is likely invalid
       }
 
+      xSemaphoreTake(event_io_mutex, portMAX_DELAY);
       if (event_client_socket >= 0) {
         close(event_client_socket);
       }
       event_client_socket = client;
+      // Answers to POST /command arrive within ms; never block the caller
+      // (button task, web UI) for long
+      struct timeval rcv_timeout = {.tv_sec = 1, .tv_usec = 0};
+      setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout,
+                 sizeof(rcv_timeout));
+      rtsp_events_on_client();
+      xSemaphoreGive(event_io_mutex);
       ESP_LOGI(TAG, "Event client connected");
       playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_CONNECTED,
                            NULL);
@@ -265,22 +278,37 @@ static void event_port_task(void *pvParameters) {
           break;
         }
         if (ret > 0 && FD_ISSET(event_client_socket, &cfds)) {
+          // A response to POST /command also makes the socket
+          // readable. Peek without blocking under the lock (rtsp_events.c
+          // reads it), and give the reader time instead of spinning.
           char buf[16];
-          ssize_t n = recv(event_client_socket, buf, sizeof(buf), MSG_PEEK);
-          if (n <= 0) {
+          xSemaphoreTake(event_io_mutex, portMAX_DELAY);
+          ssize_t n = recv(event_client_socket, buf, sizeof(buf),
+                           MSG_PEEK | MSG_DONTWAIT);
+          bool closed =
+              n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+          if (closed) {
             close(event_client_socket);
             event_client_socket = -1;
+          }
+          xSemaphoreGive(event_io_mutex);
+          if (closed) {
             break;
+          }
+          if (n > 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
           }
         }
       }
     }
   }
 
+  xSemaphoreTake(event_io_mutex, portMAX_DELAY);
   if (event_client_socket >= 0) {
     close(event_client_socket);
     event_client_socket = -1;
   }
+  xSemaphoreGive(event_io_mutex);
   event_listen_socket = -1;
   event_task_handle = NULL;
   vTaskDelete(NULL);
@@ -301,6 +329,12 @@ esp_err_t rtsp_start_event_port_task(int listen_socket) {
       return ESP_ERR_INVALID_STATE;
     }
   }
+  if (event_io_mutex == NULL) {
+    event_io_mutex = xSemaphoreCreateMutex();
+    if (event_io_mutex == NULL) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
   event_task_should_stop = false;
   event_listen_socket = -1;
   event_task_handle = NULL;
@@ -317,6 +351,25 @@ esp_err_t rtsp_start_event_port_task(int listen_socket) {
 
 int rtsp_event_port_listen_socket(void) {
   return event_listen_socket;
+}
+
+// See rtsp_handlers.h
+int rtsp_event_client_lock(void) {
+  if (event_io_mutex == NULL) {
+    return -1;
+  }
+  xSemaphoreTake(event_io_mutex, portMAX_DELAY);
+  return event_client_socket;
+}
+
+void rtsp_event_client_unlock(void) {
+  if (event_io_mutex != NULL) {
+    xSemaphoreGive(event_io_mutex);
+  }
+}
+
+bool rtsp_event_client_connected(void) {
+  return event_client_socket >= 0;
 }
 
 void rtsp_stop_event_port_task(void) {
@@ -1267,6 +1320,15 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     }
 
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
+
+    // Remote control over the event channel needs the group
+    // UUID (destination of the commands) and the session's event keys
+    if (is_bplist) {
+      char group_uuid[64] = "";
+      bplist_find_string(body, body_len, "groupUUID", group_uuid,
+                         sizeof(group_uuid));
+      rtsp_events_setup(conn->hap_session, group_uuid);
+    }
 
     if (is_bplist) {
       uint8_t plist_body[128];
