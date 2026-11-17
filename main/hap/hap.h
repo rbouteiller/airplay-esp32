@@ -48,6 +48,14 @@ typedef struct {
   uint64_t encrypt_nonce;
   uint64_t decrypt_nonce;
 
+  // Keys of the AirPlay 2 event channel (receiver -> sender
+  // requests such as POST /command). Derived from the full shared secret where
+  // it is created (transient pair-setup: SRP key, pair-verify: X25519), since
+  // shared_secret above keeps only 32 bytes of the 64-byte SRP key.
+  uint8_t event_write_key[HAP_CHACHA20_KEY_SIZE];
+  uint8_t event_read_key[HAP_CHACHA20_KEY_SIZE];
+  bool event_keys_valid;
+
   // Session state
   int pair_verify_state;
   int pair_setup_state;
@@ -158,6 +166,16 @@ esp_err_t hap_decrypt(hap_session_t *session, const uint8_t *ciphertext,
  */
 esp_err_t hap_derive_audio_key(hap_session_t *session, uint8_t *audio_key,
                                size_t key_len);
+
+/**
+ * Derive the event channel keys from the shared secret.
+ * As the receiver (Shairport Sync, pair_homekit.c channel 4): write with
+ * "Events-Write-Encryption-Key", read with "Events-Read-Encryption-Key" --
+ * the opposite of the control channel, the event connection runs the other
+ * way round.
+ */
+void hap_derive_event_keys(hap_session_t *session, const uint8_t *secret,
+                           size_t secret_len);
 
 /**
  * Handle pair-setup M1 (client initiates SRP)
