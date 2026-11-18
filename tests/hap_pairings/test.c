@@ -168,7 +168,7 @@ static void test_store(void) {
 
   // Full at 16.
   for (int i = hap_pairings_count(); i < HAP_PAIRINGS_MAX; i++) {
-    char id[8];
+    char id[16];
     snprintf(id, sizeof(id), "c%d", i);
     assert(hap_pairings_add(ID(id), kb, HAP_PERM_USER) == ESP_OK);
   }
@@ -362,7 +362,7 @@ static void test_manage(void) {
 
   // A full store answers MaxPeers; a full list still fits the RTSP buffer.
   for (int i = hap_pairings_count(); i < HAP_PAIRINGS_MAX; i++) {
-    char id[40];
+    char id[48];
     snprintf(id, sizeof(id), "%08d-0000-4000-8000-000000000000", i);
     assert(add(&s, id, kc, HAP_PERM_USER) == 0);
   }
