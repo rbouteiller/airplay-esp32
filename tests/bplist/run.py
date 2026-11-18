@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix="bplist-tests-") as temporary:
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
         "-I", str(build), "-I", str(ROOT / "main/plist"),
         str(HERE / "test.c"), str(ROOT / "main/plist/bplist_builder.c"),
+        str(ROOT / "main/plist/bplist_parser.c"),
         "-o", str(build / "test"),
     ]
     print("Binary plist Unicode and capacity tests", flush=True)
@@ -56,6 +57,10 @@ with tempfile.TemporaryDirectory(prefix="bplist-tests-") as temporary:
         decoded = plistlib.loads(result.stdout)
         assert decoded["name"] == name, (name, decoded["name"])
         assert decoded["deviceid"] == "12:34:56:78:9A:BC"
+        assert decoded["model"] == "airplay-esp32"
+        assert decoded["statusFlags"] == 0x404
+        assert decoded["pi"] == "1f0b0a39-6a4e-4d1c-9e5a-2b8f3c7d6e10"
+        assert decoded["psi"] == "8c2d4e6f-0a1b-4c3d-8e5f-60718293a4b5"
     for encoded in INVALID_NAMES:
         result = subprocess.run(
             [str(build / "test"), encoded], capture_output=True,
@@ -63,6 +68,53 @@ with tempfile.TemporaryDirectory(prefix="bplist-tests-") as temporary:
         assert result.returncode == 2 and not result.stdout, (
             encoded, result.returncode, result.stderr.decode(errors="replace")
         )
+
+    # POST /configure response, decoded independently.
+    result = subprocess.run([str(build / "test"), "configure"], check=True,
+                            stdout=subprocess.PIPE)
+    assert plistlib.loads(result.stdout) == {
+        "Identifier": "1f0b0a39-6a4e-4d1c-9e5a-2b8f3c7d6e10",
+        "Enable_HK_Access_Control": True,
+        "PublicKey": bytes(range(32)),
+        "Device_Name": "Café",
+        "Access_Control_Level": 2,
+    }
+
+    # POST /configure requests, as the Home app might send them.
+    def parse(body):
+        result = subprocess.run([str(build / "test"), "parse-configure"],
+                                input=body, check=True, stdout=subprocess.PIPE)
+        return dict(line.split("=", 1)
+                    for line in result.stdout.decode().splitlines())
+
+    binary = plistlib.FMT_BINARY
+    request = {"ConfigurationDictionary": {
+        "Enable_HK_Access_Control": True, "Access_Control_Level": 1,
+        "Device_Name": "Kitchen", "Password": "1234"}}
+    assert parse(plistlib.dumps(request, fmt=binary)) == {
+        "enable": "1", "level": "1", "password": "1234",
+        "toplevel_name": "-"}
+    request = {"ConfigurationDictionary": {
+        "Enable_HK_Access_Control": False}, "Device_Name": "Top"}
+    assert parse(plistlib.dumps(request, fmt=binary)) == {
+        "enable": "0", "level": "-", "password": "-", "toplevel_name": "Top"}
+    # Flags sent as integers still count.
+    request = {"ConfigurationDictionary": {"Enable_HK_Access_Control": 1}}
+    assert parse(plistlib.dumps(request, fmt=binary))["enable"] == "1"
+    # Keys at the wrong level, wrong types and garbage find nothing.
+    request = {"Enable_HK_Access_Control": True, "Access_Control_Level": 2}
+    assert parse(plistlib.dumps(request, fmt=binary))["enable"] == "-"
+    request = {"ConfigurationDictionary": [1, 2, 3]}
+    assert parse(plistlib.dumps(request, fmt=binary))["enable"] == "-"
+    request = {"ConfigurationDictionary": {"Access_Control_Level": "2"}}
+    assert parse(plistlib.dumps(request, fmt=binary))["level"] == "-"
+    garbage = bytearray(plistlib.dumps(
+        {"ConfigurationDictionary": {"Access_Control_Level": 1}}, fmt=binary))
+    garbage[-9] = 0xFF  # offset table points past the end
+    assert parse(bytes(garbage))["level"] == "-"
+    assert parse(b"bplist00" + b"\xff" * 40)["level"] == "-"
+    print("PASS: /configure response and request parsing, every truncation")
+
     print(
         f"PASS: {len(VALID_NAMES)} Unicode round-trips with every output capacity; "
         f"{len(INVALID_NAMES)} malformed UTF-8 sequences rejected"

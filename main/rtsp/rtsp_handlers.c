@@ -27,6 +27,7 @@
 #include "dac.h"
 #endif
 #include "hap.h"
+#include "hap_pairings.h"
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 #include "plist.h"
@@ -43,6 +44,17 @@ static const char *TAG = "rtsp_handlers";
 
 uint64_t airplay_features(void) {
   return settings_airplay_v1() ? UINT64_C(0x5C4A00) : UINT64_C(0x1C340405C4A00);
+}
+
+#define STATUS_FLAG_AUDIO_LINK        (1U << 2)
+#define STATUS_FLAG_HK_ACCESS_CONTROL (1U << 10)
+
+uint32_t airplay_status_flags(void) {
+  uint32_t flags = STATUS_FLAG_AUDIO_LINK;
+  if (!settings_airplay_v1() && hap_homekit_access_control()) {
+    flags |= STATUS_FLAG_HK_ACCESS_CONTROL;
+  }
+  return flags;
 }
 
 // ============================================================================
@@ -586,9 +598,10 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
 
     if (request_uses_rtsp(req)) {
       static uint8_t body[1024];
-      size_t body_len =
-          bplist_build_info_response(body, sizeof(body), device_id, device_name,
-                                     pk, 32, features, protocol_version);
+      size_t body_len = bplist_build_info_response(
+          body, sizeof(body), device_id, device_name, AIRPLAY_MODEL, pk, 32,
+          features, protocol_version, airplay_status_flags(), hap_get_pi(),
+          hap_get_psi());
       if (body_len == 0) {
         ESP_LOGE(TAG, "Failed to build binary /info response");
         rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
@@ -610,13 +623,14 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
 
     plist_dict_string(&p, "deviceid", device_id);
     plist_dict_uint(&p, "features", features);
-    plist_dict_string(&p, "model", "AudioAccessory5,1");
+    plist_dict_string(&p, "model", AIRPLAY_MODEL);
     plist_dict_string(&p, "protovers", "1.1");
     plist_dict_string(&p, "srcvers", "377.40.00");
     plist_dict_int(&p, "vv", protocol_version);
-    plist_dict_int(&p, "statusFlags", 4);
+    plist_dict_int(&p, "statusFlags", airplay_status_flags());
     plist_dict_data(&p, "pk", pk, 32);
-    plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
+    plist_dict_string(&p, "pi", hap_get_pi());
+    plist_dict_string(&p, "psi", hap_get_psi());
     plist_dict_string(&p, "name", device_name);
 
     // Audio formats array
@@ -665,6 +679,118 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
                               "Not Found", 9);
     }
   }
+}
+
+/* POST /pair-add, /pair-remove, /pair-list. The Home app and home hubs send
+ * these over a pair-verified (encrypted) session; anything else is refused
+ * before the request is even parsed. */
+static void handle_pair_manage(int socket, rtsp_conn_t *conn,
+                               const rtsp_request_t *req) {
+  static const uint8_t refused[] = {
+      TLV_TYPE_STATE, 1, 2, TLV_TYPE_ERROR, 1, TLV_ERROR_AUTHENTICATION};
+  const char *const ctype = "Content-Type: application/octet-stream\r\n";
+
+  if (!conn->hap_session || !conn->encrypted_mode || !req->body ||
+      req->body_len == 0) {
+    ESP_LOGW(TAG, "%s refused: not on an encrypted session", req->path);
+    rtsp_send_response(socket, conn, 200, "OK", req->cseq, ctype,
+                       (const char *)refused, sizeof(refused));
+    return;
+  }
+
+  // Room for 16 pairings in a /pair-list answer.
+  const size_t capacity = 2048;
+  uint8_t *response = malloc(capacity);
+  if (!response) {
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+    return;
+  }
+
+  size_t response_len = 0;
+  esp_err_t err;
+  if (strstr(req->path, "/pair-add")) {
+    err = hap_pair_add(conn->hap_session, req->body, req->body_len, response,
+                       capacity, &response_len);
+  } else if (strstr(req->path, "/pair-remove")) {
+    err = hap_pair_remove(conn->hap_session, req->body, req->body_len, response,
+                          capacity, &response_len);
+  } else {
+    err = hap_pair_list(conn->hap_session, req->body, req->body_len, response,
+                        capacity, &response_len);
+  }
+
+  if (err == ESP_OK) {
+    rtsp_send_response(socket, conn, 200, "OK", req->cseq, ctype,
+                       (const char *)response, response_len);
+  } else {
+    ESP_LOGE(TAG, "%s failed: %s", req->path, esp_err_to_name(err));
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+  }
+  free(response);
+}
+
+/* POST /configure. The Home app sends the speaker's HomeKit settings in a
+ * ConfigurationDictionary (Enable_HK_Access_Control, Access_Control_Level,
+ * Device_Name, Password) and expects the accessory's identity back:
+ * Identifier (pi), Enable_HK_Access_Control, PublicKey, Device_Name and
+ * Access_Control_Level. Turning access control on sets status flag bit 10,
+ * which the mDNS records pick up through the pairing store's change
+ * callback. */
+static void handle_configure(int socket, rtsp_conn_t *conn,
+                             const rtsp_request_t *req) {
+  static const char dict[] = "ConfigurationDictionary";
+  bool access_control = hap_homekit_access_control();
+  uint8_t acl = hap_homekit_acl();
+
+  if (req->body && req->body_len >= 8 &&
+      memcmp(req->body, "bplist00", 8) == 0) {
+    bool enable = false;
+    if (bplist_find_nested_bool(req->body, req->body_len, dict,
+                                "Enable_HK_Access_Control", &enable)) {
+      access_control = enable;
+    }
+    int64_t level = 0;
+    if (bplist_find_nested_int(req->body, req->body_len, dict,
+                               "Access_Control_Level", &level)) {
+      acl = (uint8_t)(level < 0 ? 0 : level > 255 ? 255 : level);
+    }
+    char password[65];
+    if (bplist_find_nested_string(req->body, req->body_len, dict, "Password",
+                                  password, sizeof(password)) &&
+        password[0] != '\0') {
+      // Speaker passwords are not implemented; say so rather than pretend.
+      ESP_LOGW(TAG, "/configure: Home app set a speaker password, which this "
+                    "firmware does not support; it is ignored");
+    }
+    sodium_memzero(password, sizeof(password));
+  } else {
+    ESP_LOGW(TAG, "/configure without a binary plist; reporting current state");
+  }
+
+  ESP_LOGI(TAG, "/configure: HomeKit access control %s, level %u",
+           access_control ? "on" : "off", acl);
+  esp_err_t err = hap_homekit_set_config(access_control, acl);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "/configure: could not store settings: %s",
+             esp_err_to_name(err));
+  }
+
+  char device_name[65];
+  settings_get_device_name(device_name, sizeof(device_name));
+  uint8_t body[512];
+  size_t body_len = bplist_build_configure_response(
+      body, sizeof(body), hap_get_pi(), access_control, hap_get_public_key(),
+      HAP_ED25519_PUBLIC_KEY_SIZE, device_name, acl);
+  if (body_len == 0) {
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+    return;
+  }
+  rtsp_send_response(socket, conn, 200, "OK", req->cseq,
+                     "Content-Type: application/x-apple-binary-plist\r\n",
+                     (const char *)body, body_len);
 }
 
 static void handle_post(int socket, rtsp_conn_t *conn,
@@ -812,6 +938,14 @@ static void handle_post(int socket, rtsp_conn_t *conn,
     }
 
     free(response);
+
+  } else if (strstr(req->path, "/pair-add") ||
+             strstr(req->path, "/pair-remove") ||
+             strstr(req->path, "/pair-list")) {
+    handle_pair_manage(socket, conn, req);
+
+  } else if (strstr(req->path, "/configure")) {
+    handle_configure(socket, conn, req);
 
   } else if (strstr(req->path, "/fp-setup")) {
     uint8_t *fp_response = NULL;

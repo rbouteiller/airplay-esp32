@@ -5,10 +5,12 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "mdns.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "hap.h"
+#include "hap_pairings.h"
 #include "mdns_airplay.h"
 #include "rtsp_handlers.h"
 #include "rtsp_server.h"
@@ -28,7 +30,8 @@ static const char *TAG = "mdns_airplay";
 #define AIRPLAY_PROTOCOL_VERSION "2"
 #define AIRPLAY_SOURCE_VERSION   "377.40.00"
 
-// Flags: 0x4 = audio receiver
+// Classic RAOP status flags: 0x4 = audio cable attached. The AirPlay 2
+// records use airplay_status_flags(), which adds HomeKit access control.
 #define AIRPLAY_FLAGS "0x4"
 
 // Metadata types advertised in the "md" txt record:
@@ -43,15 +46,45 @@ static const char *TAG = "mdns_airplay";
 #define AIRPLAY_METADATA_TYPES "0,2"
 #endif
 
-// Model identifier - AudioAccessory for speaker appearance
-// AppleTV3,2 = Apple TV, AudioAccessory5,1 = HomePod mini (speaker)
-#define AIRPLAY_MODEL "AudioAccessory5,1"
+// Shown by the Home app in the accessory's details.
+#define AIRPLAY_MANUFACTURER "airplay-esp32"
 
 // In classic mode the device must not look like an AirPlay 2 speaker at all:
 // AirPort4,107 is the first-generation AirPort Express and 105.1 is the source
 // version it reported.
 #define AIRPLAY_V1_MODEL          "AirPort4,107"
 #define AIRPLAY_V1_SOURCE_VERSION "105.1"
+
+static void format_status(char *flags, size_t flags_len, char *acl,
+                          size_t acl_len) {
+  snprintf(flags, flags_len, "0x%" PRIX32, airplay_status_flags());
+  snprintf(acl, acl_len, "%u", hap_homekit_acl());
+}
+
+/* Called by the pairing store when the Home app turns HomeKit access control
+ * on or off, changes its level, or the accessory is unpaired. */
+static void mdns_airplay_refresh_status(void) {
+  if (settings_airplay_v1()) {
+    return; // Nothing advertised depends on HomeKit.
+  }
+  char flags[16];
+  char acl[8];
+  format_status(flags, sizeof(flags), acl, sizeof(acl));
+
+  esp_err_t err = mdns_service_txt_item_set("_airplay", "_tcp", "flags", flags);
+  if (err == ESP_OK) {
+    err = mdns_service_txt_item_set("_airplay", "_tcp", "acl", acl);
+  }
+  if (err == ESP_OK) {
+    err = mdns_service_txt_item_set("_raop", "_tcp", "sf", flags);
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to update status TXT records: %s",
+             esp_err_to_name(err));
+    return;
+  }
+  ESP_LOGI(TAG, "Status flags now %s, acl %s", flags, acl);
+}
 
 void mdns_airplay_init(void) {
   char mac_str[18];
@@ -105,21 +138,37 @@ void mdns_airplay_init(void) {
 
   const bool airplay_v1 = settings_airplay_v1();
 
+  char status_flags[16];
+  char acl[8];
+  format_status(status_flags, sizeof(status_flags), acl, sizeof(acl));
+
   if (!airplay_v1) {
     // ========================================
     // _airplay._tcp service
     // Only registered for AirPlay 2 mode
     // ========================================
+    // Beyond the AirPlay basics, this carries the fields third-party speakers
+    // that the Home app lists (a JBL soundbar, shairport-sync, the openairplay
+    // receiver) all advertise: protovers, and gid/gcgl saying the speaker is
+    // its own group. gid is the pi until a group exists, as on those.
     mdns_txt_item_t airplay_txt[] = {
+        {"acl", acl}, // HomeKit access control level
         {"deviceid", device_id},
         {"features", features_str},
-        {"flags", AIRPLAY_FLAGS},
+        {"flags", status_flags},
+        {"fv", esp_app_get_description()->version}, // Firmware version
+        {"gcgl", "0"},                              // Group has no leader
+        {"gid", hap_get_pi()},                      // Group UUID
+        {"manufacturer", AIRPLAY_MANUFACTURER},
         {"model", AIRPLAY_MODEL},
+        {"pi", hap_get_pi()}, // Pairing UUID
         {"pk", pk_str},
-        {"pi", "00000000-0000-0000-0000-000000000000"}, // Pairing identity UUID
+        {"protovers", "1.1"},
+        {"psi", hap_get_psi()}, // Public system identifier UUID
+        {"rsf", "0x0"},         // Required sender features: none
+        {"serialNumber", device_id},
         {"srcvers", AIRPLAY_SOURCE_VERSION},
         {"vv", AIRPLAY_PROTOCOL_VERSION},
-        {"acl", "0"},
     };
 
     esp_err_t err = mdns_service_add(
@@ -178,7 +227,7 @@ void mdns_airplay_init(void) {
         {"ft", features_str},           // Features (same as airplay)
         {"md", AIRPLAY_METADATA_TYPES}, // Metadata types
         {"pk", pk_str},                 // Public key
-        {"sf", AIRPLAY_FLAGS},          // Status flags
+        {"sf", status_flags},           // Status flags
         {"tp", "UDP"},                  // Transport protocol
         {"vn", "65537"},                // Version number
         {"vs", AIRPLAY_SOURCE_VERSION},
@@ -194,4 +243,6 @@ void mdns_airplay_init(void) {
   }
   ESP_LOGI(TAG, "_raop._tcp advertised on port %d (AirPlay %s)",
            airplay_rtsp_port(), airplay_v1 ? "1" : "2");
+
+  hap_pairings_set_change_cb(mdns_airplay_refresh_status);
 }

@@ -122,6 +122,7 @@ nav:
   - Features:
       - Bluetooth A2DP: features/bluetooth.md
       - USB audio (UAC): features/usb-audio.md
+      - Apple Home (HomeKit): features/homekit.md
       - Sendspin (experimental): features/sendspin.md
       - Ethernet (W5500): features/ethernet.md
       - OLED display: features/oled-display.md
