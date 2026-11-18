@@ -85,8 +85,11 @@ jobs:
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
 
-      - name: Test AirPlay device names in binary plists
+      - name: Test AirPlay binary plists (/info names, /configure)
         run: python3 tests/bplist/run.py
+
+      - name: Test the HomeKit pairing store and pair-add/remove/list
+        run: python3 tests/hap_pairings/run.py
 
       - name: Test the USB-PD trigger against a simulated charger
         run: python3 tests/husb238a/run.py

@@ -242,6 +242,23 @@ bool bplist_find_real(const uint8_t *plist, size_t plist_len, const char *key,
 bool bplist_find_string(const uint8_t *plist, size_t plist_len, const char *key,
                         char *out_str, size_t out_capacity);
 
+/**
+ * Find a value inside the dictionary stored under the top-level key dict_key
+ * (or the top-level dictionary itself when dict_key is NULL), e.g. the
+ * ConfigurationDictionary of POST /configure. Bounds-checked against the
+ * whole document, so safe on untrusted input.
+ * The bool variant also accepts an integer (non-zero is true).
+ */
+bool bplist_find_nested_bool(const uint8_t *plist, size_t plist_len,
+                             const char *dict_key, const char *key,
+                             bool *out_value);
+bool bplist_find_nested_int(const uint8_t *plist, size_t plist_len,
+                            const char *dict_key, const char *key,
+                            int64_t *out_value);
+bool bplist_find_nested_string(const uint8_t *plist, size_t plist_len,
+                               const char *dict_key, const char *key,
+                               char *out_str, size_t out_capacity);
+
 // ========================================
 // Binary plist builders (for AirPlay SETUP responses)
 // ========================================
@@ -293,15 +310,28 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
  * @param capacity Buffer capacity
  * @param device_id Device MAC string
  * @param device_name User-visible AirPlay device name
+ * @param model Model identifier ("model")
  * @param public_key HAP Ed25519 public key
  * @param public_key_len Public key length
  * @param features AirPlay feature bitmask
  * @param protocol_version AirPlay protocol version value ("vv")
+ * @param status_flags AirPlay status flags ("statusFlags")
+ * @param pi Pairing UUID string
+ * @param psi Public system identifier UUID string
  * @return Length of generated bplist, or 0 on error
  */
-size_t bplist_build_info_response(uint8_t *out, size_t capacity,
-                                  const char *device_id,
-                                  const char *device_name,
-                                  const uint8_t *public_key,
-                                  size_t public_key_len, uint64_t features,
-                                  int64_t protocol_version);
+size_t bplist_build_info_response(
+    uint8_t *out, size_t capacity, const char *device_id,
+    const char *device_name, const char *model, const uint8_t *public_key,
+    size_t public_key_len, uint64_t features, int64_t protocol_version,
+    uint32_t status_flags, const char *pi, const char *psi);
+
+/**
+ * Build the POST /configure response: the accessory's Identifier (its pi),
+ * Enable_HK_Access_Control, PublicKey, Device_Name and Access_Control_Level.
+ * @return Length of generated bplist, or 0 on error
+ */
+size_t bplist_build_configure_response(
+    uint8_t *out, size_t capacity, const char *identifier, bool access_control,
+    const uint8_t *public_key, size_t public_key_len, const char *device_name,
+    uint8_t access_control_level);

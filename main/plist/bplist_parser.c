@@ -1300,3 +1300,132 @@ bool bplist_find_stream_crypto(const uint8_t *plist, size_t plist_len,
 
   return found;
 }
+
+// ========================================
+// Lookups inside a nested dictionary
+// ========================================
+
+typedef struct {
+  const uint8_t *plist;
+  size_t len;
+  uint8_t offset_size;
+  uint8_t ref_size;
+  uint64_t num_objects;
+  uint64_t offset_table;
+} bplist_doc_t;
+
+// Offset of object `idx`, refusing indices outside the offset table: the
+// other readers here trust the plist, but /configure arrives from the network.
+static bool bplist_doc_object(const bplist_doc_t *doc, uint64_t idx,
+                              uint64_t *offset) {
+  if (idx >= doc->num_objects ||
+      doc->offset_table + (idx + 1) * doc->offset_size > doc->len) {
+    return false;
+  }
+  *offset =
+      bplist_get_offset(doc->plist, doc->offset_table, doc->offset_size, idx);
+  return *offset < doc->len;
+}
+
+static bool bplist_doc_lookup(const bplist_doc_t *doc, uint64_t dict_offset,
+                              const char *key, uint64_t *value_offset) {
+  if (dict_offset >= doc->len ||
+      (doc->plist[dict_offset] & 0xF0) != BPLIST_DICT) {
+    return false;
+  }
+  size_t count = 0;
+  size_t header = 0;
+  if (!bplist_parse_count(doc->plist, doc->len, dict_offset, &count, &header)) {
+    return false;
+  }
+  size_t pos = dict_offset + header;
+  if (count > doc->num_objects || pos + count * 2 * doc->ref_size > doc->len) {
+    return false;
+  }
+
+  const uint8_t *key_refs = doc->plist + pos;
+  const uint8_t *val_refs = key_refs + count * doc->ref_size;
+  for (size_t i = 0; i < count; i++) {
+    uint64_t key_offset = 0;
+    char found[64];
+    if (!bplist_doc_object(
+            doc, read_be_int(key_refs + i * doc->ref_size, doc->ref_size),
+            &key_offset) ||
+        !bplist_read_string(doc->plist, doc->len, key_offset, found,
+                            sizeof(found)) ||
+        strcmp(found, key) != 0) {
+      continue;
+    }
+    return bplist_doc_object(
+        doc, read_be_int(val_refs + i * doc->ref_size, doc->ref_size),
+        value_offset);
+  }
+  return false;
+}
+
+// Find `key` in the dictionary stored under top-level `dict_key`, or in the
+// top-level dictionary itself when dict_key is NULL.
+static bool bplist_find_nested(const uint8_t *plist, size_t plist_len,
+                               const char *dict_key, const char *key,
+                               bplist_doc_t *doc, uint64_t *value_offset) {
+  if (!plist || plist_len < 40 || memcmp(plist, "bplist00", 8) != 0) {
+    return false;
+  }
+  doc->plist = plist;
+  doc->len = plist_len;
+  uint64_t top = 0;
+  if (!bplist_parse_trailer(plist, plist_len, &doc->offset_size, &doc->ref_size,
+                            &doc->num_objects, &top,
+                            &doc->offset_table) ||
+      doc->num_objects > plist_len) { // also keeps the index maths in range
+    return false;
+  }
+  uint64_t dict = 0;
+  if (!bplist_doc_object(doc, top, &dict)) {
+    return false;
+  }
+  if (dict_key && !bplist_doc_lookup(doc, dict, dict_key, &dict)) {
+    return false;
+  }
+  return bplist_doc_lookup(doc, dict, key, value_offset);
+}
+
+bool bplist_find_nested_bool(const uint8_t *plist, size_t plist_len,
+                             const char *dict_key, const char *key,
+                             bool *out_value) {
+  bplist_doc_t doc;
+  uint64_t offset = 0;
+  if (!bplist_find_nested(plist, plist_len, dict_key, key, &doc, &offset)) {
+    return false;
+  }
+  const uint8_t marker = plist[offset];
+  if (marker == 0x08 || marker == 0x09) {
+    *out_value = marker == 0x09;
+    return true;
+  }
+  // Some senders encode flags as integers.
+  int64_t value = 0;
+  if (bplist_read_int(plist, plist_len, offset, &value)) {
+    *out_value = value != 0;
+    return true;
+  }
+  return false;
+}
+
+bool bplist_find_nested_int(const uint8_t *plist, size_t plist_len,
+                            const char *dict_key, const char *key,
+                            int64_t *out_value) {
+  bplist_doc_t doc;
+  uint64_t offset = 0;
+  return bplist_find_nested(plist, plist_len, dict_key, key, &doc, &offset) &&
+         bplist_read_int(plist, plist_len, offset, out_value);
+}
+
+bool bplist_find_nested_string(const uint8_t *plist, size_t plist_len,
+                               const char *dict_key, const char *key,
+                               char *out_str, size_t out_capacity) {
+  bplist_doc_t doc;
+  uint64_t offset = 0;
+  return bplist_find_nested(plist, plist_len, dict_key, key, &doc, &offset) &&
+         bplist_read_string(plist, plist_len, offset, out_str, out_capacity);
+}

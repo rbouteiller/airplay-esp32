@@ -21,6 +21,15 @@
 #define HAP_CHACHA20_NONCE_SIZE     12
 #define HAP_POLY1305_TAG_SIZE       16
 
+// Setup code for pair-setup. Transient pairing always uses 3939; so does a
+// non-transient pair-setup from the Home app, since an AirPlay speaker has no
+// label or display to show a code on. shairport-sync (pair_ap) and the
+// openairplay receiver both use it for both kinds.
+#define HAP_SETUP_CODE "3939"
+
+// Long enough for any controller pairing identifier (a UUID in practice).
+#define HAP_CONTROLLER_ID_MAX 64
+
 // Forward declaration
 struct srp_session;
 
@@ -56,6 +65,20 @@ typedef struct {
 
   // SRP session for pair-setup
   struct srp_session *srp;
+
+  // Controller identified by the last TLV pair-verify on this session. Only
+  // verified when it is a stored pairing whose signature checked out; an
+  // unknown controller still gets an encrypted session, as with
+  // shairport-sync, but no admin rights.
+  uint8_t controller_id[HAP_CONTROLLER_ID_MAX];
+  size_t controller_id_len;
+  bool controller_verified;
+
+  // The encryption on this session comes from a transient pair-setup, so the
+  // peer has proved the setup code. That is what a full pair-setup asks of a
+  // new admin, and it is how the Home app adds the speaker: transient
+  // pair-setup, then /pair-add of the home's controllers over that session.
+  bool setup_code_proven;
 } hap_session_t;
 
 /**
@@ -68,6 +91,24 @@ esp_err_t hap_init(void);
  * Get device's Ed25519 public key (for mDNS pk field)
  */
 const uint8_t *hap_get_public_key(void);
+
+/**
+ * The accessory's HAP pairing identifier: the "AA:BB:CC:DD:EE:FF" device ID,
+ * the same string advertised as deviceid. Signed in pair-setup M6 and
+ * pair-verify M2.
+ */
+const char *hap_get_device_id(void);
+
+/**
+ * Stable pairing UUID ("pi"), derived from the long-term public key. It is
+ * also the Identifier POST /configure returns.
+ */
+const char *hap_get_pi(void);
+
+/**
+ * Stable public system identifier UUID ("psi"), derived the same way.
+ */
+const char *hap_get_psi(void);
 
 /**
  * Create a new HAP session for a client connection
@@ -200,3 +241,20 @@ esp_err_t hap_pair_setup_m3(hap_session_t *session, const uint8_t *input,
 esp_err_t hap_pair_setup_m5(hap_session_t *session, const uint8_t *input,
                             size_t input_len, uint8_t *output,
                             size_t output_capacity, size_t *output_len);
+
+/**
+ * Handle POST /pair-add, /pair-remove and /pair-list (HAP 5.10-5.12).
+ * Each writes a TLV response (State M2, plus Error on refusal) and returns
+ * ESP_OK whenever it did; anything else means no response could be built.
+ * Only an admin controller may manage pairings, except on an accessory that
+ * has no admin yet.
+ */
+esp_err_t hap_pair_add(hap_session_t *session, const uint8_t *input,
+                       size_t input_len, uint8_t *output,
+                       size_t output_capacity, size_t *output_len);
+esp_err_t hap_pair_remove(hap_session_t *session, const uint8_t *input,
+                          size_t input_len, uint8_t *output,
+                          size_t output_capacity, size_t *output_len);
+esp_err_t hap_pair_list(hap_session_t *session, const uint8_t *input,
+                        size_t input_len, uint8_t *output,
+                        size_t output_capacity, size_t *output_len);
