@@ -80,7 +80,7 @@ jobs:
             idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}"
             -DFIRMWARE_BETA=${{ inputs.beta && 'ON' || 'OFF' }} build &&
             cd build &&
-            esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
+            esptool --chip ${{ matrix.target }} merge-bin --format raw -o merged-firmware.bin $(cat flash_args) &&
             cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin &&
             cp airplay2-receiver.bin ../ota-firmware-${{ matrix.name }}.bin
 
