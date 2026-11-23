@@ -65,18 +65,25 @@ esp_err_t hap_pairings_put(const uint8_t *id, size_t id_len,
                            const uint8_t ltpk[32], uint8_t perms);
 
 /**
- * Start a new pairing set with this controller: for a session that proved
- * the setup code and is adding the speaker to a home. Every other pairing is
+ * Store a controller for a session that proved the setup code: the Home app
+ * adding the speaker to a home.
+ *
+ * Unless joining, or another setup-code session stored a pairing in the last
+ * five minutes, this starts a new pairing set: every other pairing is
  * forgotten, so a home the speaker was removed from while offline loses its
- * rights and its slots. The HomeKit configuration is kept: the Home app may
- * send /configure first. A controller
- * already stored with this key is left in place with everything else, as
- * for hap_pairings_add(): the same home is coming back, or a second
- * connection of the same setup.
- * @return As hap_pairings_add(), but never ESP_ERR_INVALID_STATE
+ * rights and its slots. That holds even when this controller is already
+ * stored, because the same iPhone is usually the first one added to the next
+ * home too. Within the window, or when joining, it is added as by
+ * hap_pairings_put(): another connection of the same setup, or a retry.
+ * The window is kept in RAM only. The HomeKit configuration is kept either
+ * way, since the Home app may send /configure first.
+ *
+ * @param joining The session has already claimed; never start over.
+ * @return As hap_pairings_put()
  */
 esp_err_t hap_pairings_claim(const uint8_t *id, size_t id_len,
-                             const uint8_t ltpk[32], uint8_t perms);
+                             const uint8_t ltpk[32], uint8_t perms,
+                             bool joining);
 
 /**
  * Look a controller up by its pairing identifier.

@@ -47,6 +47,12 @@ static inline void *heap_caps_calloc(size_t n, size_t size, int caps) {
   return calloc(n, size);
 }
 
+// A clock the tests move by hand.
+extern int64_t mock_now_us;
+static inline int64_t esp_timer_get_time(void) {
+  return mock_now_us;
+}
+
 typedef int *SemaphoreHandle_t;
 #define portMAX_DELAY 0
 extern int mock_mutex_token, mock_locked;

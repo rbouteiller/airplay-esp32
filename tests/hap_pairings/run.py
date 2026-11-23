@@ -18,7 +18,7 @@ ROOT = HERE.parents[1]
 # Only ESP-IDF/platform headers are replaced; the store and handlers are
 # compiled straight from the repo.
 SHIMS = (
-    "esp_err.h", "esp_log.h", "esp_heap_caps.h", "nvs.h",
+    "esp_err.h", "esp_log.h", "esp_heap_caps.h", "esp_timer.h", "nvs.h",
     "freertos/FreeRTOS.h", "freertos/semphr.h",
 )
 

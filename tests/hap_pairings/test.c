@@ -19,6 +19,9 @@
 #include "tlv8.c"
 
 int mock_mutex_token, mock_locked;
+int64_t mock_now_us;
+
+#define MINUTES(m) ((int64_t)(m) * 60 * 1000000)
 
 int xSemaphoreTake(SemaphoreHandle_t s, int ticks) {
   (void)s;
@@ -106,6 +109,8 @@ static void reboot(void) {
   free(s_store);
   s_store = NULL;
   s_lock = NULL;
+  s_setup_seen = false; // RAM only: a restart ends any setup
+  mock_now_us += MINUTES(1);
   assert(hap_pairings_init() == ESP_OK);
   hap_pairings_set_change_cb(on_change);
 }
@@ -185,7 +190,8 @@ static void test_store(void) {
   assert(!hap_homekit_access_control() && hap_homekit_acl() == 0);
   assert(hap_pairings_clear() != ESP_OK);
   assert(hap_pairings_count() == 2);
-  assert(hap_pairings_claim(ID("new-home"), kb, HAP_PERM_ADMIN) != ESP_OK);
+  assert(hap_pairings_claim(ID("new-home"), kb, HAP_PERM_ADMIN, false) !=
+         ESP_OK);
   assert(hap_pairings_count() == 2 && hap_pairings_find(ID("A"), NULL, NULL));
   assert(changes == 0);
   nvs.fail_writes = false;
@@ -236,23 +242,46 @@ static void test_store(void) {
   assert(hap_pairings_count() == 0 && !hap_homekit_access_control());
   assert(hap_pairings_clear() == ESP_OK); // nothing stored: still fine
 
-  // Claim: a controller already stored with this key keeps everything...
+  // Claim, with no setup in progress: starts over, even for a controller
+  // already stored with this key (the same iPhone adding the speaker to its
+  // next home). The configuration stays: /configure may have come first.
+  uint8_t kc[32];
+  key(kc, 3);
   assert(hap_pairings_add(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
   assert(hap_pairings_add(ID("B"), kb, HAP_PERM_USER) == ESP_OK);
   assert(hap_homekit_set_config(true, 1) == ESP_OK);
-  assert(hap_pairings_claim(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
-  assert(hap_pairings_count() == 2 && hap_homekit_access_control());
-  // ... anything else starts over. The configuration stays: /configure may
-  // have come first in the same setup.
-  assert(hap_pairings_claim(ID("A"), kb, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_pairings_claim(ID("A"), ka, HAP_PERM_ADMIN, false) == ESP_OK);
   assert(hap_pairings_count() == 1 && hap_homekit_access_control());
+  assert(!hap_pairings_find(ID("B"), NULL, NULL));
+  // Within five minutes of it, a claim joins: the same setup again.
+  mock_now_us += MINUTES(4);
+  assert(hap_pairings_claim(ID("B"), kb, HAP_PERM_USER, false) == ESP_OK);
+  assert(hap_pairings_claim(ID("A"), kb, HAP_PERM_ADMIN, false) == ESP_OK);
+  assert(hap_pairings_count() == 2); // A re-keyed in place, not dropped
   assert(hap_pairings_find(ID("A"), got, NULL) && memcmp(got, kb, 32) == 0);
-  assert(hap_pairings_claim(ID("C"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  // A joining session never starts over, however long it has been...
+  mock_now_us += MINUTES(30);
+  assert(hap_pairings_claim(ID("C"), kc, HAP_PERM_USER, true) == ESP_OK);
+  assert(hap_pairings_count() == 3);
+  // ... and it keeps the window open; once that closes, a claim starts over.
+  mock_now_us += MINUTES(5);
+  assert(hap_pairings_claim(ID("C"), kc, HAP_PERM_ADMIN, false) == ESP_OK);
+  assert(hap_pairings_count() == 1);
+  // Already the whole set: nothing to write.
+  mock_now_us += MINUTES(10);
+  int before = nvs.writes;
+  assert(hap_pairings_claim(ID("C"), kc, HAP_PERM_ADMIN, false) == ESP_OK);
+  assert(nvs.writes == before);
   assert(hap_homekit_set_config(false, 0) == ESP_OK);
+  // A restart ends a setup in progress.
+  assert(hap_pairings_add(ID("B"), kb, HAP_PERM_USER) == ESP_OK);
+  reboot();
+  assert(hap_pairings_claim(ID("A"), ka, HAP_PERM_ADMIN, false) == ESP_OK);
+  assert(hap_pairings_count() == 1);
   // Claiming an unpaired accessory is announced: it is now paired.
   assert(hap_pairings_clear() == ESP_OK);
   changes = 0;
-  assert(hap_pairings_claim(ID("C"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_pairings_claim(ID("C"), ka, HAP_PERM_ADMIN, false) == ESP_OK);
   assert(changes == 1);
   reboot();
   assert(hap_pairings_count() == 1 && !hap_pairings_find(ID("A"), NULL, NULL));
@@ -472,22 +501,38 @@ static void test_home_app_add(void) {
   assert(add(&setup, "member", ka, HAP_PERM_USER) == 0);
   assert(hap_pairings_count() == 3);
 
-  // A second setup session for the same home starts with a controller it
-  // already holds: nothing is dropped.
+  // A second connection of the same setup, a minute later, joins the set,
+  // whatever it adds first.
+  mock_now_us += MINUTES(1);
   hap_session_t again;
   as_controller(&again, NULL, false);
   again.setup_code_proven = true;
-  assert(add(&again, "owner", kb, HAP_PERM_ADMIN) == 0);
+  assert(add(&again, "member-2", ka, HAP_PERM_USER) == 0);
   assert(add(&again, "hub", kc, HAP_PERM_ADMIN) == 0);
-  assert(hap_pairings_count() == 3);
+  assert(hap_pairings_count() == 4);
+
+  // Later, the same iPhone adds the speaker to another home (it was removed
+  // from this one while offline). Same identifier, same key, but the old
+  // home's hub and members must go.
+  mock_now_us += MINUTES(60);
+  hap_session_t next_home;
+  as_controller(&next_home, NULL, false);
+  next_home.setup_code_proven = true;
+  assert(add(&next_home, "owner", kb, HAP_PERM_ADMIN) == 0);
+  assert(hap_pairings_count() == 1 &&
+         !hap_pairings_find(ID("hub"), NULL, NULL));
+  hap_session_t old_hub;
+  as_controller(&old_hub, "hub", true);
+  assert(add(&old_hub, "x", ka, HAP_PERM_USER) == TLV_ERROR_AUTHENTICATION);
 
   // A failed claim leaves the old set in place, and the next try claims.
+  mock_now_us += MINUTES(60);
   hap_session_t failing;
   as_controller(&failing, NULL, false);
   failing.setup_code_proven = true;
   nvs.fail_writes = true;
   assert(add(&failing, "other-owner", kd, HAP_PERM_ADMIN) == TLV_ERROR_UNKNOWN);
-  assert(!failing.pairings_claimed && hap_pairings_count() == 3);
+  assert(!failing.pairings_claimed && hap_pairings_count() == 1);
   nvs.fail_writes = false;
   assert(add(&failing, "other-owner", kd, HAP_PERM_ADMIN) == 0);
   assert(hap_pairings_count() == 1);

@@ -8,6 +8,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -31,6 +32,12 @@ typedef struct {
 static hap_store_t *s_store;
 static SemaphoreHandle_t s_lock;
 static void (*s_change_cb)(void);
+
+// A setup in progress: the last time a setup-code session stored a pairing.
+// RAM only, so a restart always ends it.
+#define SETUP_WINDOW_US (5LL * 60 * 1000000)
+static bool s_setup_seen;
+static int64_t s_setup_at_us;
 
 static void lock(void) {
   xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -142,9 +149,10 @@ esp_err_t hap_pairings_init(void) {
 }
 
 typedef enum {
-  STORE_ADD,   // Refuse a known identifier with a different key.
-  STORE_PUT,   // A known identifier takes the new key.
-  STORE_CLAIM, // Start a new pairing set, unless already stored as given.
+  STORE_ADD,        // Refuse a known identifier with a different key.
+  STORE_PUT,        // A known identifier takes the new key.
+  STORE_SETUP_JOIN, // As PUT, and extends the setup window.
+  STORE_CLAIM,      // Start a new pairing set unless a setup is in progress.
 } store_mode_t;
 
 // Caller holds the lock. Replaces every pairing by this one controller. The
@@ -184,6 +192,13 @@ static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
   }
 
   lock();
+  const int64_t now_us = esp_timer_get_time();
+  if (mode == STORE_CLAIM && s_setup_seen &&
+      now_us - s_setup_at_us < SETUP_WINDOW_US) {
+    // Another connection of the setup that claimed moments ago, or the
+    // Home app retrying it: join that set rather than drop it.
+    mode = STORE_SETUP_JOIN;
+  }
   const bool was_paired = s_store->count > 0;
   const uint8_t was_access_control = s_store->access_control;
   const uint8_t was_acl = s_store->acl;
@@ -193,7 +208,11 @@ static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
   int idx = find_index(id, id_len);
   const bool same_key =
       idx >= 0 && memcmp(s_store->entries[idx].ltpk, ltpk, 32) == 0;
-  if (mode == STORE_CLAIM && !same_key) {
+  // Already the whole set: nothing to drop, and maybe nothing to write.
+  const bool only_this = s_store->count == 1 && same_key;
+  if (mode == STORE_CLAIM && !only_this) {
+    // Not "unless already stored": the same iPhone is usually the first
+    // controller added to the next home as well.
     err = claim_locked(id, id_len, ltpk, perms, &dropped);
     claimed = err == ESP_OK;
   } else if (idx >= 0) {
@@ -229,6 +248,10 @@ static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
   const bool advertised_changed =
       (was_paired != (s_store->count > 0)) ||
       was_access_control != s_store->access_control || was_acl != s_store->acl;
+  if (err == ESP_OK && (mode == STORE_CLAIM || mode == STORE_SETUP_JOIN)) {
+    s_setup_seen = true;
+    s_setup_at_us = now_us;
+  }
   unlock();
 
   if (err == ESP_OK) {
@@ -256,8 +279,10 @@ esp_err_t hap_pairings_put(const uint8_t *id, size_t id_len,
 }
 
 esp_err_t hap_pairings_claim(const uint8_t *id, size_t id_len,
-                             const uint8_t ltpk[32], uint8_t perms) {
-  return store_pairing(id, id_len, ltpk, perms, STORE_CLAIM);
+                             const uint8_t ltpk[32], uint8_t perms,
+                             bool joining) {
+  return store_pairing(id, id_len, ltpk, perms,
+                       joining ? STORE_SETUP_JOIN : STORE_CLAIM);
 }
 
 bool hap_pairings_find(const uint8_t *id, size_t id_len, uint8_t ltpk[32],

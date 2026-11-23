@@ -289,7 +289,7 @@ esp_err_t hap_pair_setup_m5(hap_session_t *session, const uint8_t *input,
     // Full, most likely with homes the speaker was removed from while it was
     // offline. It has just proved the setup code: start over with it.
     err = hap_pairings_claim(controller_id, id_len, controller_ltpk,
-                             HAP_PERM_ADMIN);
+                             HAP_PERM_ADMIN, false);
   }
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to store controller pairing: %s",
