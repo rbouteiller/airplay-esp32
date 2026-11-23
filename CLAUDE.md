@@ -37,7 +37,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
 | `esp32c5-xiao` | Seeed XIAO ESP32-C5 | The ESP-IDF native flow works too |
 | `esp32wrover-dev` | Freenove ESP32-WROVER devkit | 4MB, Bluetooth |
-| `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 16MB |
+| `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 8MB |
 | `squeezeamp` | ESP32 + TAS5756 DAC/amp | 8MB flash |
 | `squeezeamp-bt` | Same + Bluetooth A2DP | |
 | `squeezeamp-4m` | SqueezeAMP with 4MB flash | |
