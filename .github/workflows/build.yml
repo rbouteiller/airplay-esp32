@@ -81,10 +81,17 @@ jobs:
             -DFIRMWARE_BETA=${{ inputs.beta && 'ON' || 'OFF' }} build &&
             cd build &&
             esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
-            cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin
+            cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin &&
+            cp firmware.bin ../ota-firmware-${{ matrix.name }}.bin
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v6
         with:
           name: firmware-${{ matrix.name }}
           path: airplay2-receiver-${{ matrix.name }}.bin
+
+      - name: Upload OTA firmware artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ota-firmware-${{ matrix.name }}
+          path: ota-firmware-${{ matrix.name }}.bin
