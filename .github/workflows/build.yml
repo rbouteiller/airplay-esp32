@@ -9,6 +9,12 @@ name: Build
 # needs a matching docs/firmware/<name>.json manifest or the browser installer
 # has nothing to point at.
 #
+# Each entry's name is also the name of its configure preset in
+# CMakePresets.json, which holds the chip and the layered sdkconfig defaults. The targets job reads the chip from
+# there, so a board's configuration is stated once. Every idf.py call has to
+# name its preset: with CMakePresets.json present, idf.py otherwise picks the
+# first one in the file, whatever -D options and target it is given.
+#
 # Entries flagged "core": true also build on a pull request. The rest build only
 # on staging and on a release tag, which stops the per-PR check growing a job
 # for every board variant while still publishing all of them.
@@ -40,19 +46,34 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          sparse-checkout: .github/workflows/targets.json
+          sparse-checkout: |
+            .github/workflows/targets.json
+            /CMakePresets.json
           sparse-checkout-cone-mode: false
 
       - name: Select the ${{ inputs.scope }} target list
         id: select
         run: |
           set -euo pipefail
+          targets=.github/workflows/targets.json
+          missing="$(jq -r --slurpfile p CMakePresets.json \
+            '[$p[0].configurePresets[].name] as $names
+             | .[] | select(.name as $x | $names | index($x) | not)
+             | .name' "$targets")"
+          if [ -n "$missing" ]; then
+            echo "$missing" | sed 's/^/::error::no such preset in CMakePresets.json: /'
+            exit 1
+          fi
           if [ "${{ inputs.scope }}" = "core" ]; then
             filter='[.[] | select(.core)]'
           else
             filter='.'
           fi
-          include="$(jq -c "$filter" .github/workflows/targets.json)"
+          # Add each entry's chip, read from its preset.
+          include="$(jq -c --slurpfile p CMakePresets.json \
+            "$filter | map(. as \$t | \$t + {target: (\$p[0].configurePresets[]
+              | select(.name == \$t.name) | .cacheVariables.IDF_TARGET)})" \
+            "$targets")"
           echo "$include" | jq -r '.[].name' | sed 's/^/building /'
           echo "include=$include" >> "$GITHUB_OUTPUT"
 
@@ -77,14 +98,23 @@ jobs:
           esp_idf_version: v6.1
           target: ${{ matrix.target }}
           command: >
-            idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}"
+            idf.py --preset ${{ matrix.name }}
             -DFIRMWARE_BETA=${{ inputs.beta && 'ON' || 'OFF' }} build &&
-            cd build &&
-            esptool.py --chip ${{ matrix.target }} merge_bin --format raw -o merged-firmware.bin $(cat flash_args) &&
-            cp merged-firmware.bin ../airplay2-receiver-${{ matrix.name }}.bin
+            cd build/${{ matrix.name }} &&
+            esptool --chip ${{ matrix.target }} merge-bin --format raw -o merged-firmware.bin $(cat flash_args) &&
+            cp merged-firmware.bin ../../airplay2-receiver-${{ matrix.name }}.bin &&
+            cp airplay2-receiver.bin ../../ota-firmware-${{ matrix.name }}.bin
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v6
         with:
           name: firmware-${{ matrix.name }}
           path: airplay2-receiver-${{ matrix.name }}.bin
+          if-no-files-found: error
+
+      - name: Upload OTA firmware artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ota-firmware-${{ matrix.name }}
+          path: ota-firmware-${{ matrix.name }}.bin
+          if-no-files-found: error

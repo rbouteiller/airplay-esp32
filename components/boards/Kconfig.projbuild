@@ -6,6 +6,7 @@ menu "Board Configuration"
         default BOARD_ESP32S3_GENERIC if IDF_TARGET_ESP32S3
         default BOARD_ESP32C5_XIAO if IDF_TARGET_ESP32C5
         default BOARD_WAVESHARE_ESP32P4 if IDF_TARGET_ESP32P4
+        default BOARD_ESP32S31_GENERIC if IDF_TARGET_ESP32S31
 
         config BOARD_SQUEEZEAMP
             bool "SqueezeAMP (8MB flash)"
@@ -22,6 +23,10 @@ menu "Board Configuration"
         config BOARD_ESP32S3_GENERIC
             bool "ESP32-S3 Generic"
             depends on IDF_TARGET_ESP32S3
+
+        config BOARD_ESP32S31_GENERIC
+            bool "ESP32-S3 Generic"
+            depends on IDF_TARGET_ESP32S31
 
         config BOARD_ESP32C5_XIAO
             bool "Seeed XIAO ESP32-C5"
@@ -155,6 +160,7 @@ menu "Board Configuration"
         default "squeezeamp" if BOARD_SQUEEZEAMP_4M
         default "esp32s2-generic" if BOARD_ESP32S2_GENERIC
         default "esp32s3-generic" if BOARD_ESP32S3_GENERIC
+        default "esp32s31-generic" if BOARD_ESP32S31_GENERIC
         default "esp32c5-xiao" if BOARD_ESP32C5_XIAO
         default "esp32-generic" if BOARD_ESP32_GENERIC
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK

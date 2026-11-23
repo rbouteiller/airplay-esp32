@@ -85,8 +85,11 @@ jobs:
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
 
-      - name: Test AirPlay device names in binary plists
+      - name: Test AirPlay binary plists (/info names, /configure)
         run: python3 tests/bplist/run.py
+
+      - name: Test the HomeKit pairing store and pair-add/remove/list
+        run: python3 tests/hap_pairings/run.py
 
       - name: Test the USB-PD trigger against a simulated charger
         run: python3 tests/husb238a/run.py
@@ -129,17 +132,16 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # name is a configure preset in CMakePresets.json; target must match
+        # its IDF_TARGET.
         include:
-          - name: spdif
+          - name: esp32s3-spdif
             target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.spdif"
-          - name: usb
+          - name: esp32s3-usb
             target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb"
           # Not an output backend, but no release board turns it on either.
-          - name: software-eq
+          - name: esp32s3-software-eq
             target: esp32s3
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac;config/sdkconfig.defaults.software-eq"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -150,7 +152,7 @@ jobs:
         with:
           esp_idf_version: v6.1
           target: ${{ matrix.target }}
-          command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build
+          command: idf.py --preset ${{ matrix.name }} build
 
   # A pull request builds the "core" subset of the target list: enough to cover
   # every board support directory and every chip, without a job per board

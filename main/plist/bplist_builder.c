@@ -550,19 +550,18 @@ size_t bplist_build_feedback_response(uint8_t *out, size_t capacity,
   return pos;
 }
 
-size_t bplist_build_info_response(uint8_t *out, size_t capacity,
-                                  const char *device_id,
-                                  const char *device_name,
-                                  const uint8_t *public_key,
-                                  size_t public_key_len, uint64_t features,
-                                  int64_t protocol_version) {
-  if (!out || !device_id || !device_name || !public_key ||
-      public_key_len == 0 || capacity < 512) {
+size_t bplist_build_info_response(
+    uint8_t *out, size_t capacity, const char *device_id,
+    const char *device_name, const char *model, const uint8_t *public_key,
+    size_t public_key_len, uint64_t features, int64_t protocol_version,
+    uint32_t status_flags, const char *pi, const char *psi) {
+  if (!out || !device_id || !device_name || !model || !public_key ||
+      public_key_len == 0 || !pi || !psi || capacity < 512) {
     return 0;
   }
 
   size_t pos = 0;
-  size_t offsets[39];
+  size_t offsets[41];
   size_t obj = 0;
 
 #define ADD_OFFSET()                                   \
@@ -600,7 +599,7 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
     return 0;
   }
   ADD_OFFSET(); // 5: model
-  if (!bplist_write_ascii_string(out, capacity, &pos, "AudioAccessory5,1")) {
+  if (!bplist_write_ascii_string(out, capacity, &pos, model)) {
     return 0;
   }
   ADD_OFFSET(); // 6: "protovers"
@@ -632,7 +631,7 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
     return 0;
   }
   ADD_OFFSET(); // 13: statusFlags value
-  if (!bplist_write_int(out, capacity, &pos, 4)) {
+  if (!bplist_write_int(out, capacity, &pos, status_flags)) {
     return 0;
   }
   ADD_OFFSET(); // 14: "pk"
@@ -648,8 +647,7 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
     return 0;
   }
   ADD_OFFSET(); // 17: pairing identifier
-  if (!bplist_write_ascii_string(out, capacity, &pos,
-                                 "00000000-0000-0000-0000-000000000000")) {
+  if (!bplist_write_ascii_string(out, capacity, &pos, pi)) {
     return 0;
   }
   ADD_OFFSET(); // 18: "name"
@@ -750,11 +748,19 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
       return 0;
     }
   }
-  ADD_OFFSET(); // 38: top-level info dict
+  ADD_OFFSET(); // 38: "psi"
+  if (!bplist_write_ascii_string(out, capacity, &pos, "psi")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 39: public system identifier
+  if (!bplist_write_ascii_string(out, capacity, &pos, psi)) {
+    return 0;
+  }
+  ADD_OFFSET(); // 40: top-level info dict
   {
-    const uint8_t keys[] = {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 28};
-    const uint8_t values[] = {1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 27, 37};
-    if (!bplist_write_dict(out, capacity, &pos, keys, values, 12)) {
+    const uint8_t keys[] = {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 28, 38};
+    const uint8_t values[] = {1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 27, 37, 39};
+    if (!bplist_write_dict(out, capacity, &pos, keys, values, 13)) {
       return 0;
     }
   }
@@ -762,9 +768,96 @@ size_t bplist_build_info_response(uint8_t *out, size_t capacity,
 #undef ADD_OFFSET
 
   if (obj != sizeof(offsets) / sizeof(offsets[0]) ||
-      !bplist_finish(out, capacity, &pos, offsets, obj, 38)) {
+      !bplist_finish(out, capacity, &pos, offsets, obj, 40)) {
     return 0;
   }
 
+  return pos;
+}
+
+size_t bplist_build_configure_response(
+    uint8_t *out, size_t capacity, const char *identifier, bool access_control,
+    const uint8_t *public_key, size_t public_key_len, const char *device_name,
+    uint8_t access_control_level) {
+  if (!out || !identifier || !device_name || !public_key ||
+      public_key_len == 0) {
+    return 0;
+  }
+
+  size_t pos = 0;
+  size_t offsets[11];
+  size_t obj = 0;
+
+#define ADD_OFFSET()                                   \
+  do {                                                 \
+    if (obj >= sizeof(offsets) / sizeof(offsets[0])) { \
+      return 0;                                        \
+    }                                                  \
+    offsets[obj++] = pos;                              \
+  } while (0)
+
+  if (!bplist_has_room(pos, 8, capacity)) {
+    return 0;
+  }
+  memcpy(out + pos, BPLIST_MAGIC, sizeof(BPLIST_MAGIC));
+  pos += 8;
+
+  ADD_OFFSET(); // 0
+  if (!bplist_write_ascii_string(out, capacity, &pos, "Identifier")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 1
+  if (!bplist_write_ascii_string(out, capacity, &pos, identifier)) {
+    return 0;
+  }
+  ADD_OFFSET(); // 2
+  if (!bplist_write_ascii_string(out, capacity, &pos,
+                                 "Enable_HK_Access_Control")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 3
+  if (!bplist_has_room(pos, 1, capacity)) {
+    return 0;
+  }
+  out[pos++] = access_control ? 0x09 : 0x08;
+  ADD_OFFSET(); // 4
+  if (!bplist_write_ascii_string(out, capacity, &pos, "PublicKey")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 5
+  if (!bplist_write_data(out, capacity, &pos, public_key, public_key_len)) {
+    return 0;
+  }
+  ADD_OFFSET(); // 6
+  if (!bplist_write_ascii_string(out, capacity, &pos, "Device_Name")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 7
+  if (!bplist_write_utf8_string(out, capacity, &pos, device_name)) {
+    return 0;
+  }
+  ADD_OFFSET(); // 8
+  if (!bplist_write_ascii_string(out, capacity, &pos, "Access_Control_Level")) {
+    return 0;
+  }
+  ADD_OFFSET(); // 9
+  if (!bplist_write_int(out, capacity, &pos, access_control_level)) {
+    return 0;
+  }
+  ADD_OFFSET(); // 10: top-level dict
+  {
+    const uint8_t keys[] = {0, 2, 4, 6, 8};
+    const uint8_t values[] = {1, 3, 5, 7, 9};
+    if (!bplist_write_dict(out, capacity, &pos, keys, values, 5)) {
+      return 0;
+    }
+  }
+
+#undef ADD_OFFSET
+
+  if (obj != sizeof(offsets) / sizeof(offsets[0]) ||
+      !bplist_finish(out, capacity, &pos, offsets, obj, 10)) {
+    return 0;
+  }
   return pos;
 }

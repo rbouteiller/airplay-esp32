@@ -6,10 +6,10 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 
 | Environment | Chip | Flash | Notes |
 | --- | --- | --- | --- |
-| `esp32s3` | ESP32-S3 | 16 MB | Default. External I2S DAC such as a PCM5102A |
-| `esp32s3-jtag` | ESP32-S3 | 16 MB | Extends `esp32s3`, uploads over built-in USB JTAG |
-| `esp32s3-uac` | ESP32-S3 | 16 MB | Extends `esp32s3`, enumerates as a [USB speaker](../features/usb-audio.md) |
-| `waveshare-esp32s3` | ESP32-S3 | 16 MB | Waveshare ESP32-S3 pin arrangement |
+| `esp32s3` | ESP32-S3 | 8 MB | Default. External I2S DAC such as a PCM5102A |
+| `esp32s3-jtag` | ESP32-S3 | 8 MB | Extends `esp32s3`, uploads over built-in USB JTAG |
+| `esp32s3-uac` | ESP32-S3 | 8 MB | Extends `esp32s3`, enumerates as a [USB speaker](../features/usb-audio.md) |
+| `waveshare-esp32s3` | ESP32-S3 | 8 MB | Waveshare ESP32-S3 pin arrangement |
 | `esp32c5-xiao` | ESP32-C5 | 8 MB | Seeed XIAO; has 5Ghz Wi-Fi |
 | `esp32wrover-dev` | ESP32 | 4 MB | Freenove WROVER, includes Bluetooth |
 
