@@ -32,7 +32,7 @@ idf.py -p /dev/ttyUSB0 monitor
 
 | Environment | Board | Notes |
 |---|---|---|
-| `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default, 16MB flash |
+| `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default, 8MB flash |
 | `esp32s3-uac` | Same, as a USB speaker | Extends esp32s3 + `defaults.uac` |
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
 | `esp32c5-xiao` | Seeed XIAO ESP32-C5 | The ESP-IDF native flow works too |
