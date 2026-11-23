@@ -22,11 +22,11 @@ pio run -e <env> -t menuconfig      # Kconfig configuration
 **ESP-IDF** (native):
 ```bash
 source /path/to/esp-idf/export.sh
-idf.py set-target esp32s3           # or esp32, esp32p4
-idf.py build
-idf.py -p /dev/ttyUSB0 flash
-idf.py -p /dev/ttyUSB0 monitor
+idf.py --preset <env> build                          # output in build/<env>/
+idf.py --preset <env> -p /dev/ttyUSB0 flash monitor
 ```
+
+`CMakePresets.json` has a configure preset per PlatformIO environment, plus `esp32s2`, `esp32p4`, `esp32s31` and the CI-only `esp32s3-spdif`, `esp32s3-usb` and `esp32s3-software-eq`. Each sets `IDF_TARGET`, the layered `SDKCONFIG_DEFAULTS` and its own `build/<env>/sdkconfig`. **Always name the preset**: without `--preset`, `idf.py` silently uses the first one (`esp32s3`) — its target, build directory and sdkconfig — even alongside `set-target` or `-DSDKCONFIG_DEFAULTS`. IDF ignores `inherits`, so every preset is spelled out in full. idf.py's target check still reads a leftover root `sdkconfig`, so delete one from a pre-preset build if it reports a target mismatch.
 
 ## Build Environments
 
@@ -226,7 +226,7 @@ components/
 
 **CI** (`.github/workflows/`), five workflows:
 - `ci.yml` — on push to `main`, and on every PR to `main` or `staging`. A `changes` job skips the firmware jobs for a Markdown-only PR; `format-check` (clang-format), `lint-check` (clang-tidy against an esp32s3 build), `output-backends` (links the spdif and usb backends, which the release matrix never covers) and `build` follow. **`ci-gate` is the one required check** — it runs unconditionally and treats skipped as fine, so branch protection does not have to list every matrix job.
-- `build.yml` — reusable, and the entry point for the release matrix. The matrix itself is `.github/workflows/targets.json`, because a matrix has to be JSON before `fromJSON` can filter it. Every entry there gets a published `airplay2-receiver-<name>.bin` and needs a matching `docs/firmware/<name>.json`. Entries flagged `"core": true` are the subset a **pull request** builds — one per chip and per `components/boards/` directory; a push to `main`, a push to `staging` and a tag build the lot. `fail-fast: false`, so a broken board no longer cancels the rest. Targets: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, the esparagus ones (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3, echo) and the Sonocotta dock boards (hifi-, loud-, amped-, louder- variants). **An ESP32 board's published binary is always the Bluetooth one** — the non-BT envs still exist, they just are not released.
+- `build.yml` — reusable, and the entry point for the release matrix. The matrix itself is `.github/workflows/targets.json`, because a matrix has to be JSON before `fromJSON` can filter it. An entry is just `name` and `core`: the name is also its `CMakePresets.json` preset, which the targets job reads the chip from (an entry with no such preset fails the job), and the build runs `idf.py --preset <name>`. Every entry there gets a published `airplay2-receiver-<name>.bin` and needs a matching `docs/firmware/<name>.json`. Entries flagged `"core": true` are the subset a **pull request** builds — one per chip and per `components/boards/` directory; a push to `main`, a push to `staging` and a tag build the lot. `fail-fast: false`, so a broken board no longer cancels the rest. Targets: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, the esparagus ones (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3, echo) and the Sonocotta dock boards (hifi-, loud-, amped-, louder- variants). **An ESP32 board's published binary is always the Bluetooth one** — the non-BT envs still exist, they just are not released.
 - `release.yml` — on a `v*` tag. Refuses to release unless the tag matches `version.txt` and points at a commit on `main`, then publishes the merged binaries.
 - `beta.yml` — on push to `staging`. Same matrix, published to a rolling `beta` pre-release that is deleted and recreated each time so the tag follows the staging tip. Because the matrix does not fail fast, `publish` runs on `always()` and ships whatever built, warning about each missing target; it only errors when nothing built at all. Fails if `version.txt` on staging is not strictly greater than the latest release, so **bump `version.txt` on staging right after a release**.
 - `docs.yml` — `zensical build --strict --clean`, bundles the latest release binaries into `site/firmware/` and the beta ones into `site/firmware/beta/` for the browser installer, and deploys to Pages. **`docs-build` is a required check**, so its `pull_request` trigger is deliberately unfiltered.
@@ -265,5 +265,6 @@ VS Code's built-in Markdown preview does not understand `!!!` admonitions or `==
 2. A `[env:<board>]` in `platformio.ini`, layering that file after `config/sdkconfig.defaults`.
 3. A board directory under `components/boards/` if it needs its own init.
 4. A page under `docs/boards/` **and** an entry in `nav:`.
-5. For a board that should ship prebuilt firmware: an entry in `.github/workflows/targets.json` **and** a matching `docs/firmware/<name>.json` ESP Web Tools manifest, whose `parts[0].path` must equal `airplay2-receiver-<name>.bin`. Set `"core": true` only if the board brings new board-support code or a new chip — that flag is what a pull request builds. The docs workflow drops any manifest whose binary is missing from the release.
-6. An install card (stable + beta buttons) in `docs/getting-started/flashing.md`.
+5. A configure preset named `<board>` in `CMakePresets.json` (`IDF_TARGET`, the same `SDKCONFIG_DEFAULTS` chain, `binaryDir` and `SDKCONFIG` under `build/<board>/`).
+6. For a board that should ship prebuilt firmware: an entry in `.github/workflows/targets.json` **and** a matching `docs/firmware/<name>.json` ESP Web Tools manifest, whose `parts[0].path` must equal `airplay2-receiver-<name>.bin`. Set `"core": true` only if the board brings new board-support code or a new chip — that flag is what a pull request builds. The docs workflow drops any manifest whose binary is missing from the release.
+7. An install card (stable + beta buttons) in `docs/getting-started/flashing.md`.

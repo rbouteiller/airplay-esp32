@@ -67,6 +67,42 @@
       }
     },
     {
+      "name": "esp32s3-spdif",
+      "displayName": "esp32s3-spdif",
+      "description": "ESP32-S3 with the S/PDIF output backend (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-spdif",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.spdif",
+        "SDKCONFIG": "./build/esp32s3-spdif/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-usb",
+      "displayName": "esp32s3-usb",
+      "description": "ESP32-S3 with the USB audio source backend (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-usb",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb",
+        "SDKCONFIG": "./build/esp32s3-usb/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-software-eq",
+      "displayName": "esp32s3-software-eq",
+      "description": "ESP32-S3 USB speaker with the software EQ (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-software-eq",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac;config/sdkconfig.defaults.software-eq",
+        "SDKCONFIG": "./build/esp32s3-software-eq/sdkconfig"
+      }
+    },
+    {
       "name": "esp32c5-xiao",
       "displayName": "esp32c5-xiao",
       "description": "Seeed XIAO ESP32-C5 (esp32c5)",
@@ -663,6 +699,18 @@
     {
       "name": "esp32s3-uac",
       "configurePreset": "esp32s3-uac"
+    },
+    {
+      "name": "esp32s3-spdif",
+      "configurePreset": "esp32s3-spdif"
+    },
+    {
+      "name": "esp32s3-usb",
+      "configurePreset": "esp32s3-usb"
+    },
+    {
+      "name": "esp32s3-software-eq",
+      "configurePreset": "esp32s3-software-eq"
     },
     {
       "name": "esp32c5-xiao",
