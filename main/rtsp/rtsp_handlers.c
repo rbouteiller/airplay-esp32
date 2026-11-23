@@ -773,8 +773,13 @@ static void handle_configure(int socket, rtsp_conn_t *conn,
            access_control ? "on" : "off", acl);
   esp_err_t err = hap_homekit_set_config(access_control, acl);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "/configure: could not store settings: %s",
+    // Answering 200 would tell the Home app the settings took, and they would
+    // be gone after a restart.
+    ESP_LOGE(TAG, "/configure: could not store settings: %s",
              esp_err_to_name(err));
+    rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
+                       NULL, 0);
+    return;
   }
 
   char device_name[65];

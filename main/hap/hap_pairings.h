@@ -65,6 +65,20 @@ esp_err_t hap_pairings_put(const uint8_t *id, size_t id_len,
                            const uint8_t ltpk[32], uint8_t perms);
 
 /**
+ * Start a new pairing set with this controller: for a session that proved
+ * the setup code and is adding the speaker to a home. Every other pairing is
+ * forgotten, so a home the speaker was removed from while offline loses its
+ * rights and its slots. The HomeKit configuration is kept: the Home app may
+ * send /configure first. A controller
+ * already stored with this key is left in place with everything else, as
+ * for hap_pairings_add(): the same home is coming back, or a second
+ * connection of the same setup.
+ * @return As hap_pairings_add(), but never ESP_ERR_INVALID_STATE
+ */
+esp_err_t hap_pairings_claim(const uint8_t *id, size_t id_len,
+                             const uint8_t ltpk[32], uint8_t perms);
+
+/**
  * Look a controller up by its pairing identifier.
  * @param ltpk Receives the long-term public key (may be NULL)
  * @param perms Receives the permissions (may be NULL)
@@ -94,7 +108,8 @@ size_t hap_pairings_admin_count(void);
 size_t hap_pairings_snapshot(hap_pairing_t *out, size_t max);
 
 /**
- * Forget every pairing and the HomeKit configuration.
+ * Forget every pairing and the HomeKit configuration. Nothing changes in RAM
+ * unless the erase reached flash.
  */
 esp_err_t hap_pairings_clear(void);
 
@@ -109,7 +124,8 @@ bool hap_homekit_access_control(void);
 uint8_t hap_homekit_acl(void);
 
 /**
- * Store the HomeKit configuration from POST /configure.
+ * Store the HomeKit configuration from POST /configure. On a failed flash
+ * write the previous configuration stays in effect and the error is returned.
  */
 esp_err_t hap_homekit_set_config(bool access_control, uint8_t acl);
 

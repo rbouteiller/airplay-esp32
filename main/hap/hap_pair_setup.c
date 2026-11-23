@@ -60,6 +60,7 @@ esp_err_t hap_pair_setup_m1(hap_session_t *session, const uint8_t *input,
   session->pair_setup_transient = transient;
   session->pair_setup_state = 0;
   session->setup_code_proven = false;
+  session->pairings_claimed = false;
 
   if (session->srp) {
     srp_session_free(session->srp);
@@ -74,7 +75,8 @@ esp_err_t hap_pair_setup_m1(hap_session_t *session, const uint8_t *input,
   // (HAP 5.6.2). It does not: an AirPlay speaker removed from a home while it
   // was offline still holds that home's pairings, and refusing would leave it
   // impossible to add back without a reset. Every pair-setup that completes
-  // adds its controller as one more admin.
+  // adds its controller as one more admin; with the store full, it starts a
+  // new pairing set instead (hap_pairings_claim()).
   if (!transient) {
     ESP_LOGI(TAG, "Non-transient pair-setup (HomeKit), %u controller(s) paired",
              (unsigned)hap_pairings_count());
@@ -164,6 +166,7 @@ esp_err_t hap_pair_setup_m3(hap_session_t *session, const uint8_t *input,
     session->decrypt_nonce = 0;
     session->session_established = true;
     session->setup_code_proven = true;
+    session->pairings_claimed = false;
   }
 
   const uint8_t *server_proof = srp_get_proof(session->srp);
@@ -282,6 +285,12 @@ esp_err_t hap_pair_setup_m5(hap_session_t *session, const uint8_t *input,
   // unpair it) on the way.
   esp_err_t err =
       hap_pairings_put(controller_id, id_len, controller_ltpk, HAP_PERM_ADMIN);
+  if (err == ESP_ERR_NO_MEM) {
+    // Full, most likely with homes the speaker was removed from while it was
+    // offline. It has just proved the setup code: start over with it.
+    err = hap_pairings_claim(controller_id, id_len, controller_ltpk,
+                             HAP_PERM_ADMIN);
+  }
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to store controller pairing: %s",
              esp_err_to_name(err));

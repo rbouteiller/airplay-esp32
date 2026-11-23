@@ -79,6 +79,9 @@ typedef struct {
   // new admin, and it is how the Home app adds the speaker: transient
   // pair-setup, then /pair-add of the home's controllers over that session.
   bool setup_code_proven;
+  // A /pair-add on this setup-code session has claimed the speaker for its
+  // home (hap_pairings_claim()); later ones on the session only add to it.
+  bool pairings_claimed;
 } hap_session_t;
 
 /**

@@ -141,21 +141,64 @@ esp_err_t hap_pairings_init(void) {
   return ESP_OK;
 }
 
+typedef enum {
+  STORE_ADD,   // Refuse a known identifier with a different key.
+  STORE_PUT,   // A known identifier takes the new key.
+  STORE_CLAIM, // Start a new pairing set, unless already stored as given.
+} store_mode_t;
+
+// Caller holds the lock. Replaces every pairing by this one controller. The
+// HomeKit configuration stays: the Home app may send /configure before its
+// first /pair-add, and the new home sends its own either way.
+static esp_err_t claim_locked(const uint8_t *id, size_t id_len,
+                              const uint8_t ltpk[32], uint8_t perms,
+                              size_t *dropped) {
+  hap_store_t *backup = malloc(sizeof(*backup));
+  if (!backup) {
+    return ESP_ERR_NO_MEM;
+  }
+  memcpy(backup, s_store, sizeof(*backup));
+  *dropped = s_store->count;
+
+  memset(s_store->entries, 0, sizeof(s_store->entries));
+  hap_pairing_t *p = &s_store->entries[0];
+  memcpy(p->id, id, id_len);
+  p->id_len = (uint8_t)id_len;
+  p->perms = perms;
+  memcpy(p->ltpk, ltpk, sizeof(p->ltpk));
+  s_store->count = 1;
+
+  esp_err_t err = persist();
+  if (err != ESP_OK) {
+    memcpy(s_store, backup, sizeof(*s_store));
+  }
+  free(backup);
+  return err;
+}
+
 static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
                                const uint8_t ltpk[32], uint8_t perms,
-                               bool replace_key) {
+                               store_mode_t mode) {
   if (!s_store || !valid_id(id, id_len) || !ltpk) {
     return ESP_ERR_INVALID_ARG;
   }
 
   lock();
   const bool was_paired = s_store->count > 0;
+  const uint8_t was_access_control = s_store->access_control;
+  const uint8_t was_acl = s_store->acl;
+  size_t dropped = 0;
+  bool claimed = false;
   esp_err_t err;
   int idx = find_index(id, id_len);
-  if (idx >= 0) {
+  const bool same_key =
+      idx >= 0 && memcmp(s_store->entries[idx].ltpk, ltpk, 32) == 0;
+  if (mode == STORE_CLAIM && !same_key) {
+    err = claim_locked(id, id_len, ltpk, perms, &dropped);
+    claimed = err == ESP_OK;
+  } else if (idx >= 0) {
     hap_pairing_t *p = &s_store->entries[idx];
-    const bool same_key = memcmp(p->ltpk, ltpk, sizeof(p->ltpk)) == 0;
-    if (!same_key && !replace_key) {
+    if (!same_key && mode == STORE_ADD) {
       err = ESP_ERR_INVALID_STATE;
     } else if (same_key && p->perms == perms) {
       err = ESP_OK; // Nothing to write.
@@ -183,14 +226,20 @@ static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
       s_store->count--;
     }
   }
-  const bool now_paired = s_store->count > 0;
+  const bool advertised_changed =
+      (was_paired != (s_store->count > 0)) ||
+      was_access_control != s_store->access_control || was_acl != s_store->acl;
   unlock();
 
   if (err == ESP_OK) {
     ESP_LOGI(TAG, "Controller %.*s paired (%s)", (int)id_len, (const char *)id,
              (perms & HAP_PERM_ADMIN) ? "admin" : "user");
   }
-  if (was_paired != now_paired) {
+  if (claimed && dropped > 0) {
+    ESP_LOGI(TAG, "New pairing set: %u earlier controller(s) forgotten",
+             (unsigned)dropped);
+  }
+  if (advertised_changed) {
     notify();
   }
   return err;
@@ -198,12 +247,17 @@ static esp_err_t store_pairing(const uint8_t *id, size_t id_len,
 
 esp_err_t hap_pairings_add(const uint8_t *id, size_t id_len,
                            const uint8_t ltpk[32], uint8_t perms) {
-  return store_pairing(id, id_len, ltpk, perms, false);
+  return store_pairing(id, id_len, ltpk, perms, STORE_ADD);
 }
 
 esp_err_t hap_pairings_put(const uint8_t *id, size_t id_len,
                            const uint8_t ltpk[32], uint8_t perms) {
-  return store_pairing(id, id_len, ltpk, perms, true);
+  return store_pairing(id, id_len, ltpk, perms, STORE_PUT);
+}
+
+esp_err_t hap_pairings_claim(const uint8_t *id, size_t id_len,
+                             const uint8_t ltpk[32], uint8_t perms) {
+  return store_pairing(id, id_len, ltpk, perms, STORE_CLAIM);
 }
 
 bool hap_pairings_find(const uint8_t *id, size_t id_len, uint8_t ltpk[32],
@@ -310,13 +364,32 @@ esp_err_t hap_pairings_clear(void) {
     return ESP_ERR_INVALID_STATE;
   }
   lock();
-  memset(s_store, 0, sizeof(*s_store));
-  s_store->version = STORE_VERSION;
-  esp_err_t err = persist();
+  // Flash first: if the erase fails, RAM keeps matching what a reboot loads.
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err == ESP_OK) {
+    err = nvs_erase_key(nvs, NVS_KEY);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+      err = ESP_OK; // Never saved: nothing to erase.
+    }
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+  }
+  if (err == ESP_OK) {
+    memset(s_store, 0, sizeof(*s_store));
+    s_store->version = STORE_VERSION;
+  }
   unlock();
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to forget pairings: %s", esp_err_to_name(err));
+    return err;
+  }
   ESP_LOGI(TAG, "All HomeKit pairings forgotten");
   notify();
-  return err;
+  return ESP_OK;
 }
 
 bool hap_homekit_access_control(void) {
@@ -344,16 +417,23 @@ esp_err_t hap_homekit_set_config(bool access_control, uint8_t acl) {
     return ESP_ERR_INVALID_STATE;
   }
   lock();
+  const uint8_t old_access_control = s_store->access_control;
+  const uint8_t old_acl = s_store->acl;
   const bool changed =
-      (s_store->access_control != 0) != access_control || s_store->acl != acl;
+      (old_access_control != 0) != access_control || old_acl != acl;
   esp_err_t err = ESP_OK;
   if (changed) {
     s_store->access_control = access_control ? 1 : 0;
     s_store->acl = acl;
     err = persist();
+    if (err != ESP_OK) {
+      // Keep RAM, and so mDNS, on what a reboot would load.
+      s_store->access_control = old_access_control;
+      s_store->acl = old_acl;
+    }
   }
   unlock();
-  if (changed) {
+  if (changed && err == ESP_OK) {
     ESP_LOGI(TAG, "HomeKit access control %s, level %u",
              access_control ? "on" : "off", acl);
     notify();

@@ -102,6 +102,7 @@ esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
   session->controller_id_len = 0;
   session->controller_verified = false;
   session->setup_code_proven = false;
+  session->pairings_claimed = false;
 
   if (crypto_scalarmult(session->shared_secret, session->session_secret_key,
                         session->client_public_key) != 0) {

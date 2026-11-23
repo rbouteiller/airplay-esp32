@@ -81,6 +81,21 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *v,
   return ESP_OK;
 }
 
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *key) {
+  (void)h;
+  assert(strcmp(key, "store") == 0);
+  if (nvs.fail_writes) {
+    return ESP_FAIL;
+  }
+  if (!nvs.present) {
+    return ESP_ERR_NVS_NOT_FOUND;
+  }
+  nvs.present = false;
+  nvs.len = 0;
+  nvs.writes++;
+  return ESP_OK;
+}
+
 static int changes;
 static void on_change(void) {
   assert(!mock_locked && "change callback must run outside the lock");
@@ -164,6 +179,15 @@ static void test_store(void) {
   assert(hap_pairings_count() == 2 && !hap_pairings_find(ID("C"), NULL, NULL));
   assert(hap_pairings_remove(ID("B")) != ESP_OK);
   assert(hap_pairings_find(ID("B"), NULL, NULL));
+  // ... and is not announced: mDNS must not advertise what a reboot loses.
+  changes = 0;
+  assert(hap_homekit_set_config(true, 2) != ESP_OK);
+  assert(!hap_homekit_access_control() && hap_homekit_acl() == 0);
+  assert(hap_pairings_clear() != ESP_OK);
+  assert(hap_pairings_count() == 2);
+  assert(hap_pairings_claim(ID("new-home"), kb, HAP_PERM_ADMIN) != ESP_OK);
+  assert(hap_pairings_count() == 2 && hap_pairings_find(ID("A"), NULL, NULL));
+  assert(changes == 0);
   nvs.fail_writes = false;
 
   // Full at 16.
@@ -205,9 +229,34 @@ static void test_store(void) {
   // Clear forgets everything.
   assert(hap_pairings_add(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
   assert(hap_homekit_set_config(true, 1) == ESP_OK);
+  changes = 0;
   assert(hap_pairings_clear() == ESP_OK);
+  assert(changes == 1 && hap_pairings_count() == 0);
   reboot();
   assert(hap_pairings_count() == 0 && !hap_homekit_access_control());
+  assert(hap_pairings_clear() == ESP_OK); // nothing stored: still fine
+
+  // Claim: a controller already stored with this key keeps everything...
+  assert(hap_pairings_add(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_pairings_add(ID("B"), kb, HAP_PERM_USER) == ESP_OK);
+  assert(hap_homekit_set_config(true, 1) == ESP_OK);
+  assert(hap_pairings_claim(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_pairings_count() == 2 && hap_homekit_access_control());
+  // ... anything else starts over. The configuration stays: /configure may
+  // have come first in the same setup.
+  assert(hap_pairings_claim(ID("A"), kb, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_pairings_count() == 1 && hap_homekit_access_control());
+  assert(hap_pairings_find(ID("A"), got, NULL) && memcmp(got, kb, 32) == 0);
+  assert(hap_pairings_claim(ID("C"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  assert(hap_homekit_set_config(false, 0) == ESP_OK);
+  // Claiming an unpaired accessory is announced: it is now paired.
+  assert(hap_pairings_clear() == ESP_OK);
+  changes = 0;
+  assert(hap_pairings_claim(ID("C"), ka, HAP_PERM_ADMIN) == ESP_OK);
+  assert(changes == 1);
+  reboot();
+  assert(hap_pairings_count() == 1 && !hap_pairings_find(ID("A"), NULL, NULL));
+  assert(hap_pairings_find(ID("C"), NULL, &perms) && perms == HAP_PERM_ADMIN);
 
   // A blob of the wrong size or version is ignored rather than trusted.
   assert(hap_pairings_add(ID("A"), ka, HAP_PERM_ADMIN) == ESP_OK);
@@ -303,19 +352,6 @@ static void test_manage(void) {
   as_controller(&s, "admin-A", false);
   assert(add(&s, "B", kb, HAP_PERM_USER) == TLV_ERROR_AUTHENTICATION);
 
-  // The Home app's way in: a transient pair-setup proved the setup code, so
-  // /pair-add on that session is allowed even with an admin already stored.
-  // (Seen on hardware: refusing it left the speaker impossible to add.)
-  hap_session_t transient;
-  as_controller(&transient, NULL, false);
-  transient.setup_code_proven = true;
-  assert(add(&transient, "home-hub", kc, HAP_PERM_ADMIN) == 0);
-  size_t list_len = request(req, TLV_METHOD_LIST_PAIRINGS, NULL, NULL, -1);
-  assert(hap_pair_list(&transient, req, list_len, out, sizeof(out), &out_len) ==
-         ESP_OK);
-  assert(response_error(out, out_len) == 0);
-  assert(remove_pairing(&transient, "home-hub") == 0);
-
   // The verified admin adds a user (permissions 0, as a home hub does).
   as_controller(&s, "admin-A", true);
   assert(add(&s, "B", kb, HAP_PERM_USER) == 0);
@@ -389,8 +425,86 @@ static void test_manage(void) {
   printf("PASS: pair-add, pair-remove, pair-list\n");
 }
 
+/* The Home app adds the speaker over a transient pair-setup session: it
+ * proved the setup code, then sends /pair-add for the home's controllers.
+ * (Seen on hardware: refusing it left the speaker impossible to add.) */
+static void test_home_app_add(void) {
+  uint8_t ka[32], kb[32], kc[32], kd[32];
+  key(ka, 40);
+  key(kb, 50);
+  key(kc, 60);
+  key(kd, 70);
+  uint8_t req[256], out[2048];
+  size_t out_len = 0;
+
+  // An old home filled every slot, then removed the speaker while it was
+  // offline: its admins are still stored.
+  wipe();
+  for (int i = 0; i < HAP_PAIRINGS_MAX; i++) {
+    char id[16];
+    snprintf(id, sizeof(id), "old-%d", i);
+    assert(hap_pairings_add(ID(id), ka,
+                            i < 2 ? HAP_PERM_ADMIN : HAP_PERM_USER) == ESP_OK);
+  }
+  assert(hap_homekit_set_config(true, 2) == ESP_OK);
+
+  // A new home adds it. The first /pair-add starts a new set, the rest of
+  // that session's adds join it, and the old home is gone.
+  hap_session_t setup;
+  as_controller(&setup, NULL, false);
+  setup.setup_code_proven = true;
+  assert(add(&setup, "owner", kb, HAP_PERM_ADMIN) == 0);
+  assert(setup.pairings_claimed);
+  assert(add(&setup, "hub", kc, HAP_PERM_ADMIN) == 0);
+  assert(add(&setup, "member", kd, HAP_PERM_USER) == 0);
+  assert(hap_pairings_count() == 3 && hap_homekit_acl() == 2);
+  assert(!hap_pairings_find(ID("old-0"), NULL, NULL));
+  // ... and so the old home's admin has lost its rights.
+  hap_session_t old_admin;
+  as_controller(&old_admin, "old-0", true);
+  assert(add(&old_admin, "x", ka, HAP_PERM_USER) == TLV_ERROR_AUTHENTICATION);
+
+  // That session may list, and may re-key a controller: it proved the code.
+  size_t list_len = request(req, TLV_METHOD_LIST_PAIRINGS, NULL, NULL, -1);
+  assert(hap_pair_list(&setup, req, list_len, out, sizeof(out), &out_len) ==
+         ESP_OK);
+  assert(response_error(out, out_len) == 0);
+  assert(add(&setup, "member", ka, HAP_PERM_USER) == 0);
+  assert(hap_pairings_count() == 3);
+
+  // A second setup session for the same home starts with a controller it
+  // already holds: nothing is dropped.
+  hap_session_t again;
+  as_controller(&again, NULL, false);
+  again.setup_code_proven = true;
+  assert(add(&again, "owner", kb, HAP_PERM_ADMIN) == 0);
+  assert(add(&again, "hub", kc, HAP_PERM_ADMIN) == 0);
+  assert(hap_pairings_count() == 3);
+
+  // A failed claim leaves the old set in place, and the next try claims.
+  hap_session_t failing;
+  as_controller(&failing, NULL, false);
+  failing.setup_code_proven = true;
+  nvs.fail_writes = true;
+  assert(add(&failing, "other-owner", kd, HAP_PERM_ADMIN) == TLV_ERROR_UNKNOWN);
+  assert(!failing.pairings_claimed && hap_pairings_count() == 3);
+  nvs.fail_writes = false;
+  assert(add(&failing, "other-owner", kd, HAP_PERM_ADMIN) == 0);
+  assert(hap_pairings_count() == 1);
+
+  // An admin that pair-verified adds without claiming, and may not re-key.
+  hap_session_t admin;
+  as_controller(&admin, "other-owner", true);
+  assert(add(&admin, "guest", ka, HAP_PERM_USER) == 0);
+  assert(add(&admin, "guest", kb, HAP_PERM_USER) == TLV_ERROR_UNKNOWN);
+  assert(hap_pairings_count() == 2);
+
+  printf("PASS: Home app add over a setup-code session\n");
+}
+
 int main(void) {
   test_store();
   test_manage();
+  test_home_app_add();
   return 0;
 }

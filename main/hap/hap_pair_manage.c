@@ -114,7 +114,22 @@ esp_err_t hap_pair_add(hap_session_t *session, const uint8_t *input,
 
   // The permissions are the *new* controller's: a home hub adds members with
   // 0 (user). Only the sender has to be an admin.
-  esp_err_t err = hap_pairings_add(id, id_len, pk, perm[0] & HAP_PERM_ADMIN);
+  const uint8_t perms = perm[0] & HAP_PERM_ADMIN;
+  esp_err_t err;
+  if (session->setup_code_proven && !session->pairings_claimed) {
+    // The Home app adding the speaker to a home. Whatever is stored belongs
+    // to a home it was removed from while offline (left as it is, that home
+    // would keep admin rights and its slots), unless this controller is
+    // already stored with this key: then it is the same home again.
+    err = hap_pairings_claim(id, id_len, pk, perms);
+    session->pairings_claimed = err == ESP_OK;
+  } else if (session->setup_code_proven) {
+    // Proved the setup code, as a pair-setup does: a controller that was
+    // reset may come back with a new key.
+    err = hap_pairings_put(id, id_len, pk, perms);
+  } else {
+    err = hap_pairings_add(id, id_len, pk, perms);
+  }
   switch (err) {
   case ESP_OK:
     return respond(0, output, output_capacity, output_len);

@@ -40,7 +40,8 @@ then forgets every pairing.
 
 If the speaker was removed from the Home app while it was offline, it still
 holds that home's pairings. You don't need to do anything: adding it again works
-regardless, and the new pairing replaces the old one.
+regardless, and the new home's controllers replace the old ones, so the old home
+keeps no rights over it.
 
 To clear the stored pairings by hand, call the web API:
 
