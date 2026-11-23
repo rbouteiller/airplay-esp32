@@ -34,18 +34,23 @@ static uint64_t s_read_nonce;
 static bool s_keys_valid;
 static char s_group_uuid[64];
 
+// Keys, group UUID and nonces change only under the event socket lock, the
+// same lock post_command() holds while it uses them
 void rtsp_events_setup(const hap_session_t *session, const char *group_uuid) {
-  s_keys_valid = session && session->event_keys_valid;
-  if (s_keys_valid) {
+  bool keys_valid = session && session->event_keys_valid;
+  rtsp_event_client_lock();
+  s_keys_valid = keys_valid;
+  if (keys_valid) {
     memcpy(s_write_key, session->event_write_key, sizeof(s_write_key));
     memcpy(s_read_key, session->event_read_key, sizeof(s_read_key));
   }
   strlcpy(s_group_uuid, group_uuid ? group_uuid : "", sizeof(s_group_uuid));
   s_write_nonce = 0;
   s_read_nonce = 0;
+  rtsp_event_client_unlock();
   ESP_LOGI(TAG, "Event channel: keys %s, group %s",
-           s_keys_valid ? "ok" : "missing",
-           s_group_uuid[0] ? s_group_uuid : "missing");
+           keys_valid ? "ok" : "missing",
+           group_uuid && group_uuid[0] ? group_uuid : "missing");
 }
 
 void rtsp_events_on_client(void) {
@@ -204,8 +209,14 @@ static bool post_command(const uint8_t *plist, size_t plist_len) {
     memcpy(msg + header_len, plist, plist_len);
     int sock = rtsp_event_client_lock();
     if (sock >= 0 && s_keys_valid) {
-      ok = write_encrypted(sock, msg, (size_t)header_len + plist_len) &&
-           read_response(sock);
+      if (write_encrypted(sock, msg, (size_t)header_len + plist_len)) {
+        ok = read_response(sock);
+      } else {
+        // The write nonce has moved on, the sender may hold half a block:
+        // the next command would not decrypt, so give up as on a bad read
+        ESP_LOGW(TAG, "Send failed, event channel given up");
+        s_keys_valid = false;
+      }
     }
     rtsp_event_client_unlock();
   }
@@ -237,8 +248,12 @@ bool rtsp_events_send_command(unsigned int command) {
   uint8_t *plist = buf + EVENT_ARCHIVE_MAX;
   char command_id[40];
   random_uuid(command_id, sizeof(command_id));
+  char group_uuid[sizeof(s_group_uuid)];
+  rtsp_event_client_lock();
+  strlcpy(group_uuid, s_group_uuid, sizeof(group_uuid));
+  rtsp_event_client_unlock();
   size_t archive_len =
-      bplist_build_group_archive(archive, EVENT_ARCHIVE_MAX, s_group_uuid);
+      bplist_build_group_archive(archive, EVENT_ARCHIVE_MAX, group_uuid);
   size_t plist_len = archive_len ? bplist_build_media_remote_command(
                                        plist, EVENT_MSG_MAX - 256, command,
                                        command_id, archive, archive_len)
