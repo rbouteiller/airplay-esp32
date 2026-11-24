@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "audio_latency.h"
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "buttons.h"
@@ -373,6 +374,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  (void)audio_latency_set_trim_us(settings_get_output_latency_trim_us());
 #ifdef CONFIG_DAC_TAS57XX
   // Load persisted sub level offset (pre-init safe; applied on first volume).
   float sub_off;

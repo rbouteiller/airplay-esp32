@@ -31,6 +31,7 @@
 #include "hap_pairings.h"
 #include "playback_events.h"
 #include "audio_delay.h"
+#include "audio_latency.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -721,6 +722,88 @@ static esp_err_t channel_mode_post_handler(httpd_req_t *req) {
   free(json_str);
   cJSON_Delete(json);
   cJSON_Delete(response);
+  return ESP_OK;
+}
+
+/* The output latency the playout schedule compensates for, part by part, and
+ * the user's trim on top of it (audio_latency.h). */
+static void add_latency_json(cJSON *json) {
+  audio_latency_t latency;
+  audio_output_get_latency(&latency);
+  const uint32_t dma_us = audio_output_get_hardware_latency_us();
+  cJSON_AddNumberToObject(json, "trim_us", latency.trim_us);
+  cJSON_AddNumberToObject(json, "min", -AUDIO_LATENCY_TRIM_MAX_US);
+  cJSON_AddNumberToObject(json, "max", AUDIO_LATENCY_TRIM_MAX_US);
+  cJSON_AddNumberToObject(json, "rate", audio_output_get_rate());
+  cJSON_AddNumberToObject(json, "dma_us", dma_us);
+  cJSON_AddNumberToObject(json, "fifo_us", latency.fifo_us);
+  cJSON_AddNumberToObject(json, "resampler_us", latency.resampler_us);
+  cJSON_AddNumberToObject(json, "output_delay_us", latency.channel_us);
+  cJSON_AddNumberToObject(json, "dac_us", latency.dac_us);
+  cJSON_AddStringToObject(json, "dac_source",
+                          dac_delay_source_name(latency.dac_source));
+  cJSON_AddStringToObject(json, "dac_preset", dac_output_delay_preset_name());
+  cJSON_AddNumberToObject(json, "total_us",
+                          (double)((int64_t)dma_us + latency.post_ring_us));
+}
+
+static esp_err_t latency_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  add_latency_json(json);
+  char *json_str = cJSON_PrintUnformatted(json);
+  cJSON_Delete(json);
+  if (!json_str) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  return ESP_OK;
+}
+
+/* {"trim_us": n}: applied at once (the scheduler eases playout onto it, so
+ * nothing jumps) and saved. */
+static esp_err_t latency_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 128);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  const cJSON *trim = cJSON_GetObjectItem(json, "trim_us");
+  cJSON *response = cJSON_CreateObject();
+  if (json_int_in_range(trim, -AUDIO_LATENCY_TRIM_MAX_US,
+                        AUDIO_LATENCY_TRIM_MAX_US)) {
+    const int32_t applied = audio_latency_set_trim_us(trim->valueint);
+    const esp_err_t err = settings_set_output_latency_trim_us(applied);
+    cJSON_AddBoolToObject(response, "success", err == ESP_OK);
+    if (err != ESP_OK) {
+      cJSON_AddStringToObject(response, "error",
+                              "Applied, but could not be saved");
+    }
+    add_latency_json(response);
+  } else {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error",
+                            "Expected {\"trim_us\": -50000..50000}");
+  }
+  cJSON_Delete(json);
+  char *json_str = cJSON_PrintUnformatted(response);
+  cJSON_Delete(response);
+  if (!json_str) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
   return ESP_OK;
 }
 
@@ -3305,7 +3388,7 @@ esp_err_t web_server_start(uint16_t port) {
   // Slots are allocated up front and httpd_register_uri_handler failures are
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
-  config.max_uri_handlers = 45; // 39 here + /ws/logs, plus 5 spare
+  config.max_uri_handlers = 47; // 41 here + /ws/logs, plus 5 spare
 #ifdef CONFIG_SENDSPIN_ENABLE
   config.max_uri_handlers += 5; // /sendspin + mode get/post + unpair + reset
   // The Sendspin server holds its WebSocket open for as long as the speaker
@@ -3416,6 +3499,16 @@ esp_err_t web_server_start(uint16_t port) {
                                        .method = HTTP_POST,
                                        .handler = channel_mode_post_handler};
   register_uri(&channel_mode_post_uri);
+
+  httpd_uri_t latency_get_uri = {.uri = "/api/audio/latency",
+                                 .method = HTTP_GET,
+                                 .handler = latency_get_handler};
+  register_uri(&latency_get_uri);
+
+  httpd_uri_t latency_post_uri = {.uri = "/api/audio/latency",
+                                  .method = HTTP_POST,
+                                  .handler = latency_post_handler};
+  register_uri(&latency_post_uri);
 
   httpd_uri_t volume_get_uri = {.uri = "/api/audio/volume",
                                 .method = HTTP_GET,

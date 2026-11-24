@@ -325,7 +325,7 @@ typedef struct {
   double worst; /* the largest second difference on channel 0 */
 } step_run_t;
 
-static step_run_t run_step(int64_t jump_ns) {
+static step_run_t run_step_for(int64_t jump_ns, int64_t renders_after) {
   drift_ppm = 0.0;
   audio_scheduler_t scheduler;
   start(&scheduler);
@@ -334,7 +334,7 @@ static step_run_t run_step(int64_t jump_ns) {
   int32_t last[2] = {0};
   size_t frames = 0;
   int16_t block[BLOCK * AUDIO_V2_MAX_CHANNELS];
-  for (int64_t i = 1; i <= at + 500; i++) {
+  for (int64_t i = 1; i <= at + renders_after; i++) {
     const int64_t network_ns = (int64_t)clock_map.anchor_network_ns +
                                i * BLOCK * 1000000000LL / RATE +
                                (i >= at ? jump_ns : 0);
@@ -360,6 +360,10 @@ static step_run_t run_step(int64_t jump_ns) {
   run.steps = scheduler.drift_steps;
   run.error = scheduler.playout_error_samples;
   return run;
+}
+
+static step_run_t run_step(int64_t jump_ns) {
+  return run_step_for(jump_ns, 500);
 }
 
 /* Playout knocked `jump_ms` off at once, as by a stall of the playback task
@@ -405,6 +409,23 @@ static void test_step_hold_ends(void) {
   CHECK(bad_steps == 0, "%d holds without exactly one step", bad_steps);
 }
 
+/* A change of the output latency trim moves the playout instant the
+ * scheduler is given by that much, from one render to the next, exactly as
+ * the jumps above do.  Below the step threshold the servo eases playout onto
+ * it with sub-sample trims and no step; from the threshold up it is one
+ * faded step.  Neither may click. */
+static void test_trim_change(double trim_ms, bool want_step) {
+  printf("trim change %+.1f ms\n", trim_ms);
+  /* 4000 renders after the change: 32 s at 44.1 kHz, several servo time
+   * constants. */
+  const step_run_t run = run_step_for((int64_t)(trim_ms * 1e6), 4000);
+  printf("  %u step(s), error %d samples, second difference %.0f\n",
+         (unsigned)run.steps, (int)run.error, run.worst);
+  CHECK(run.steps == (want_step ? 1U : 0U), "%u steps", (unsigned)run.steps);
+  CHECK(abs(run.error) <= 2, "playout %d samples off", (int)run.error);
+  CHECK(run.worst < AMP / 4.0, "second difference %.0f: it clicks", run.worst);
+}
+
 int main(void) {
   test_kernel();
   test_block(-1);
@@ -416,6 +437,13 @@ int main(void) {
   test_step(40.0);
   test_step(-40.0);
   test_step_hold_ends();
+  test_trim_change(2.0, false);
+  test_trim_change(-2.0, false);
+  test_trim_change(4.5, false);
+  test_trim_change(10.0, true);
+  test_trim_change(-10.0, true);
+  test_trim_change(50.0, true);
+  test_trim_change(-50.0, true);
   if (failures) {
     printf("%d check(s) failed\n", failures);
     return 1;
