@@ -110,6 +110,7 @@ main/
 │   ├── audio_timing.c      # Clock plumbing shared by the streams
 │   ├── audio_resample.c    # Sample rate conversion (44.1→48kHz)
 │   ├── audio_output.c      # I2S output
+│   ├── audio_output_cursor.c # Depth queued ahead of the next write, from the IDF TX queue (no IDF deps)
 │   ├── audio_eq.c          # Software EQ (/bq page) for DACs without a DSP
 │   ├── audio_output_spdif.c # S/PDIF output
 │   ├── audio_output_usb.c  # USB audio *source* — board enumerates as a mic
@@ -242,7 +243,7 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**Host tests**: `tests/pcm51xx/run.py`, `tests/tas5805m_rate/run.py`, `tests/ptp_clock/run.py`, `tests/audio_eq/run.py`, `tests/rtp_resend/run.py`, `tests/bplist/run.py`, `tests/hap_pairings/run.py`, `tests/husb238a/run.py`, `tests/audio_scheduler/run.py`, `tests/tas58xx_peak/run.py` and `tests/tas58xx_bq/run.py` compile the real driver, TAS5805M filter-rate, PTP filter, EQ, resend-tracker, binary-plist (including `/configure`), HomeKit pairing store and `/pair-*`, USB-PD trigger, scheduler, filter-peak and TAS58xx filter-design code with the host C compiler, using small mocks where needed, and run in CI's `format-check` job. The TAS5805M suite also uses Node.js to check the actual EQ page and driver/UI round trips. `tests/bq_page/run.py` also needs Node.js: it lifts the filter code out of `data/www/bq.html` and checks the page draws exactly what the firmware designs. There is no test framework beyond that; everything else needs testing on hardware.
+**Host tests**: `tests/pcm51xx/run.py`, `tests/tas5805m_rate/run.py`, `tests/ptp_clock/run.py`, `tests/audio_eq/run.py`, `tests/rtp_resend/run.py`, `tests/bplist/run.py`, `tests/hap_pairings/run.py`, `tests/husb238a/run.py`, `tests/audio_scheduler/run.py`, `tests/i2s_cursor/run.py`, `tests/tas58xx_peak/run.py` and `tests/tas58xx_bq/run.py` compile the real driver, TAS5805M filter-rate, PTP filter, EQ, resend-tracker, binary-plist (including `/configure`), HomeKit pairing store and `/pair-*`, USB-PD trigger, scheduler, output-cursor, filter-peak and TAS58xx filter-design code with the host C compiler, using small mocks where needed, and run in CI's `format-check` job. `i2s_cursor` drives the real output cursor (`main/audio/audio_output_cursor.c`) through a frame-by-frame model of ESP-IDF's I2S TX driver and its buffer queue, for the I2S (8×256) and S/PDIF (22×96) rings at 32/44.1/48 kHz (enable, stalls, stop/restart, a Bluetooth/USB sink handing the ring back, EOFs landing mid-update), each within ±2 frames; the `baseline/` builds of the old cursors must fail. The TAS5805M suite also uses Node.js to check the actual EQ page and driver/UI round trips. `tests/bq_page/run.py` also needs Node.js: it lifts the filter code out of `data/www/bq.html` and checks the page draws exactly what the firmware designs. There is no test framework beyond that; everything else needs testing on hardware.
 
 ## Documentation site
 
