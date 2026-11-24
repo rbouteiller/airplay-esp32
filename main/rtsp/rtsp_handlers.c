@@ -1407,6 +1407,35 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
 
+    // AirPlay 2 with NTP timing (senders that time a realtime stream with
+    // NTP, as OwnTone does): the sender answers timing requests on timingPort
+    // and its sync packets carry that NTP clock.
+    char timing_protocol[8] = {0};
+    if (is_bplist &&
+        bplist_find_string(body, body_len, "timingProtocol", timing_protocol,
+                           sizeof(timing_protocol)) &&
+        strcmp(timing_protocol, "NTP") == 0) {
+      int64_t timing_port = 0;
+      if (bplist_find_int(body, body_len, "timingPort", &timing_port) &&
+          timing_port > 0 && timing_port <= UINT16_MAX) {
+        conn->client_timing_port = (uint16_t)timing_port;
+        ESP_LOGI(TAG, "SETUP: NTP timing, client timing port %u",
+                 conn->client_timing_port);
+        if (!start_ntp_timing_or_fail(socket, conn, req)) {
+          return;
+        }
+      } else {
+        // Without a clock the session's anchors can never be scheduled.
+        ESP_LOGW(TAG,
+                 "SETUP: NTP timing requested without a usable timingPort");
+      }
+    }
+    if (conn->client_timing_port == 0) {
+      // Not NTP-timed.  A connection this one replaced leaves its timing
+      // client running for its successor, so stop it if we do not want it.
+      ntp_clock_stop();
+    }
+
     if (is_bplist) {
       uint8_t plist_body[128];
       size_t plist_len = bplist_build_initial_setup(
