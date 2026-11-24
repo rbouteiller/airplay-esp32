@@ -285,7 +285,14 @@ cleanup:
     audio_receiver_end_session();
   }
   audio_output_flush();
-  ntp_clock_stop();
+  if (!slot->is_old) {
+    // A replaced connection leaves the timing client alone.  This cleanup can
+    // run after the replacement's SETUP, which has by then started the client
+    // or kept it running for the same sender; stopping it here would leave
+    // that session without a clock.  The replacement stops it instead, in its
+    // SETUP if it does not use NTP timing, or when it disconnects.
+    ntp_clock_stop();
+  }
 
   bool has_dacp_remote = conn && conn->protocol_version == 1 &&
                          conn->dacp_id[0] != '\0' &&

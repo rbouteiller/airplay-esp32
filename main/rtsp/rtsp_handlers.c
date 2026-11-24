@@ -1430,6 +1430,11 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                  "SETUP: NTP timing requested without a usable timingPort");
       }
     }
+    if (conn->client_timing_port == 0) {
+      // Not NTP-timed.  A connection this one replaced leaves its timing
+      // client running for its successor, so stop it if we do not want it.
+      ntp_clock_stop();
+    }
 
     if (is_bplist) {
       uint8_t plist_body[128];
