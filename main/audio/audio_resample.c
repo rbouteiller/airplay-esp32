@@ -183,6 +183,18 @@ size_t audio_resample_max_output(size_t in_frames) {
   return (size_t)((double)in_frames * fixed_ratio + 2);
 }
 
+uint32_t audio_resample_get_delay_us(void) {
+  /* resampleInit() starts reading numTaps / 2 frames behind where it writes
+   * (outputOffset = numTaps / 2.0, inputIndex = numTaps), and a fixed ratio
+   * keeps that distance. */
+  if (!active || current_input_rate == 0) {
+    return 0;
+  }
+  return (uint32_t)(((uint64_t)(RESAMPLER_NUM_TAPS / 2) * 1000000ULL +
+                     current_input_rate / 2U) /
+                    current_input_rate);
+}
+
 #else /* CONFIG_OUTPUT_SAMPLE_RATE_HZ == 44100 — no resampling needed */
 
 bool audio_resample_init(uint32_t input_rate, uint32_t output_rate,
@@ -207,6 +219,9 @@ bool audio_resample_is_active(void) {
 void audio_resample_reset(void) {
 }
 void audio_resample_destroy(void) {
+}
+uint32_t audio_resample_get_delay_us(void) {
+  return 0;
 }
 
 size_t audio_resample_max_output(size_t in_frames) {

@@ -18,6 +18,7 @@ set( SRC_FILES
     "audio/audio_decode_worker.c"
     "audio/audio_crypto.c"
     "audio/audio_resample.c"
+    "audio/audio_latency.c"
     "rtsp/rtsp_server.c"
     "rtsp/rtsp_conn.c"
     "rtsp/rtsp_message.c"

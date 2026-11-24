@@ -36,6 +36,13 @@ size_t audio_resample_process(const int16_t *in, size_t in_frames, int16_t *out,
 bool audio_resample_is_active(void);
 
 /**
+ * The converter's group delay while it is active, in microseconds: its sinc
+ * filter is centred RESAMPLER_TAPS / 2 input frames behind the newest frame it
+ * has read, so a frame handed in leaves that much later.  0 when inactive.
+ */
+uint32_t audio_resample_get_delay_us(void);
+
+/**
  * Reset resampler state (call on stream flush).
  */
 void audio_resample_reset(void);

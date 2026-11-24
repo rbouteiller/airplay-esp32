@@ -45,4 +45,60 @@ menu "DAC Configuration"
             When true, the DAC handles volume control and software attenuation
             is skipped in the audio output path.
 
+    choice DAC_PLAIN_DELAY
+        prompt "Plain I2S DAC output delay"
+        depends on AUDIO_OUTPUT_I2S
+        default DAC_PLAIN_DELAY_UNKNOWN
+        help
+            The group delay of a DAC that has no driver to report one, such
+            as a PCM5102A board wired straight to the I2S pins. The receiver
+            starts every sample that much early, so the sound leaves the DAC
+            on time. A DAC driver that reports its own delay (PCM512x)
+            overrides this. Every figure is the datasheet's; anything after
+            the DAC (an amplifier with DSP, an AV receiver) is left to the
+            output latency trim in the web UI.
+
+        config DAC_PLAIN_DELAY_PCM510X_NORMAL
+            bool "TI PCM5100A/5101A/5102A, normal filter (FLT low): 22 samples"
+            help
+                The usual strapping. The purple GY-PCM5102 board in the "Check
+                the DAC board" photo (docs/assets/PCM5102A.png, shown in
+                docs/getting-started/shopping-list.md) has bridge 1 (FLT) on
+                L, and Sonocotta's PCM5100A boards (HiFi-ESP32, Amped-ESP32,
+                HiFi-/Amped-Esparagus) tie FLT to GND. TI SLAS859C, Tables
+                4-6: filter group delay 22 tS; the filter summary in section
+                8.5 says 20 tS. 22 is used: it is the per-mode figure.
+
+        config DAC_PLAIN_DELAY_PCM510X_LOW_LATENCY
+            bool "TI PCM5100A/5101A/5102A, low-latency filter (FLT high): 3.5 samples"
+            help
+                FLT strapped high. TI SLAS859C, Tables 7-9 and section 8.5:
+                3.5 tS.
+
+        config DAC_PLAIN_DELAY_CS434X
+            bool "Cirrus CS4344/CS4345/CS4348: 10 samples"
+            help
+                Cirrus DS613F2, page 6: group delay 10/Fs in single-speed
+                mode (up to 50 kHz), 5/Fs double speed, 2.5/Fs quad speed.
+
+        config DAC_PLAIN_DELAY_CUSTOM
+            bool "Custom"
+
+        config DAC_PLAIN_DELAY_UNKNOWN
+            bool "Unknown (0)"
+            help
+                Nothing is compensated for the DAC. Its delay, typically well
+                under a millisecond, can still be calibrated away with the
+                output latency trim.
+    endchoice
+
+    config DAC_PLAIN_DELAY_CUSTOM_Q4
+        int "Custom DAC output delay, in 1/16 sample periods"
+        depends on DAC_PLAIN_DELAY_CUSTOM
+        range 0 16384
+        default 0
+        help
+            The DAC's group delay in sixteenths of a sample period at the
+            I2S rate: 22 samples is 352, 3.5 samples is 56.
+
 endmenu

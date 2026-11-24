@@ -14,10 +14,6 @@
 #include "ptp_clock.h"
 
 #define DEFAULT_BUFFER_LATENCY_US 2000 // 2ms startup jitter buffer
-// Additional pipeline latency to account for task scheduling, I2S write
-// blocking, and resampler processing.  Without this, frames pass the
-// timing check "on time" but actually exit the speaker several ms later.
-#define PIPELINE_LATENCY_US 5000 // ~5ms scheduling + write delay
 
 static const char *TAG = "audio_time";
 
@@ -60,19 +56,6 @@ uint32_t audio_timing_get_output_latency(const audio_timing_t *timing) {
 
 uint32_t audio_timing_get_hardware_latency(void) {
   return audio_output_get_hardware_latency_us();
-}
-
-uint32_t audio_timing_get_advertised_latency(const audio_timing_t *timing) {
-  // Total end-to-end latency between the phone scheduling a frame and the
-  // DAC emitting it.  Reported to the phone in outputLatencyMicros so it
-  // schedules sends to land in our sorted buffer at the right time.
-  //
-  //   output_latency_us         — controller target (jitter-buffer depth)
-  // + audio_output_get_hardware_latency_us() — I2S DMA delay (dynamic)
-  // + PIPELINE_LATENCY_US — scheduling + write delay constant
-  uint32_t base =
-      timing ? timing->output_latency_us : DEFAULT_BUFFER_LATENCY_US;
-  return base + audio_output_get_hardware_latency_us() + PIPELINE_LATENCY_US;
 }
 
 void audio_timing_set_playout_latency(audio_timing_t *timing,

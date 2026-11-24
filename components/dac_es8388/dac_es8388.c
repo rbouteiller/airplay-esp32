@@ -301,6 +301,9 @@ static void es8388_enable_line_out(bool enable) {
                 "all outputs are enabled together");
 }
 
+// No output_delay_q4: the ES8388 datasheet and user guide give no DAC filter
+// group delay, so the delay is left unknown. Calibrate with the output
+// latency trim.
 const dac_ops_t dac_es8388_ops = {
     .init = es8388_init,
     .deinit = es8388_deinit,

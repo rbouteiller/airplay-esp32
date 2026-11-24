@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef enum {
   DAC_POWER_ON = 0,
@@ -25,7 +26,28 @@ typedef struct {
   void (*on_i2s_started)(uint32_t sample_rate_hz);
   void (*enable_speaker)(bool enable);
   void (*enable_line_out)(bool enable);
+  /**
+   * The DAC's own output delay at @p sample_rate_hz: its interpolation
+   * filter's group delay, plus any resampling or DSP ahead of it, from the
+   * I2S input to the analog output, in 1/16 sample periods (Q4).  Return
+   * DAC_OUTPUT_DELAY_UNKNOWN when the configured mode has no published
+   * figure.  NULL is the same as unknown, and lets the plain-DAC preset
+   * (CONFIG_DAC_PLAIN_DELAY_*) stand in.  Called from the playback task on
+   * every block, so it must read cached state only: no bus traffic, no
+   * locks, no logging.
+   */
+  uint32_t (*output_delay_q4)(uint32_t sample_rate_hz);
 } dac_ops_t;
+
+/** output_delay_q4(): no figure for this DAC in its current mode. */
+#define DAC_OUTPUT_DELAY_UNKNOWN UINT32_MAX
+
+/** Where dac_get_output_delay_q4() took its figure from. */
+typedef enum {
+  DAC_DELAY_FROM_DRIVER = 0, /**< the registered driver reported it */
+  DAC_DELAY_FROM_PRESET,     /**< the plain I2S DAC preset in Kconfig */
+  DAC_DELAY_UNKNOWN,         /**< neither: taken as 0 */
+} dac_delay_source_t;
 
 /**
  * Register a DAC driver. Must be called before dac_init().
@@ -67,6 +89,21 @@ void dac_on_i2s_stopping(void);
  * and at what rate they are running.
  */
 void dac_on_i2s_started(uint32_t sample_rate_hz);
+
+/**
+ * The output delay of the DAC, in 1/16 sample periods at @p sample_rate_hz:
+ * the registered driver's figure, else the plain I2S DAC preset from Kconfig
+ * (a board with no driver, or one whose driver has no figure), else 0.
+ * @p source, if not NULL, says which.  Cheap enough for the playback task.
+ */
+uint32_t dac_get_output_delay_q4(uint32_t sample_rate_hz,
+                                 dac_delay_source_t *source);
+
+/** A short name for the plain I2S DAC preset, for logs. */
+const char *dac_output_delay_preset_name(void);
+
+/** "driver", "preset" or "unknown". */
+const char *dac_delay_source_name(dac_delay_source_t source);
 
 /**
  * Enable or disable the speaker output

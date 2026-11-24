@@ -18,6 +18,7 @@ static bool fail_probe, fail_add, fail_remove, fail_bus, fail_listener;
 static bool fail_gpio, fail_mutex, fail_all_writes;
 static int write_count, fail_write;
 static uint8_t regs[256];
+static uint8_t reset_psel = 1;
 static void (*before_lock)(void);
 static playback_event_callback_t listener;
 
@@ -107,6 +108,7 @@ esp_err_t board_i2c_write(i2c_master_dev_handle_t dev, uint8_t reg,
   if (reg == 1) {
     memset(regs, 0, sizeof(regs));
     regs[0x3D] = regs[0x3E] = 0x30; // Hardware reset volume: 0 dB.
+    regs[0x2B] = reset_psel;        // P0-R43, filter program 1 at reset.
   } else {
     regs[reg] = *data;
   }
@@ -284,6 +286,35 @@ static void test_volume_and_playback(void) {
   puts("Passed volume boundaries, playback failures, and recovery");
 }
 
+// The interpolation filter the part runs, read back from P0-R43, gives the
+// output delay; a program with no published figure leaves it unknown.
+static void test_output_delay(void) {
+  dac_delay_source_t source;
+  init();
+  assert(dac_get_output_delay_q4(44100, &source) == 20U * 16U &&
+         source == DAC_DELAY_FROM_DRIVER);
+  deinit();
+  const struct {
+    uint8_t psel;
+    uint32_t q4;
+  } cases[] = {{2, 56}, {3, 539}, {7, 19}};
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    reset_psel = cases[i].psel;
+    init();
+    assert(dac_get_output_delay_q4(48000, &source) == cases[i].q4 &&
+           source == DAC_DELAY_FROM_DRIVER);
+    deinit();
+  }
+  // RAM program: no figure, and no preset in this build either.
+  reset_psel = 0x1F;
+  init();
+  assert(dac_get_output_delay_q4(48000, &source) == 0 &&
+         source == DAC_DELAY_UNKNOWN);
+  deinit();
+  reset_psel = 1;
+  puts("Passed output delay by filter program");
+}
+
 static void test_deinit_lifetime(void) {
   init();
   fail_remove = true;
@@ -341,6 +372,7 @@ int main(void) {
   dac_register(&dac_pcm51xx_ops);
   test_init_failures();
   test_volume_and_playback();
+  test_output_delay();
   test_deinit_lifetime();
   test_board_failures();
   return 0;

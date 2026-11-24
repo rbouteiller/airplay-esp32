@@ -802,6 +802,40 @@ uint32_t audio_output_get_underruns(void) {
   return output_cursor_underruns(&s_cursor);
 }
 
+uint32_t audio_output_get_rate(void) {
+  return s_output_rate;
+}
+
+// The output cursor counts a descriptor as played when the DMA has handed
+// its last word to the I2S TX FIFO (out-EOF, in its reset mode), and the FIFO
+// is kept full behind it, so its 64 x 32-bit entries are still to go out.
+// ESP32 TRM v5.9 §22.1 and Table 22.4-1: in 16-bit stereo (TX_FIFO_MOD 0)
+// one entry holds a whole frame, in 32-bit one sample.  The ESP32-S3 and C5
+// TRMs (§28.4, §35.4) give the same 64-entry FIFO and fill it a channel
+// sample per entry (§35.9.1), which makes it 32 frames at either width.
+uint32_t audio_output_get_fifo_frames(void) {
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  return OUT_WORD_SIZE == sizeof(int16_t) ? 64U : 32U;
+#else
+  return 32U;
+#endif
+}
+
+// A delay on both outputs holds the whole stream back by the smaller one.
+uint32_t audio_output_get_common_delay_us(void) {
+  if (!audio_delay_active() || !delay_layout_ok(true)) {
+    return 0;
+  }
+  const uint32_t a = audio_delay_get_us(0);
+  const uint32_t b = audio_delay_get_us(1);
+  const uint32_t us = a < b ? a : b;
+  // Whole samples, as audio_delay.c rounds them.
+  const uint32_t rate = s_output_rate;
+  const uint32_t samples =
+      (uint32_t)(((uint64_t)us * rate + 500000U) / 1000000U);
+  return (uint32_t)(((uint64_t)samples * 1000000U + rate / 2U) / rate);
+}
+
 /* With two amplifiers the DAC configuration already fixes the routing, so a
  * channel selection on top of that would only mute a speaker. */
 bool audio_output_channel_mode_locked(void) {

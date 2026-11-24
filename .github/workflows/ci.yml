@@ -100,6 +100,9 @@ jobs:
       - name: Test the output cursor against a model of the I2S TX queue
         run: python3 tests/i2s_cursor/run.py
 
+      - name: Test the DAC delay presets and the output latency sum
+        run: python3 tests/dac_dispatch/run.py
+
       - name: Test how far a TAS58xx filter chain lifts full scale
         run: python3 tests/tas58xx_peak/run.py
 

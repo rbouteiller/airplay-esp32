@@ -2163,6 +2163,10 @@ bool dac_tas58xx_set_soft_routing(int dev, bool on) {
 static void tas58xx_on_i2s_stopping(void);
 static void tas58xx_on_i2s_started(uint32_t sample_rate_hz);
 
+// No output_delay_q4: neither part's datasheet gives a latency (TAS5825M
+// SLASEH7H §7.5, TAS5805M SLASEH5D §6.5), nor do the process-flow notes
+// (SLAA786A; SLOA263A, whose Flow 1 resamples to 96/88.2 kHz ahead of the EQ
+// but states no delay for it). Left unknown; calibrate with the trim.
 const dac_ops_t dac_tas58xx_ops = {
     .init = tas58xx_init,
     .deinit = tas58xx_deinit,

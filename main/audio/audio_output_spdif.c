@@ -470,3 +470,10 @@ bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
 uint32_t audio_output_get_underruns(void) {
   return output_cursor_underruns(&s_cursor);
 }
+
+// As in audio_output.c: the TX FIFO's 64 x 32-bit entries are still to go
+// out when a descriptor completes.  Each audio frame is four 32-bit BMC
+// words here, so they hold 16 frames.
+uint32_t audio_output_get_fifo_frames(void) {
+  return 64U / (BMC_FRAME_BYTES / sizeof(uint32_t));
+}

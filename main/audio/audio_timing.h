@@ -49,20 +49,6 @@ void audio_timing_set_output_latency(audio_timing_t *timing,
                                      uint32_t latency_us);
 uint32_t audio_timing_get_output_latency(const audio_timing_t *timing);
 uint32_t audio_timing_get_hardware_latency(void);
-// Total end-to-end latency (output target + HW DMA + fixed pipeline delay).
-//
-// DIAGNOSTIC ONLY — do NOT wire this into outputLatencyMicros.
-// rtsp_handlers.c deliberately advertises 0 for both inputLatencyMicros and
-// outputLatencyMicros because compute_early_us() already compensates for the
-// hardware and pipeline delay internally; advertising a non-zero value makes
-// the sender adjust its anchor as well and the delay is applied twice.
-// shairport-sync likewise advertises no audioLatencies.
-//
-// Note also that this figure does not include the sender-driven pre-buffer
-// actually sitting in the jitter buffer during playback (frequently 1.5 s+),
-// so it is not the true end-to-end delay either. Use it for logging and
-// introspection, not for protocol negotiation.
-uint32_t audio_timing_get_advertised_latency(const audio_timing_t *timing);
 // Set the stream playout latency (samples).  See playout_latency_samples.
 void audio_timing_set_playout_latency(audio_timing_t *timing,
                                       uint32_t latency_samples);
