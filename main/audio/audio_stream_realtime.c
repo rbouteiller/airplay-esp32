@@ -425,7 +425,7 @@ static void control_receiver_task(void *pvParameters) {
     uint8_t packet_type = packet[1] & 0x7F;
 
     switch (packet_type) {
-    case 0x54: // AirPlay 1 sync packet (NTP timing)
+    case 0x54: // Sync packet (NTP timing: AirPlay 1, or AirPlay 2 over NTP)
       // Layout (per shairport-sync / Apple protocol documentation):
       //   [4-7]  rtp_timestamp_less_latency  — the RTP frame PLAYING at the
       //          NTP time in [8-15].  This is the correct anchor RTP.

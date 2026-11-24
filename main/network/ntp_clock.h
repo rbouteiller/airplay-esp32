@@ -9,7 +9,7 @@
 #include "esp_err.h"
 
 /**
- * NTP-like timing for AirPlay 1 synchronization.
+ * NTP-like timing for AirPlay 1 and NTP-timed AirPlay 2 sessions.
  * Sends timing requests to the sender and calculates clock offset from
  * responses. Based on shairport-sync's timing implementation.
  */

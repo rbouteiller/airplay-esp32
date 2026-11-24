@@ -194,12 +194,13 @@ static void audio_receiver_reset_engine_v2(void) {
 
 // Local -> sender clock offset, and whether that clock is actually locked.
 //
-// The sender's anchor timestamps are PTP for AirPlay 2 (control packet 0x57)
-// and NTP for AirPlay 1 (0x54), so the engine cannot assume PTP the way it did
+// The sender's anchor timestamps are PTP in control packet 0x57 (AirPlay 2)
+// and NTP in 0x54 (AirPlay 1, and AirPlay 2 senders that use NTP timing), so
+// the engine cannot assume PTP the way it did
 // while only the buffered path used it.  Which one applies is decided by the
 // anchor itself, not by whichever clock happens to be locked: a PTP lock left
 // over from a previous session (or kept alive by another sender on the
-// network) would otherwise map an AirPlay 1 anchor into the PTP timeline, and
+// network) would otherwise map an NTP anchor into the PTP timeline, and
 // vice versa, putting every block decades from its real playout time.  Like
 // compute_early_us() in audio_timing.c this must be re-read on every render:
 // before a lock the offset is 0, and freezing that value places the anchor
@@ -527,7 +528,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
   // clock_id field.  Without this, ptp_clock can lock to any PTP master
   // on the LAN (HomePods, AppleTVs, NTP-PTP gateways) and produce offsets
   // that have nothing to do with the AirPlay sender's clock domain.
-  // clock_id == 0 happens on the AirPlay 1 NTP path; in that case leave
+  // clock_id == 0 happens on the NTP sync packet path; in that case leave
   // the filter as-is (set or cleared by a prior 0xD7 anchor / TEARDOWN).
   if (clock_id != 0) {
     ptp_clock_set_master_clock_id(clock_id);
@@ -545,8 +546,8 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
     // offset, so the anchor would sit days in the future and never be reached.
     receiver.engine_v2_anchor_rtp = rtp_time;
     receiver.engine_v2_anchor_network_ns = network_time_ns;
-    // A timeline ID is only present on the AirPlay 2 (PTP) anchors; the
-    // AirPlay 1 sync packet path passes 0.
+    // A timeline ID is only present on the PTP anchors; the NTP sync packet
+    // path passes 0.
     receiver.engine_v2_anchor_uses_ptp = (clock_id != 0);
     receiver.engine_v2_playout_offset_ns =
         ((int64_t)receiver.timing.playout_latency_samples * 1000000000LL) /

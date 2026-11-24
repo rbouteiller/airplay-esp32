@@ -42,7 +42,8 @@ struct rtsp_conn {
   int control_socket;
   int event_socket; // TCP listener for event port
 
-  // Client address for AirPlay 1 timing requests
+  // Client address for NTP timing requests (AirPlay 1, or AirPlay 2 with
+  // timingProtocol NTP)
   uint32_t client_ip;           // Client IP (network byte order)
   uint16_t client_timing_port;  // Client's timing port (for sending requests)
   uint16_t client_control_port; // Client's control port
