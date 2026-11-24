@@ -45,7 +45,9 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           path: beta-artifacts
-          pattern: firmware-*
+          # Matches both firmware-<name> (merged, for the web installer) and
+          # ota-firmware-<name> (app image only, for OTA updates).
+          pattern: "*firmware-*"
           merge-multiple: true
 
       - name: Report targets that did not build

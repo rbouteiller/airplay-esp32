@@ -67,7 +67,9 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           path: release-artifacts
-          pattern: firmware-*
+          # Matches both firmware-<name> (merged, for the web installer) and
+          # ota-firmware-<name> (app image only, for OTA updates).
+          pattern: "*firmware-*"
           merge-multiple: true
 
       - name: Create GitHub Release

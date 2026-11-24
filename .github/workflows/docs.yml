@@ -65,7 +65,7 @@ jobs:
           bundle() {
             local dir="$1" tag="$2" version="$3"
             gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-              --pattern '*.bin' --dir "$dir"
+              --pattern 'airplay2-receiver-*.bin' --dir "$dir"
             for manifest in "$dir"/*.json; do
               bin="$(jq -r '.builds[0].parts[0].path' "$manifest")"
               if [ ! -f "$dir/$bin" ]; then
