@@ -19,6 +19,10 @@ such as a PCM5102A.
 
 Change them under **Board Configuration → Pin Configuration** in `menuconfig`.
 
+The build compensates for a PCM5102A with its normal filter (FLT low), 22 samples. With
+another DAC, pick its preset under **DAC Configuration → Plain I2S DAC output delay** in
+`menuconfig`, or calibrate with the output latency trim on the Configuration page.
+
 ## Building
 
 Prebuilt stable and beta firmware are available from the

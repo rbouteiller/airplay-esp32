@@ -160,6 +160,7 @@ main/
 │   ├── audio_buffer.c          # Frame buffering
 │   ├── audio_timing.c          # PTP-based early/late frame handling
 │   ├── audio_resample.c        # 44.1 → 48 kHz conversion
+│   ├── audio_latency.c         # Output latency: DMA depth + FIFO + resampler + DAC + trim
 │   ├── audio_output*.c         # I2S, S/PDIF and USB backends, the DMA queue cursor
 │   ├── audio_eq.c              # Software EQ for DACs without a DSP
 │   └── a2dp_sink.c             # Bluetooth A2DP sink
