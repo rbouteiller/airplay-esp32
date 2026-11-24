@@ -13,7 +13,7 @@
  * Longer values are split across multiple TLVs with same type
  */
 
-// HAP TLV types for pair-verify
+// HAP TLV types
 #define TLV_TYPE_METHOD         0x00
 #define TLV_TYPE_IDENTIFIER     0x01
 #define TLV_TYPE_SALT           0x02
@@ -23,6 +23,19 @@
 #define TLV_TYPE_STATE          0x06
 #define TLV_TYPE_ERROR          0x07
 #define TLV_TYPE_SIGNATURE      0x0A
+#define TLV_TYPE_PERMISSIONS    0x0B
+#define TLV_TYPE_FLAGS          0x13
+#define TLV_TYPE_SEPARATOR      0xFF
+
+// Pairing methods (kTLVType_Method)
+#define TLV_METHOD_PAIR_SETUP     0x00
+#define TLV_METHOD_PAIR_VERIFY    0x02
+#define TLV_METHOD_ADD_PAIRING    0x03
+#define TLV_METHOD_REMOVE_PAIRING 0x04
+#define TLV_METHOD_LIST_PAIRINGS  0x05
+
+// Pairing flags (kTLVType_Flags)
+#define TLV_FLAG_TRANSIENT 0x10
 
 // HAP Error codes
 #define TLV_ERROR_UNKNOWN        0x01

@@ -14,6 +14,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "soc/soc_caps.h"
 
 #include "wifi.h"
 #include "settings.h"
@@ -81,6 +82,24 @@ static void schedule_retry(void) {
   esp_timer_start_once(s_retry_timer, (uint64_t)delay_s * 1000000);
 }
 
+// The setup AP runs at 20 MHz: a 40 MHz channel is refused or handled badly
+// by some phones and laptops, and the AP carries nothing but the config page.
+// A 2.4 GHz-only chip rejects the whole call if it names a 5 GHz bandwidth,
+// while a dual-band one (the C5) refuses the single-band call in auto band
+// mode, so each gets the API that works for it.
+static void set_ap_bandwidth(void) {
+#if SOC_WIFI_SUPPORT_5G
+  wifi_bandwidths_t bw = {.ghz_2g = WIFI_BW20, .ghz_5g = WIFI_BW20};
+  esp_err_t err = esp_wifi_set_bandwidths(WIFI_IF_AP, &bw);
+#else
+  esp_err_t err = esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20);
+#endif
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to set AP bandwidth to 20 MHz: %s",
+             esp_err_to_name(err));
+  }
+}
+
 static void enable_ap_mode(void) {
   wifi_mode_t mode;
   if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_APSTA) {
@@ -90,6 +109,7 @@ static void enable_ap_mode(void) {
     }
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &s_ap_config);
+    set_ap_bandwidth();
   }
 }
 
@@ -372,6 +392,7 @@ void wifi_init_apsta(const char *ap_ssid, const char *ap_password) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &s_ap_config));
+  set_ap_bandwidth();
   ESP_ERROR_CHECK(esp_wifi_start());
 
   ESP_LOGI(TAG, "AP+STA mode started: AP SSID=%s", default_ssid);

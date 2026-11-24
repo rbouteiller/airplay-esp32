@@ -22,10 +22,28 @@
  * Key bits:
  *   Bit 38: SupportsCoreUtilsPairingAndEncryption
  *   Bit 46: SupportsHKPairingAndAccessControl
+ *   Bit 47: undocumented; shairport-sync finds the Home app needs it too
  *   Bit 48: SupportsTransientPairing
  * AirPlay 1 strips the pairing/encryption bits so iOS uses classic RAOP.
  */
 uint64_t airplay_features(void);
+
+/**
+ * Model reported in mDNS (model, am) and /info. Deliberately not an Apple
+ * identifier: with model=AudioAccessory5,1 (HomePod mini) the speaker never
+ * appears under Add Accessory -> More options in the Home app, which sets
+ * HomePods up through their own flow. shairport-sync ("ShairportSync") and
+ * third-party speakers advertise their own model and are listed.
+ */
+#define AIRPLAY_MODEL "airplay-esp32"
+
+/**
+ * AirPlay status flags, advertised as flags/sf and in /info statusFlags.
+ *   Bit 2:  audio cable attached (always)
+ *   Bit 10: DeviceWasSetupForHKAccessControl, once the Home app has turned
+ *           HomeKit access control on through POST /configure
+ */
+uint32_t airplay_status_flags(void);
 
 // Audio buffer size for buffered streams (type 103).  The sender queues this
 // much audio ahead, and on a seek/skip every queued byte is stale but still has

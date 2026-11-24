@@ -22,6 +22,7 @@ LINT_OPTIONS="CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y"
 # name | target | sdkconfig defaults | extra options for the lint only
 CONFIGS=(
   "esp32s3|esp32s3|config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3|"
+  "esp32s31|esp32s31|config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s31|"
   "audio-brick-dual-uac|esp32s3|config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac;config/sdkconfig.defaults.uac|"
   "squeezeamp-bt|esp32|config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt|"
   "hifi-esp32-plus-bt|esp32|config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-plus;config/sdkconfig.defaults.bt|"

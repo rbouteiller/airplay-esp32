@@ -5,10 +5,10 @@
 
 #include "hap.h"
 #include "hap_internal.h"
+#include "hap_pairings.h"
 #include "tlv8.h"
 
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "psa/crypto.h"
 #include "sodium.h"
 
@@ -62,6 +62,18 @@ static int aes_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
   return 0;
 }
 
+// M4 refusal. Returned as an error so the caller does not turn encryption on;
+// the RTSP handler sends its own Authentication error TLV.
+static esp_err_t verify_failed(uint8_t *output, size_t output_capacity,
+                               size_t *output_len) {
+  tlv8_encoder_t enc;
+  tlv8_encoder_init(&enc, output, output_capacity);
+  tlv8_encode_byte(&enc, TLV_TYPE_STATE, PAIR_VERIFY_STATE_M4);
+  tlv8_encode_byte(&enc, TLV_TYPE_ERROR, TLV_ERROR_AUTHENTICATION);
+  *output_len = tlv8_encoder_size(&enc);
+  return ESP_ERR_INVALID_STATE;
+}
+
 esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
                              size_t input_len, uint8_t *output,
                              size_t output_capacity, size_t *output_len) {
@@ -83,18 +95,24 @@ esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
 
   memcpy(session->client_public_key, client_pk, HAP_X25519_KEY_SIZE);
 
+  // A fresh ephemeral key for every verify, including a second one on the
+  // same connection.
+  crypto_box_keypair(session->session_public_key, session->session_secret_key);
+  // A verify replaces whatever this session's keys came from.
+  session->controller_id_len = 0;
+  session->controller_verified = false;
+  session->setup_code_proven = false;
+  session->pairings_claimed = false;
+
   if (crypto_scalarmult(session->shared_secret, session->session_secret_key,
                         session->client_public_key) != 0) {
     ESP_LOGE(TAG, "X25519 key exchange failed");
     return ESP_FAIL;
   }
 
-  uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  char device_id[18];
-  snprintf(device_id, sizeof(device_id), "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  size_t device_id_len = 17;
+  // Signed and sent as bytes, without a terminator.
+  const size_t device_id_len = strlen(hap_get_device_id());
+  const uint8_t *device_id = (const uint8_t *)hap_get_device_id();
 
   uint8_t accessory_info[128];
   size_t accessory_info_len = 0;
@@ -114,8 +132,7 @@ esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
   uint8_t sub_tlv[256];
   tlv8_encoder_t sub_enc;
   tlv8_encoder_init(&sub_enc, sub_tlv, sizeof(sub_tlv));
-  tlv8_encode(&sub_enc, TLV_TYPE_IDENTIFIER, (const uint8_t *)device_id,
-              device_id_len);
+  tlv8_encode(&sub_enc, TLV_TYPE_IDENTIFIER, device_id, device_id_len);
   tlv8_encode(&sub_enc, TLV_TYPE_SIGNATURE, signature, crypto_sign_BYTES);
 
   uint8_t session_key[32];
@@ -173,13 +190,54 @@ esp_err_t hap_pair_verify_m3(hap_session_t *session, const uint8_t *input,
           decrypted, &decrypted_len, NULL, encrypted, encrypted_len, NULL, 0,
           nonce, session->encrypt_key) != 0) {
     ESP_LOGE(TAG, "M3 decryption failed");
-    tlv8_encoder_t enc;
-    tlv8_encoder_init(&enc, output, output_capacity);
-    tlv8_encode_byte(&enc, TLV_TYPE_STATE, PAIR_VERIFY_STATE_M4);
-    tlv8_encode_byte(&enc, TLV_TYPE_ERROR, TLV_ERROR_AUTHENTICATION);
-    *output_len = tlv8_encoder_size(&enc);
-    return ESP_ERR_INVALID_STATE;
+    return verify_failed(output, output_capacity, output_len);
   }
+
+  // HAP 5.7.4: the sub-TLV names the controller and signs
+  // (controller ephemeral key || controller ID || accessory ephemeral key)
+  // with its long-term key.
+  size_t id_len = 0;
+  size_t sig_len = 0;
+  const uint8_t *controller_id =
+      tlv8_find(decrypted, (size_t)decrypted_len, TLV_TYPE_IDENTIFIER, &id_len);
+  const uint8_t *controller_sig =
+      tlv8_find(decrypted, (size_t)decrypted_len, TLV_TYPE_SIGNATURE, &sig_len);
+  if (!controller_id || id_len == 0 || id_len >= HAP_CONTROLLER_ID_MAX ||
+      !controller_sig || sig_len != crypto_sign_BYTES) {
+    ESP_LOGE(TAG, "M3 sub-TLV is missing identifier or signature");
+    return verify_failed(output, output_capacity, output_len);
+  }
+
+  uint8_t ltpk[crypto_sign_PUBLICKEYBYTES];
+  uint8_t perms = 0;
+  if (hap_pairings_find(controller_id, id_len, ltpk, &perms)) {
+    uint8_t info[HAP_X25519_KEY_SIZE * 2 + HAP_CONTROLLER_ID_MAX];
+    memcpy(info, session->client_public_key, HAP_X25519_KEY_SIZE);
+    memcpy(info + HAP_X25519_KEY_SIZE, controller_id, id_len);
+    memcpy(info + HAP_X25519_KEY_SIZE + id_len, session->session_public_key,
+           HAP_X25519_KEY_SIZE);
+    if (crypto_sign_verify_detached(controller_sig, info,
+                                    HAP_X25519_KEY_SIZE * 2 + id_len,
+                                    ltpk) != 0) {
+      // A known identifier that cannot sign as itself is an impostor.
+      ESP_LOGW(TAG, "Controller %.*s failed signature check", (int)id_len,
+               (const char *)controller_id);
+      return verify_failed(output, output_capacity, output_len);
+    }
+    session->controller_verified = true;
+    ESP_LOGI(TAG, "Paired controller %.*s verified (%s)", (int)id_len,
+             (const char *)controller_id,
+             (perms & HAP_PERM_ADMIN) ? "admin" : "user");
+  } else {
+    // The HAP specification refuses an unknown controller here. AirPlay
+    // senders that never paired with this speaker verify too, and
+    // shairport-sync admits them, so this does as well; such a session gets
+    // encryption but no right to manage pairings.
+    ESP_LOGI(TAG, "Unpaired controller %.*s admitted", (int)id_len,
+             (const char *)controller_id);
+  }
+  memcpy(session->controller_id, controller_id, id_len);
+  session->controller_id_len = id_len;
 
   hap_hkdf_sha512((uint8_t *)"Control-Salt", 12, session->shared_secret,
                   HAP_X25519_KEY_SIZE, (uint8_t *)"Control-Read-Encryption-Key",

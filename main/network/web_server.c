@@ -27,6 +27,8 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "rtsp_server.h"
+#include "hap.h"
+#include "hap_pairings.h"
 #include "playback_events.h"
 #include "audio_delay.h"
 #include "audio_output.h"
@@ -1307,6 +1309,47 @@ static esp_err_t airplay_mode_post_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   cJSON_Delete(response);
   return ESP_OK;
+}
+
+/* HomeKit (Home app) pairing state. GET reports it; POST /reset forgets every
+ * controller, after which the speaker can be added to a home afresh. The Home
+ * app keeps its own record, so remove the speaker there too. */
+static void homekit_add_state(cJSON *json) {
+  cJSON_AddNumberToObject(json, "controllers", (double)hap_pairings_count());
+  cJSON_AddNumberToObject(json, "admins", (double)hap_pairings_admin_count());
+  cJSON_AddBoolToObject(json, "access_control", hap_homekit_access_control());
+  cJSON_AddNumberToObject(json, "access_control_level", hap_homekit_acl());
+  cJSON_AddStringToObject(json, "pairing_id", hap_get_device_id());
+  cJSON_AddStringToObject(json, "pi", hap_get_pi());
+}
+
+static esp_err_t homekit_send(httpd_req_t *req, cJSON *json) {
+  char *json_str = cJSON_PrintUnformatted(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t homekit_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  homekit_add_state(json);
+  return homekit_send(req, json);
+}
+
+static esp_err_t homekit_reset_handler(httpd_req_t *req) {
+  const esp_err_t err = hap_pairings_clear();
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+  ESP_LOGI(TAG, "HomeKit pairings cleared via web interface");
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  homekit_add_state(json);
+  return homekit_send(req, json);
 }
 
 static esp_err_t ota_update_handler(httpd_req_t *req) {
@@ -3262,7 +3305,7 @@ esp_err_t web_server_start(uint16_t port) {
   // Slots are allocated up front and httpd_register_uri_handler failures are
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
-  config.max_uri_handlers = 43; // 37 here + /ws/logs, plus 5 spare
+  config.max_uri_handlers = 45; // 39 here + /ws/logs, plus 5 spare
 #ifdef CONFIG_SENDSPIN_ENABLE
   config.max_uri_handlers += 5; // /sendspin + mode get/post + unpair + reset
   // The Sendspin server holds its WebSocket open for as long as the speaker
@@ -3461,6 +3504,16 @@ esp_err_t web_server_start(uint16_t port) {
                                        .method = HTTP_POST,
                                        .handler = airplay_mode_post_handler};
   register_uri(&airplay_mode_post_uri);
+
+  httpd_uri_t homekit_get_uri = {.uri = "/api/homekit",
+                                 .method = HTTP_GET,
+                                 .handler = homekit_get_handler};
+  register_uri(&homekit_get_uri);
+
+  httpd_uri_t homekit_reset_uri = {.uri = "/api/homekit/reset",
+                                   .method = HTTP_POST,
+                                   .handler = homekit_reset_handler};
+  register_uri(&homekit_reset_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,

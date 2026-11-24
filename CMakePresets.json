@@ -1,0 +1,908 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 1
+  },
+  "configurePresets": [
+    {
+      "name": "esp32s3",
+      "displayName": "esp32s3",
+      "description": "ESP32-S3 + external DAC (e.g. PCM5102A) (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3",
+        "SDKCONFIG": "./build/esp32s3/sdkconfig"
+      }
+    },
+    {
+      "name": "squeezeamp",
+      "displayName": "squeezeamp",
+      "description": "ESP32 + TAS5756 DAC/amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/squeezeamp",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp",
+        "SDKCONFIG": "./build/squeezeamp/sdkconfig"
+      }
+    },
+    {
+      "name": "squeezeamp-bt",
+      "displayName": "squeezeamp-bt",
+      "description": "ESP32 + TAS5756 DAC/amp + Bluetooth A2DP (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/squeezeamp-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/squeezeamp-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "squeezeamp-4m",
+      "displayName": "squeezeamp-4m",
+      "description": "SqueezeAMP with 4MB flash (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/squeezeamp-4m",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.squeezeamp-4m",
+        "SDKCONFIG": "./build/squeezeamp-4m/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-uac",
+      "displayName": "esp32s3-uac",
+      "description": "ESP32-S3 + external DAC (e.g. PCM5102A) as a USB speaker (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-uac",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac",
+        "SDKCONFIG": "./build/esp32s3-uac/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-spdif",
+      "displayName": "esp32s3-spdif",
+      "description": "ESP32-S3 with the S/PDIF output backend (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-spdif",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.spdif",
+        "SDKCONFIG": "./build/esp32s3-spdif/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-usb",
+      "displayName": "esp32s3-usb",
+      "description": "ESP32-S3 with the USB audio source backend (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-usb",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.usb",
+        "SDKCONFIG": "./build/esp32s3-usb/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s3-software-eq",
+      "displayName": "esp32s3-software-eq",
+      "description": "ESP32-S3 USB speaker with the software EQ (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s3-software-eq",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3;config/sdkconfig.defaults.uac;config/sdkconfig.defaults.software-eq",
+        "SDKCONFIG": "./build/esp32s3-software-eq/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32c5-xiao",
+      "displayName": "esp32c5-xiao",
+      "description": "Seeed XIAO ESP32-C5 (esp32c5)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32c5-xiao",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32c5",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32c5",
+        "SDKCONFIG": "./build/esp32c5-xiao/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32wrover-dev",
+      "displayName": "esp32wrover-dev",
+      "description": "Freenove ESP32-WROVER devkit (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32wrover-dev",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.wrover;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/esp32wrover-dev/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32",
+      "displayName": "hifi-esp32",
+      "description": "ESP32 + PCM5100 DAC (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32",
+        "SDKCONFIG": "./build/hifi-esp32/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32-bt",
+      "displayName": "hifi-esp32-bt",
+      "description": "ESP32 + PCM5100 DAC + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/hifi-esp32-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32-plus",
+      "displayName": "hifi-esp32-plus",
+      "description": "ESP32 + PCM5122 DAC (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-plus",
+        "SDKCONFIG": "./build/hifi-esp32-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32-plus-bt",
+      "displayName": "hifi-esp32-plus-bt",
+      "description": "ESP32 + PCM5122 DAC + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32-plus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-plus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/hifi-esp32-plus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32-s3-plus",
+      "displayName": "hifi-esp32-s3-plus",
+      "description": "ESP32-S3 + PCM5122 DAC (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32-s3-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-s3-plus",
+        "SDKCONFIG": "./build/hifi-esp32-s3-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esparagus",
+      "displayName": "hifi-esparagus",
+      "description": "ESP32 + PCM5100 DAC (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esparagus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus",
+        "SDKCONFIG": "./build/hifi-esparagus/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esparagus-bt",
+      "displayName": "hifi-esparagus-bt",
+      "description": "ESP32 + PCM5100 DAC + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esparagus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/hifi-esparagus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esp32-s3",
+      "displayName": "hifi-esp32-s3",
+      "description": "ESP32-S3 + PCM5100 DAC (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esp32-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-s3",
+        "SDKCONFIG": "./build/hifi-esp32-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "hifi-esparagus-s3",
+      "displayName": "hifi-esparagus-s3",
+      "description": "ESP32-S3 + PCM5100 DAC (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/hifi-esparagus-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esparagus-s3",
+        "SDKCONFIG": "./build/hifi-esparagus-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "loud-esp32",
+      "displayName": "loud-esp32",
+      "description": "ESP32 + MAX98357A I2S amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/loud-esp32",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32",
+        "SDKCONFIG": "./build/loud-esp32/sdkconfig"
+      }
+    },
+    {
+      "name": "loud-esp32-bt",
+      "displayName": "loud-esp32-bt",
+      "description": "ESP32 + MAX98357A I2S amp + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/loud-esp32-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/loud-esp32-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "loud-esp32-s3",
+      "displayName": "loud-esp32-s3",
+      "description": "ESP32-S3 + dual MAX98357A (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/loud-esp32-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esp32-s3",
+        "SDKCONFIG": "./build/loud-esp32-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "loud-esparagus",
+      "displayName": "loud-esparagus",
+      "description": "ESP32 + dual MAX98357A (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/loud-esparagus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esparagus",
+        "SDKCONFIG": "./build/loud-esparagus/sdkconfig"
+      }
+    },
+    {
+      "name": "loud-esparagus-bt",
+      "displayName": "loud-esparagus-bt",
+      "description": "ESP32 + dual MAX98357A + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/loud-esparagus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.loud-esparagus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/loud-esparagus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-echo",
+      "displayName": "esparagus-echo",
+      "description": "ESP32-S3 + dual MAX98357A (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-echo",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-echo",
+        "SDKCONFIG": "./build/esparagus-echo/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32",
+      "displayName": "amped-esp32",
+      "description": "ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32",
+        "SDKCONFIG": "./build/amped-esp32/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32-bt",
+      "displayName": "amped-esp32-bt",
+      "description": "ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/amped-esp32-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32-s3",
+      "displayName": "amped-esp32-s3",
+      "description": "ESP32-S3 + PCM5100 + TPA3110/TPA3128 (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-s3",
+        "SDKCONFIG": "./build/amped-esp32-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esparagus",
+      "displayName": "amped-esparagus",
+      "description": "ESP32 + PCM5100 + TPA3110/TPA3128 (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esparagus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esparagus",
+        "SDKCONFIG": "./build/amped-esparagus/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esparagus-bt",
+      "displayName": "amped-esparagus-bt",
+      "description": "ESP32 + PCM5100 + TPA3110/TPA3128 + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esparagus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esparagus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/amped-esparagus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32-plus",
+      "displayName": "amped-esp32-plus",
+      "description": "ESP32 + PCM5122 (I2C) + TPA3118 (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-plus",
+        "SDKCONFIG": "./build/amped-esp32-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32-plus-bt",
+      "displayName": "amped-esp32-plus-bt",
+      "description": "ESP32 + PCM5122 (I2C) + TPA3118 + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32-plus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-plus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/amped-esp32-plus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esp32-s3-plus",
+      "displayName": "amped-esp32-s3-plus",
+      "description": "ESP32-S3 + PCM5122 (I2C) + TPA3118 (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esp32-s3-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-s3-plus",
+        "SDKCONFIG": "./build/amped-esp32-s3-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "amped-esparagus-plus-s3",
+      "displayName": "amped-esparagus-plus-s3",
+      "description": "ESP32-S3 + PCM5122 (I2C) + TPA3118 (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/amped-esparagus-plus-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esparagus-plus-s3",
+        "SDKCONFIG": "./build/amped-esparagus-plus-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-audio-brick",
+      "displayName": "esparagus-audio-brick",
+      "description": "ESP32 + TAS5825M/TAS5805M DAC/amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-audio-brick",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick",
+        "SDKCONFIG": "./build/esparagus-audio-brick/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-audio-brick-bt",
+      "displayName": "esparagus-audio-brick-bt",
+      "description": "ESP32 + TAS5825M/TAS5805M DAC/amp + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-audio-brick-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/esparagus-audio-brick-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-audio-brick-s3",
+      "displayName": "esparagus-audio-brick-s3",
+      "description": "ESP32-S3 + TAS5825M/TAS5805M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-audio-brick-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3",
+        "SDKCONFIG": "./build/esparagus-audio-brick-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-audio-brick-dual-dac",
+      "displayName": "esparagus-audio-brick-dual-dac",
+      "description": "ESP32-S3 + 2x TAS58xx (\"Audio Brick Dual\", rev D hardware) (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-audio-brick-dual-dac",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac",
+        "SDKCONFIG": "./build/esparagus-audio-brick-dual-dac/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-audio-brick-dual-uac",
+      "displayName": "esparagus-audio-brick-dual-uac",
+      "description": "ESP32-S3 + 2x TAS58xx (\"Audio Brick Dual\", rev D hardware) + USB speaker (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-audio-brick-dual-uac",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac;config/sdkconfig.defaults.uac",
+        "SDKCONFIG": "./build/esparagus-audio-brick-dual-uac/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-plus",
+      "displayName": "louder-esp32-plus",
+      "description": "ESP32 + TAS5825M DAC/amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-plus",
+        "SDKCONFIG": "./build/louder-esp32-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-plus-bt",
+      "displayName": "louder-esp32-plus-bt",
+      "description": "ESP32 + TAS5825M DAC/amp + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-plus-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-plus;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/louder-esp32-plus-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-s3-plus",
+      "displayName": "louder-esp32-s3-plus",
+      "description": "ESP32-S3 + TAS5825M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-s3-plus",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-plus",
+        "SDKCONFIG": "./build/louder-esp32-s3-plus/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-s3-pro",
+      "displayName": "louder-esp32-s3-pro",
+      "description": "ESP32-S3 + TAS5825M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-s3-pro",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-pro",
+        "SDKCONFIG": "./build/louder-esp32-s3-pro/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-louder",
+      "displayName": "esparagus-louder",
+      "description": "ESP32 + TAS5825M/TAS5805M (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-louder",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder",
+        "SDKCONFIG": "./build/esparagus-louder/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-louder-bt",
+      "displayName": "esparagus-louder-bt",
+      "description": "ESP32 + TAS5825M/TAS5805M + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-louder-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/esparagus-louder-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "esparagus-louder-s3",
+      "displayName": "esparagus-louder-s3",
+      "description": "ESP32-S3 + TAS5825M/TAS5805M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/esparagus-louder-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder-s3",
+        "SDKCONFIG": "./build/esparagus-louder-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32",
+      "displayName": "louder-esp32",
+      "description": "ESP32 + TAS5805M DAC/amp (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32",
+        "SDKCONFIG": "./build/louder-esp32/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-bt",
+      "displayName": "louder-esp32-bt",
+      "description": "ESP32 + TAS5805M DAC/amp + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-bt",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32;config/sdkconfig.defaults.bt",
+        "SDKCONFIG": "./build/louder-esp32-bt/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-s3",
+      "displayName": "louder-esp32-s3",
+      "description": "ESP32-S3 + TAS5805M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3",
+        "SDKCONFIG": "./build/louder-esp32-s3/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-s3-mini",
+      "displayName": "louder-esp32-s3-mini",
+      "description": "Louder-ESP32-Mini: ESP32-S3 + TAS5805M (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-s3-mini",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-mini",
+        "SDKCONFIG": "./build/louder-esp32-s3-mini/sdkconfig"
+      }
+    },
+    {
+      "name": "louder-esp32-s3-mini-uac",
+      "displayName": "louder-esp32-s3-mini-uac",
+      "description": "Louder-ESP32-Mini: ESP32-S3 + TAS5805M as a USB speaker (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/louder-esp32-s3-mini-uac",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-mini;config/sdkconfig.defaults.uac",
+        "SDKCONFIG": "./build/louder-esp32-s3-mini-uac/sdkconfig"
+      }
+    },
+    {
+      "name": "smartamp",
+      "displayName": "smartamp",
+      "description": "ESP32 + Bluetooth (esp32)",
+      "generator": "Ninja",
+      "binaryDir": "build/smartamp",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp",
+        "SDKCONFIG": "./build/smartamp/sdkconfig"
+      }
+    },
+    {
+      "name": "waveshare-esp32s3",
+      "displayName": "waveshare-esp32s3",
+      "description": "Waveshare ESP32-S3 audio board (esp32s3)",
+      "generator": "Ninja",
+      "binaryDir": "build/waveshare-esp32s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.waveshare-esp32s3",
+        "SDKCONFIG": "./build/waveshare-esp32s3/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s2",
+      "displayName": "esp32s2",
+      "description": "ESP32-S2 generic (esp32s2)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s2",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s2",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s2",
+        "SDKCONFIG": "./build/esp32s2/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32p4",
+      "displayName": "esp32p4",
+      "description": "Waveshare ESP32-P4 (experimental) (esp32p4)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32p4",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32p4",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32p4",
+        "SDKCONFIG": "./build/esp32p4/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32s31",
+      "displayName": "esp32s31",
+      "description": "ESP32-S31 (esp32s31)",
+      "generator": "Ninja",
+      "binaryDir": "build/esp32s31",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s31",
+        "SDKCONFIG_DEFAULTS": "config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s31",
+        "SDKCONFIG": "./build/esp32s31/sdkconfig"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "esp32s3",
+      "configurePreset": "esp32s3"
+    },
+    {
+      "name": "squeezeamp",
+      "configurePreset": "squeezeamp"
+    },
+    {
+      "name": "squeezeamp-bt",
+      "configurePreset": "squeezeamp-bt"
+    },
+    {
+      "name": "squeezeamp-4m",
+      "configurePreset": "squeezeamp-4m"
+    },
+    {
+      "name": "esp32s3-uac",
+      "configurePreset": "esp32s3-uac"
+    },
+    {
+      "name": "esp32s3-spdif",
+      "configurePreset": "esp32s3-spdif"
+    },
+    {
+      "name": "esp32s3-usb",
+      "configurePreset": "esp32s3-usb"
+    },
+    {
+      "name": "esp32s3-software-eq",
+      "configurePreset": "esp32s3-software-eq"
+    },
+    {
+      "name": "esp32c5-xiao",
+      "configurePreset": "esp32c5-xiao"
+    },
+    {
+      "name": "esp32wrover-dev",
+      "configurePreset": "esp32wrover-dev"
+    },
+    {
+      "name": "hifi-esp32",
+      "configurePreset": "hifi-esp32"
+    },
+    {
+      "name": "hifi-esp32-bt",
+      "configurePreset": "hifi-esp32-bt"
+    },
+    {
+      "name": "hifi-esp32-plus",
+      "configurePreset": "hifi-esp32-plus"
+    },
+    {
+      "name": "hifi-esp32-plus-bt",
+      "configurePreset": "hifi-esp32-plus-bt"
+    },
+    {
+      "name": "hifi-esp32-s3-plus",
+      "configurePreset": "hifi-esp32-s3-plus"
+    },
+    {
+      "name": "hifi-esparagus",
+      "configurePreset": "hifi-esparagus"
+    },
+    {
+      "name": "hifi-esparagus-bt",
+      "configurePreset": "hifi-esparagus-bt"
+    },
+    {
+      "name": "hifi-esp32-s3",
+      "configurePreset": "hifi-esp32-s3"
+    },
+    {
+      "name": "hifi-esparagus-s3",
+      "configurePreset": "hifi-esparagus-s3"
+    },
+    {
+      "name": "loud-esp32",
+      "configurePreset": "loud-esp32"
+    },
+    {
+      "name": "loud-esp32-bt",
+      "configurePreset": "loud-esp32-bt"
+    },
+    {
+      "name": "loud-esp32-s3",
+      "configurePreset": "loud-esp32-s3"
+    },
+    {
+      "name": "loud-esparagus",
+      "configurePreset": "loud-esparagus"
+    },
+    {
+      "name": "loud-esparagus-bt",
+      "configurePreset": "loud-esparagus-bt"
+    },
+    {
+      "name": "esparagus-echo",
+      "configurePreset": "esparagus-echo"
+    },
+    {
+      "name": "amped-esp32",
+      "configurePreset": "amped-esp32"
+    },
+    {
+      "name": "amped-esp32-bt",
+      "configurePreset": "amped-esp32-bt"
+    },
+    {
+      "name": "amped-esp32-s3",
+      "configurePreset": "amped-esp32-s3"
+    },
+    {
+      "name": "amped-esparagus",
+      "configurePreset": "amped-esparagus"
+    },
+    {
+      "name": "amped-esparagus-bt",
+      "configurePreset": "amped-esparagus-bt"
+    },
+    {
+      "name": "amped-esp32-plus",
+      "configurePreset": "amped-esp32-plus"
+    },
+    {
+      "name": "amped-esp32-plus-bt",
+      "configurePreset": "amped-esp32-plus-bt"
+    },
+    {
+      "name": "amped-esp32-s3-plus",
+      "configurePreset": "amped-esp32-s3-plus"
+    },
+    {
+      "name": "amped-esparagus-plus-s3",
+      "configurePreset": "amped-esparagus-plus-s3"
+    },
+    {
+      "name": "esparagus-audio-brick",
+      "configurePreset": "esparagus-audio-brick"
+    },
+    {
+      "name": "esparagus-audio-brick-bt",
+      "configurePreset": "esparagus-audio-brick-bt"
+    },
+    {
+      "name": "esparagus-audio-brick-s3",
+      "configurePreset": "esparagus-audio-brick-s3"
+    },
+    {
+      "name": "esparagus-audio-brick-dual-dac",
+      "configurePreset": "esparagus-audio-brick-dual-dac"
+    },
+    {
+      "name": "esparagus-audio-brick-dual-uac",
+      "configurePreset": "esparagus-audio-brick-dual-uac"
+    },
+    {
+      "name": "louder-esp32-plus",
+      "configurePreset": "louder-esp32-plus"
+    },
+    {
+      "name": "louder-esp32-plus-bt",
+      "configurePreset": "louder-esp32-plus-bt"
+    },
+    {
+      "name": "louder-esp32-s3-plus",
+      "configurePreset": "louder-esp32-s3-plus"
+    },
+    {
+      "name": "louder-esp32-s3-pro",
+      "configurePreset": "louder-esp32-s3-pro"
+    },
+    {
+      "name": "esparagus-louder",
+      "configurePreset": "esparagus-louder"
+    },
+    {
+      "name": "esparagus-louder-bt",
+      "configurePreset": "esparagus-louder-bt"
+    },
+    {
+      "name": "esparagus-louder-s3",
+      "configurePreset": "esparagus-louder-s3"
+    },
+    {
+      "name": "louder-esp32",
+      "configurePreset": "louder-esp32"
+    },
+    {
+      "name": "louder-esp32-bt",
+      "configurePreset": "louder-esp32-bt"
+    },
+    {
+      "name": "louder-esp32-s3",
+      "configurePreset": "louder-esp32-s3"
+    },
+    {
+      "name": "louder-esp32-s3-mini",
+      "configurePreset": "louder-esp32-s3-mini"
+    },
+    {
+      "name": "louder-esp32-s3-mini-uac",
+      "configurePreset": "louder-esp32-s3-mini-uac"
+    },
+    {
+      "name": "smartamp",
+      "configurePreset": "smartamp"
+    },
+    {
+      "name": "waveshare-esp32s3",
+      "configurePreset": "waveshare-esp32s3"
+    },
+    {
+      "name": "esp32s2",
+      "configurePreset": "esp32s2"
+    },
+    {
+      "name": "esp32p4",
+      "configurePreset": "esp32p4"
+    },
+    {
+      "name": "esp32s31",
+      "configurePreset": "esp32s31"
+    }
+  ]
+}
