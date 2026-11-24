@@ -54,6 +54,25 @@ static bool apply_aac_transient_mute(audio_receiver_state_t *state, bool wanted,
   return true;
 }
 
+// Where a decoded realtime packet's PCM belongs on the RTP timeline.  An AAC
+// decoder's output for packet k is the overlap-add that completes the frame
+// *before* it (the MDCT's one-frame delay; esp_aac_dec adds nothing beyond
+// that, checked against ffmpeg).  Apple's realtime receiver plays AAC one
+// packet earlier than its RTP timestamp: it takes one packet's worth of
+// frames off the playout offset for its AAC codecs.  ALAC has no such delay.
+//
+// Realtime only.  The same shift was tried on the buffered path (type 103)
+// and measured against a Sonos Roam: it put buffered AAC 23 ms *ahead* of
+// realtime ALAC, while without it the two land within 0.1 ms of each other.
+// So buffered AAC keeps its own timestamp.
+static uint32_t realtime_pcm_rtp(const audio_receiver_state_t *state,
+                                 uint32_t rtp, size_t decoded_samples) {
+  if (audio_decoder_is_aac(state->decoder)) {
+    return rtp - (uint32_t)decoded_samples;
+  }
+  return rtp;
+}
+
 bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
                                    uint32_t timestamp) {
   if (!state) {
@@ -204,8 +223,9 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
   }
 
   state->stats.packets_decoded++;
-  return audio_stream_push_timeline_pcm(state, timestamp, decode_buffer,
-                                        (size_t)decoded_samples, channels);
+  return audio_stream_push_timeline_pcm(
+      state, realtime_pcm_rtp(state, timestamp, (size_t)decoded_samples),
+      decode_buffer, (size_t)decoded_samples, channels);
 }
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,
