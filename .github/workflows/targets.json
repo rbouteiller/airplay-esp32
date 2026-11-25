@@ -24,10 +24,6 @@
     "core": true
   },
   {
-    "name": "smartamp",
-    "core": false
-  },
-  {
     "name": "esparagus-audio-brick-bt",
     "core": true
   },
