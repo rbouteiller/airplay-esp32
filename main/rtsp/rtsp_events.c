@@ -58,6 +58,13 @@ void rtsp_events_on_client(void) {
   s_read_nonce = 0;
 }
 
+void rtsp_events_clear(void) {
+  s_keys_valid = false;
+  sodium_memzero(s_write_key, sizeof(s_write_key));
+  sodium_memzero(s_read_key, sizeof(s_read_key));
+  s_group_uuid[0] = '\0';
+}
+
 bool rtsp_events_ready(void) {
   return s_keys_valid && s_group_uuid[0] != '\0' &&
          rtsp_event_client_connected();
@@ -152,6 +159,9 @@ static int read_block(int sock, uint8_t *out) {
 static bool read_response(int sock) {
   uint8_t *resp = malloc(EVENT_RESP_MAX + EVENT_BLOCK_MAX + 1);
   if (!resp) {
+    // The response stays unread, the next command would take it for its own
+    ESP_LOGW(TAG, "No memory for the response, event channel given up");
+    s_keys_valid = false;
     return false;
   }
   size_t have = 0;
@@ -186,7 +196,9 @@ static bool read_response(int sock) {
       ESP_LOGW(TAG, "Sender answered %d", status);
     }
   } else {
-    ESP_LOGW(TAG, "Invalid response");
+    // Not a response: ours may still follow, as above
+    ESP_LOGW(TAG, "Invalid response, event channel given up");
+    s_keys_valid = false;
   }
   free(resp);
   return ok;

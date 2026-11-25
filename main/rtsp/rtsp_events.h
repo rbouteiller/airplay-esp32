@@ -33,6 +33,10 @@ void rtsp_events_setup(const hap_session_t *session, const char *group_uuid);
 // connection, so both nonces start at 0 again.
 void rtsp_events_on_client(void);
 
+// Event port task ends (called with the event socket lock held): wipe the keys
+// of the session. The next SETUP brings new ones.
+void rtsp_events_clear(void);
+
 // Keys, group UUID and an event connection are there
 bool rtsp_events_ready(void);
 

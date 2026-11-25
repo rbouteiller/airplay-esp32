@@ -320,6 +320,8 @@ static void event_port_task(void *pvParameters) {
     close(event_client_socket);
     event_client_socket = -1;
   }
+  // The keys end with the event port
+  rtsp_events_clear();
   xSemaphoreGive(event_io_mutex);
   event_listen_socket = -1;
   event_task_handle = NULL;
