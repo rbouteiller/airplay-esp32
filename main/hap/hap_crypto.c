@@ -75,6 +75,18 @@ esp_err_t hap_derive_audio_key(hap_session_t *session, uint8_t *audio_key,
   return ESP_OK;
 }
 
+// See hap.h
+void hap_derive_event_keys(hap_session_t *session, const uint8_t *secret,
+                           size_t secret_len) {
+  hap_hkdf_sha512((uint8_t *)"Events-Salt", 11, secret, secret_len,
+                  (uint8_t *)"Events-Write-Encryption-Key", 27,
+                  session->event_write_key, sizeof(session->event_write_key));
+  hap_hkdf_sha512((uint8_t *)"Events-Salt", 11, secret, secret_len,
+                  (uint8_t *)"Events-Read-Encryption-Key", 26,
+                  session->event_read_key, sizeof(session->event_read_key));
+  session->event_keys_valid = true;
+}
+
 esp_err_t hap_encrypt(hap_session_t *session, const uint8_t *plaintext,
                       size_t plaintext_len, uint8_t *ciphertext,
                       size_t *ciphertext_len) {

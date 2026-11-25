@@ -5,13 +5,12 @@
  * Source-agnostic playback controller.
  *
  * For AirPlay:
- *   - Play/Pause: mute/unmute the DAC locally.  If the source sent
- *     DACP headers (AirPlay 1), we also forward the command via DACP
- *     so the source UI updates.  Modern iOS AirPlay 2 does not send
- *     DACP headers, so local mute is the only option.
- *   - Next/Prev: forwarded via DACP when available (AirPlay 1 only).
+ *   - Play/Pause, Next/Prev: sent to the source via DACP (AirPlay 1) or as
+ *     MediaRemote commands on the AirPlay 2 event channel (rtsp_events.c;
+ *     iOS sends no DACP headers in AirPlay 2 mode).  Without either,
+ *     play/pause falls back to muting the DAC locally.
  *   - Volume: adjusted locally (DAC + NVS persistence) and mirrored
- *     to the source via DACP when available.
+ *     to the source via DACP or the event channel when available.
  *
  * For Bluetooth:
  *   - All commands sent as AVRCP passthrough to source device
@@ -23,6 +22,7 @@
 #include "dac.h"
 #include "dacp_client.h"
 #include "playback_events.h"
+#include "rtsp_events.h"
 #include "rtsp_server.h"
 #include "settings.h"
 
@@ -127,8 +127,14 @@ static void set_local_level(float db) {
   apply_level(db);
   if (s_source == PLAYBACK_SOURCE_AIRPLAY) {
     airplay_set_volume(db);
-    // Notify AirPlay client via DACP (best-effort, don't block local action)
-    dacp_send_volume(db_to_dacp_percent(db));
+    // Notify the AirPlay client (best-effort, don't block local action):
+    // DACP for AirPlay 1, a volume notification on the event channel for
+    // AirPlay 2. The sender's slider is linear in dB, so percent / 100.
+    if (dacp_is_active()) {
+      dacp_send_volume(db_to_dacp_percent(db));
+    } else {
+      (void)rtsp_events_send_volume(db_to_dacp_percent(db) / 100.0);
+    }
   }
 }
 
@@ -161,6 +167,9 @@ void playback_control_play_pause(void) {
       rtsp_server_request_resume();
       dacp_send_playpause();
       ESP_LOGI(TAG, "AirPlay play/pause sent via DACP");
+    } else if (rtsp_events_send_command(RTSP_EVENTS_CMD_PLAY_PAUSE)) {
+      // AirPlay 2: the source pauses or resumes and reports it back
+      ESP_LOGI(TAG, "AirPlay play/pause sent via event channel");
     } else {
       // Fallback: mute/unmute the DAC locally when no DACP session
       playback_control_set_muted(!s_muted);
@@ -238,8 +247,12 @@ void playback_control_volume_down(void) {
 void playback_control_next(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    dacp_send_next();
-    ESP_LOGI(TAG, "AirPlay next track via DACP");
+    if (dacp_is_active()) {
+      dacp_send_next();
+      ESP_LOGI(TAG, "AirPlay next track via DACP");
+    } else if (rtsp_events_send_command(RTSP_EVENTS_CMD_NEXT)) {
+      ESP_LOGI(TAG, "AirPlay next track via event channel");
+    }
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:
@@ -264,8 +277,12 @@ void playback_control_next(void) {
 void playback_control_prev(void) {
   switch (s_source) {
   case PLAYBACK_SOURCE_AIRPLAY:
-    dacp_send_prev();
-    ESP_LOGI(TAG, "AirPlay prev track via DACP");
+    if (dacp_is_active()) {
+      dacp_send_prev();
+      ESP_LOGI(TAG, "AirPlay prev track via DACP");
+    } else if (rtsp_events_send_command(RTSP_EVENTS_CMD_PREVIOUS)) {
+      ESP_LOGI(TAG, "AirPlay prev track via event channel");
+    }
     break;
 #ifdef CONFIG_BT_A2DP_ENABLE
   case PLAYBACK_SOURCE_BLUETOOTH:

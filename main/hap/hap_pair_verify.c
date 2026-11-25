@@ -253,6 +253,7 @@ esp_err_t hap_pair_verify_m3(hap_session_t *session, const uint8_t *input,
   tlv8_encode_byte(&enc, TLV_TYPE_STATE, PAIR_VERIFY_STATE_M4);
 
   *output_len = tlv8_encoder_size(&enc);
+  hap_derive_event_keys(session, session->shared_secret, HAP_X25519_KEY_SIZE);
   session->pair_verify_state = PAIR_VERIFY_STATE_M4;
   session->session_established = true;
 
@@ -402,6 +403,7 @@ esp_err_t hap_pair_verify_m3_raw(hap_session_t *session, const uint8_t *input,
   session->decrypt_nonce = 0;
 
   *output_len = 0;
+  hap_derive_event_keys(session, session->shared_secret, HAP_X25519_KEY_SIZE);
   session->pair_verify_state = PAIR_VERIFY_STATE_M4;
   session->session_established = true;
 

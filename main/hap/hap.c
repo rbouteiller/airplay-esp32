@@ -169,5 +169,7 @@ void hap_session_free(hap_session_t *session) {
   sodium_memzero(session->shared_secret, sizeof(session->shared_secret));
   sodium_memzero(session->encrypt_key, sizeof(session->encrypt_key));
   sodium_memzero(session->decrypt_key, sizeof(session->decrypt_key));
+  sodium_memzero(session->event_write_key, sizeof(session->event_write_key));
+  sodium_memzero(session->event_read_key, sizeof(session->event_read_key));
   free(session);
 }

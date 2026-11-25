@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "audio_stream.h"
@@ -34,11 +35,22 @@ static bool bplist_write_length(uint8_t *out, size_t capacity, size_t *pos,
     out[(*pos)++] = marker_base | (uint8_t)length;
     return true;
   }
-  if (length > UINT8_MAX || !bplist_has_room(*pos, 3, capacity)) {
+  if (length <= UINT8_MAX) {
+    if (!bplist_has_room(*pos, 3, capacity)) {
+      return false;
+    }
+    out[(*pos)++] = marker_base | 0x0F;
+    out[(*pos)++] = 0x10;
+    out[(*pos)++] = (uint8_t)length;
+    return true;
+  }
+  // 2-byte lengths (the group UUID archive is ~300 bytes)
+  if (length > UINT16_MAX || !bplist_has_room(*pos, 4, capacity)) {
     return false;
   }
   out[(*pos)++] = marker_base | 0x0F;
-  out[(*pos)++] = 0x10;
+  out[(*pos)++] = 0x11;
+  out[(*pos)++] = (uint8_t)(length >> 8);
   out[(*pos)++] = (uint8_t)length;
   return true;
 }
@@ -860,4 +872,260 @@ size_t bplist_build_configure_response(
     return 0;
   }
   return pos;
+}
+
+// ========================================
+// AirPlay 2 remote control over the event channel
+// (format from Shairport Sync, remote/remote.c)
+// ========================================
+
+static bool bplist_write_real(uint8_t *out, size_t capacity, size_t *pos,
+                              double value) {
+  if (!bplist_has_room(*pos, 9, capacity)) {
+    return false;
+  }
+  uint64_t bits;
+  memcpy(&bits, &value, sizeof(bits));
+  out[(*pos)++] = 0x23; // 8-byte real
+  return bplist_write_u64(out, capacity, pos, bits);
+}
+
+static bool bplist_write_uid(uint8_t *out, size_t capacity, size_t *pos,
+                             uint8_t value) {
+  if (!bplist_has_room(*pos, 2, capacity)) {
+    return false;
+  }
+  out[(*pos)++] = 0x80; // UID, 1 byte
+  out[(*pos)++] = value;
+  return true;
+}
+
+static bool bplist_write_true(uint8_t *out, size_t capacity, size_t *pos) {
+  if (!bplist_has_room(*pos, 1, capacity)) {
+    return false;
+  }
+  out[(*pos)++] = 0x09;
+  return true;
+}
+
+static bool bplist_begin(uint8_t *out, size_t capacity, size_t *pos) {
+  if (capacity < sizeof(BPLIST_MAGIC)) {
+    return false;
+  }
+  memcpy(out, BPLIST_MAGIC, sizeof(BPLIST_MAGIC));
+  *pos = sizeof(BPLIST_MAGIC);
+  return true;
+}
+
+size_t bplist_build_group_archive(uint8_t *out, size_t capacity,
+                                  const char *group_uuid) {
+  // NSKeyedArchiver: NSMutableArray with one element, the group UUID
+  enum {
+    O_TOP,
+    K_VERSION,
+    K_ARCHIVER,
+    K_TOP,
+    K_OBJECTS,
+    V_VERSION,
+    V_ARCHIVER,
+    V_TOP,
+    V_OBJECTS,
+    K_ROOT,
+    UID_1,
+    S_NULL,
+    ARRAY_OBJ,
+    S_UUID,
+    CLASS_OBJ,
+    K_NS_OBJECTS,
+    K_CLASS,
+    NS_OBJECTS,
+    UID_3,
+    K_CLASSNAME,
+    K_CLASSES,
+    S_MUTABLE_ARRAY,
+    CLASSES,
+    UID_2,
+    S_ARRAY,
+    S_OBJECT,
+    COUNT
+  };
+  size_t offsets[COUNT];
+  size_t pos;
+  bool ok = bplist_begin(out, capacity, &pos);
+#define AT(i) (offsets[i] = pos)
+  if (ok) {
+    const uint8_t top_k[] = {K_VERSION, K_ARCHIVER, K_TOP, K_OBJECTS};
+    const uint8_t top_v[] = {V_VERSION, V_ARCHIVER, V_TOP, V_OBJECTS};
+    const uint8_t root_k[] = {K_ROOT}, root_v[] = {UID_1};
+    const uint8_t objects[] = {S_NULL, ARRAY_OBJ, S_UUID, CLASS_OBJ};
+    const uint8_t arr_k[] = {K_NS_OBJECTS, K_CLASS};
+    const uint8_t arr_v[] = {NS_OBJECTS, UID_3};
+    const uint8_t cls_k[] = {K_CLASSNAME, K_CLASSES};
+    const uint8_t cls_v[] = {S_MUTABLE_ARRAY, CLASSES};
+    const uint8_t ns_objects[] = {UID_2};
+    const uint8_t classes[] = {S_MUTABLE_ARRAY, S_ARRAY, S_OBJECT};
+    ok =
+        (AT(O_TOP), bplist_write_dict(out, capacity, &pos, top_k, top_v, 4)) &&
+        (AT(K_VERSION),
+         bplist_write_ascii_string(out, capacity, &pos, "$version")) &&
+        (AT(K_ARCHIVER),
+         bplist_write_ascii_string(out, capacity, &pos, "$archiver")) &&
+        (AT(K_TOP), bplist_write_ascii_string(out, capacity, &pos, "$top")) &&
+        (AT(K_OBJECTS),
+         bplist_write_ascii_string(out, capacity, &pos, "$objects")) &&
+        (AT(V_VERSION), bplist_write_int(out, capacity, &pos, 100000)) &&
+        (AT(V_ARCHIVER),
+         bplist_write_ascii_string(out, capacity, &pos, "NSKeyedArchiver")) &&
+        (AT(V_TOP),
+         bplist_write_dict(out, capacity, &pos, root_k, root_v, 1)) &&
+        (AT(V_OBJECTS), bplist_write_array(out, capacity, &pos, objects, 4)) &&
+        (AT(K_ROOT), bplist_write_ascii_string(out, capacity, &pos, "root")) &&
+        (AT(UID_1), bplist_write_uid(out, capacity, &pos, 1)) &&
+        (AT(S_NULL), bplist_write_ascii_string(out, capacity, &pos, "$null")) &&
+        (AT(ARRAY_OBJ),
+         bplist_write_dict(out, capacity, &pos, arr_k, arr_v, 2)) &&
+        (AT(S_UUID),
+         bplist_write_ascii_string(out, capacity, &pos, group_uuid)) &&
+        (AT(CLASS_OBJ),
+         bplist_write_dict(out, capacity, &pos, cls_k, cls_v, 2)) &&
+        (AT(K_NS_OBJECTS),
+         bplist_write_ascii_string(out, capacity, &pos, "NS.objects")) &&
+        (AT(K_CLASS),
+         bplist_write_ascii_string(out, capacity, &pos, "$class")) &&
+        (AT(NS_OBJECTS),
+         bplist_write_array(out, capacity, &pos, ns_objects, 1)) &&
+        (AT(UID_3), bplist_write_uid(out, capacity, &pos, 3)) &&
+        (AT(K_CLASSNAME),
+         bplist_write_ascii_string(out, capacity, &pos, "$classname")) &&
+        (AT(K_CLASSES),
+         bplist_write_ascii_string(out, capacity, &pos, "$classes")) &&
+        (AT(S_MUTABLE_ARRAY),
+         bplist_write_ascii_string(out, capacity, &pos, "NSMutableArray")) &&
+        (AT(CLASSES), bplist_write_array(out, capacity, &pos, classes, 3)) &&
+        (AT(UID_2), bplist_write_uid(out, capacity, &pos, 2)) &&
+        (AT(S_ARRAY),
+         bplist_write_ascii_string(out, capacity, &pos, "NSArray")) &&
+        (AT(S_OBJECT),
+         bplist_write_ascii_string(out, capacity, &pos, "NSObject")) &&
+        bplist_finish(out, capacity, &pos, offsets, COUNT, O_TOP);
+  }
+#undef AT
+  return ok ? pos : 0;
+}
+
+size_t bplist_build_media_remote_command(uint8_t *out, size_t capacity,
+                                         unsigned int command,
+                                         const char *command_id,
+                                         const uint8_t *archive,
+                                         size_t archive_len) {
+  enum {
+    O_TOP,
+    K_COMMAND,
+    K_TYPE,
+    K_PARAMS,
+    V_COMMAND,
+    V_TYPE,
+    V_PARAMS,
+    K_SEND_OPTIONS,
+    K_COMMAND_ID,
+    K_REDIRECTING,
+    K_DESTINATIONS,
+    V_SEND_OPTIONS,
+    V_COMMAND_ID,
+    V_REDIRECTING,
+    V_DESTINATIONS,
+    COUNT
+  };
+  char command_str[12];
+  snprintf(command_str, sizeof(command_str), "%u", command);
+  size_t offsets[COUNT];
+  size_t pos;
+  bool ok = bplist_begin(out, capacity, &pos);
+#define AT(i) (offsets[i] = pos)
+  if (ok) {
+    const uint8_t top_k[] = {K_COMMAND, K_TYPE, K_PARAMS};
+    const uint8_t top_v[] = {V_COMMAND, V_TYPE, V_PARAMS};
+    const uint8_t par_k[] = {K_SEND_OPTIONS, K_COMMAND_ID, K_REDIRECTING,
+                             K_DESTINATIONS};
+    const uint8_t par_v[] = {V_SEND_OPTIONS, V_COMMAND_ID, V_REDIRECTING,
+                             V_DESTINATIONS};
+    ok =
+        (AT(O_TOP), bplist_write_dict(out, capacity, &pos, top_k, top_v, 3)) &&
+        (AT(K_COMMAND), bplist_write_ascii_string(
+                            out, capacity, &pos, "modernMediaRemoteCommand")) &&
+        (AT(K_TYPE), bplist_write_ascii_string(out, capacity, &pos, "type")) &&
+        (AT(K_PARAMS),
+         bplist_write_ascii_string(out, capacity, &pos, "params")) &&
+        (AT(V_COMMAND),
+         bplist_write_ascii_string(out, capacity, &pos, command_str)) &&
+        (AT(V_TYPE), bplist_write_ascii_string(out, capacity, &pos,
+                                               "sendMediaRemoteCommand")) &&
+        (AT(V_PARAMS),
+         bplist_write_dict(out, capacity, &pos, par_k, par_v, 4)) &&
+        (AT(K_SEND_OPTIONS),
+         bplist_write_ascii_string(out, capacity, &pos,
+                                   "kMRMediaRemoteOptionSendOptionsNumber")) &&
+        (AT(K_COMMAND_ID),
+         bplist_write_ascii_string(out, capacity, &pos,
+                                   "kMRMediaRemoteOptionCommandID")) &&
+        (AT(K_REDIRECTING), bplist_write_ascii_string(
+                                out, capacity, &pos,
+                                "kMRMediaRemoteOptionIsRedirectingCommand")) &&
+        (AT(K_DESTINATIONS),
+         bplist_write_ascii_string(
+             out, capacity, &pos,
+             "kMRMediaRemoteOptionDestinationDeviceUIDs")) &&
+        (AT(V_SEND_OPTIONS), bplist_write_int(out, capacity, &pos, 0)) &&
+        (AT(V_COMMAND_ID),
+         bplist_write_ascii_string(out, capacity, &pos, command_id)) &&
+        (AT(V_REDIRECTING), bplist_write_true(out, capacity, &pos)) &&
+        (AT(V_DESTINATIONS),
+         bplist_write_data(out, capacity, &pos, archive, archive_len)) &&
+        bplist_finish(out, capacity, &pos, offsets, COUNT, O_TOP);
+  }
+#undef AT
+  return ok ? pos : 0;
+}
+
+size_t bplist_build_volume_command(uint8_t *out, size_t capacity,
+                                   double volume) {
+  enum {
+    O_TOP,
+    K_VALUE,
+    K_VOLUME,
+    K_TYPE,
+    K_PARAMS,
+    V_VALUE,
+    V_VOLUME,
+    V_TYPE,
+    V_PARAMS,
+    COUNT
+  };
+  size_t offsets[COUNT];
+  size_t pos;
+  bool ok = bplist_begin(out, capacity, &pos);
+#define AT(i) (offsets[i] = pos)
+  if (ok) {
+    const uint8_t top_k[] = {K_VALUE, K_VOLUME, K_TYPE, K_PARAMS};
+    const uint8_t top_v[] = {V_VALUE, V_VOLUME, V_TYPE, V_PARAMS};
+    const uint8_t par_k[] = {K_VOLUME}, par_v[] = {V_VOLUME};
+    ok =
+        (AT(O_TOP), bplist_write_dict(out, capacity, &pos, top_k, top_v, 4)) &&
+        (AT(K_VALUE),
+         bplist_write_ascii_string(out, capacity, &pos, "value")) &&
+        (AT(K_VOLUME),
+         bplist_write_ascii_string(out, capacity, &pos, "volume")) &&
+        (AT(K_TYPE), bplist_write_ascii_string(out, capacity, &pos, "type")) &&
+        (AT(K_PARAMS),
+         bplist_write_ascii_string(out, capacity, &pos, "params")) &&
+        (AT(V_VALUE), bplist_write_ascii_string(out, capacity, &pos, "dvlc")) &&
+        (AT(V_VOLUME), bplist_write_real(out, capacity, &pos, volume)) &&
+        (AT(V_TYPE), bplist_write_ascii_string(out, capacity, &pos,
+                                               "sendMediaRemoteCommand")) &&
+        (AT(V_PARAMS),
+         bplist_write_dict(out, capacity, &pos, par_k, par_v, 1)) &&
+        bplist_finish(out, capacity, &pos, offsets, COUNT, O_TOP);
+  }
+#undef AT
+  return ok ? pos : 0;
 }

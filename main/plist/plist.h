@@ -274,6 +274,23 @@ bool bplist_find_nested_string(const uint8_t *plist, size_t plist_len,
 size_t bplist_build_initial_setup(uint8_t *out, size_t capacity,
                                   uint16_t event_port);
 
+// AirPlay 2 remote control over the event channel (format from
+// Shairport Sync). Each returns the bplist length, 0 on error.
+// NSKeyedArchiver of an NSMutableArray holding the group UUID
+// (kMRMediaRemoteOptionDestinationDeviceUIDs).
+size_t bplist_build_group_archive(uint8_t *out, size_t capacity,
+                                  const char *group_uuid);
+// {type: sendMediaRemoteCommand, modernMediaRemoteCommand: "<n>", params}.
+// n: 0 play, 1 pause, 2 play/pause, 3 stop, 4 next, 5 previous.
+size_t bplist_build_media_remote_command(uint8_t *out, size_t capacity,
+                                         unsigned int command,
+                                         const char *command_id,
+                                         const uint8_t *archive,
+                                         size_t archive_len);
+// Volume notification ("dvlc"), volume 0.0-1.0
+size_t bplist_build_volume_command(uint8_t *out, size_t capacity,
+                                   double volume);
+
 /**
  * Build stream SETUP response bplist (with streams array)
  * Returns streams[] array with type, dataPort, controlPort, audioBufferSize.

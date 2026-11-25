@@ -52,8 +52,9 @@ If you still hear drop-outs on AirPlay 1 / realtime playback, increase
 Classic AirPlay v1 makes the receiver advertise itself as a plain RAOP receiver. There are
 two reasons to do this:
 
-- **Hardware buttons.** iOS only sends DACP headers in v1 mode, so this is what makes
-  [hardware buttons](buttons.md#read-this-first-the-airplay-v1-requirement) work.
+- **Hardware buttons with other senders.** Under AirPlay 2, buttons reach an iPhone over
+  the event channel; senders where that does not work can still use DACP in v1 mode, see
+  [how commands reach an AirPlay source](buttons.md#how-commands-reach-an-airplay-source).
 - **Apple Music for Windows.** It is a RAOP-only sender and refuses any device that
   advertises the `_airplay._tcp` service, reporting that the device "is not compatible
   with this version of AMPLibraryAgent". The device still appears in its picker and it

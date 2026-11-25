@@ -4,31 +4,33 @@ Physical buttons can control playback directly from the device, with no phone in
 They work with both AirPlay and Bluetooth sources — but there is an important caveat for
 AirPlay, covered below.
 
-## Read this first: the AirPlay v1 requirement
+## How commands reach an AirPlay source
 
-Button-driven remote control (play/pause, next/previous track) relies on **DACP**, a
-protocol where iOS sends a session ID and port that the receiver uses to send commands
-back to the source. **iOS only sends DACP headers in AirPlay v1 (classic) mode.** In
-AirPlay 2 mode Apple uses MRP (Media Remote Protocol) instead, which this firmware does not
-implement.
+Button-driven remote control (play/pause, next/previous track, and the sender's volume
+slider) reaches the source in one of two ways:
+
+- **AirPlay v1 (classic):** over **DACP**, a protocol where iOS sends a session ID and port
+  that the receiver uses to send commands back to the source.
+- **AirPlay 2:** iOS sends no DACP headers. Commands go as MediaRemote commands over the
+  session's encrypted **event channel** instead (`POST /command`, the approach Shairport
+  Sync takes), not as a full MRP implementation.
 
 In practice:
 
 | Source | Volume | Play/pause and track skip |
 | --- | --- | --- |
-| **AirPlay 2** (default) | Works, applied locally on the DAC | Falls back to local mute — cannot control the source |
+| **AirPlay 2** (default) | Works, the sender's slider follows | Works via the event channel |
 | **AirPlay v1** (forced) | Works | Works fully via DACP |
 | **Bluetooth** | Works | Works fully via AVRCP passthrough |
 
-To get full button control over AirPlay, switch the receiver to v1 mode in the web
-interface: **Configuration → AirPlay → Mode → Legacy (v1)**, then restart the
-device.
+If neither DACP nor the event channel is available, play/pause falls back to muting the
+DAC locally.
 
-!!! warning "Trade-off"
+!!! note "Tested with iOS"
 
-    AirPlay v1 disables AirPlay 2 features: HomeKit pairing, encrypted transport and
-    multi-room sync. The device still appears in AirPlay menus on iOS, but as a classic
-    receiver. Bluetooth is unaffected.
+    The event channel path has been tested with an iPhone (play/pause, next/previous,
+    volume). Apple does not document it; other senders such as macOS Music may behave
+    differently.
 
 ## Supported actions
 
@@ -64,8 +66,8 @@ button is open.
   **external pull-up resistor**. The driver warns at boot if you use one of them.
 
 Input is interrupt-driven with a 50 ms software debounce, so there is no polling overhead.
-Actions are dispatched to whichever source is active: DACP for AirPlay v1, AVRCP
-passthrough for Bluetooth.
+Actions are dispatched to whichever source is active: DACP for AirPlay v1, the event
+channel for AirPlay 2, AVRCP passthrough for Bluetooth.
 
 ### Rotary encoder
 

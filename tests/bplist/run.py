@@ -119,3 +119,56 @@ with tempfile.TemporaryDirectory(prefix="bplist-tests-") as temporary:
         f"PASS: {len(VALID_NAMES)} Unicode round-trips with every output capacity; "
         f"{len(INVALID_NAMES)} malformed UTF-8 sequences rejected"
     )
+
+    # AirPlay 2 remote control over the event channel: the NSKeyedArchiver of
+    # the group UUID, the MediaRemote command and the volume notification,
+    # in the shape Shairport Sync sends (remote/remote.c).
+    command[command.index(str(HERE / "test.c"))] = str(HERE / "remote_test.c")
+    command[-1] = str(build / "remote_test")
+    print("Remote control plist tests", flush=True)
+    subprocess.run(command, check=True)
+
+    def remote(*args):
+        result = subprocess.run(
+            [str(build / "remote_test"), *map(str, args)],
+            check=True, stdout=subprocess.PIPE,
+        )
+        return plistlib.loads(result.stdout)
+
+    GROUP = "343F4AF7-9158-4466-AC59-250A1281FFD6"
+    ARCHIVE = {
+        "$version": 100000,
+        "$archiver": "NSKeyedArchiver",
+        "$top": {"root": plistlib.UID(1)},
+        "$objects": [
+            "$null",
+            {"NS.objects": [plistlib.UID(2)], "$class": plistlib.UID(3)},
+            GROUP,
+            {"$classname": "NSMutableArray",
+             "$classes": ["NSMutableArray", "NSArray", "NSObject"]},
+        ],
+    }
+    assert remote("archive", GROUP) == ARCHIVE
+
+    for number in (0, 1, 2, 3, 4, 5):
+        decoded = remote("command", number, GROUP)
+        params = decoded.pop("params")
+        assert decoded == {"type": "sendMediaRemoteCommand",
+                           "modernMediaRemoteCommand": str(number)}, decoded
+        archive = params.pop("kMRMediaRemoteOptionDestinationDeviceUIDs")
+        assert plistlib.loads(archive) == ARCHIVE
+        assert params == {
+            "kMRMediaRemoteOptionSendOptionsNumber": 0,
+            "kMRMediaRemoteOptionCommandID":
+                "11111111-2222-4333-8444-555555555555",
+            "kMRMediaRemoteOptionIsRedirectingCommand": True,
+        }, params
+
+    for volume in (0.0, 0.42, 1.0):
+        assert remote("volume", volume) == {
+            "type": "sendMediaRemoteCommand", "value": "dvlc",
+            "volume": volume, "params": {"volume": volume},
+        }
+
+    print("PASS: group archive, 6 MediaRemote commands and 3 volume "
+          "notifications decode as expected with every output capacity")
