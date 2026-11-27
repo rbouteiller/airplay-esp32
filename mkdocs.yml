@@ -125,6 +125,7 @@ nav:
       - Apple Home (HomeKit): features/homekit.md
       - Sendspin (experimental): features/sendspin.md
       - Ethernet (W5500): features/ethernet.md
+      - MQTT now-playing (Home Assistant): features/mqtt.md
       - OLED display: features/oled-display.md
       - ST7789 TFT display: features/tft-display.md
       - Hardware buttons: features/buttons.md

@@ -20,6 +20,7 @@
 #include "web_server.h"
 #include "log_stream.h"
 #include "wifi.h"
+#include "mqtt_nowplaying.h"
 #include "spiffs_storage.h"
 
 #ifdef CONFIG_BT_A2DP_ENABLE
@@ -373,6 +374,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  mqtt_nowplaying_init();
 #ifdef CONFIG_DAC_TAS57XX
   // Load persisted sub level offset (pre-init safe; applied on first volume).
   float sub_off;
@@ -530,6 +532,7 @@ void app_main(void) {
   }
 #endif
   web_server_start(80);
+  mqtt_nowplaying_start();
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
                      NULL);
   log_dram("web server");
