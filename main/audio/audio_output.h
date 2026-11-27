@@ -103,51 +103,63 @@ void audio_output_set_sample_rate(uint32_t rate);
 void audio_output_set_source_rate(int rate);
 
 /**
- * Return the I2S DMA pipeline latency in microseconds.
- *
- * This is computed from the DMA descriptor count and frame count
- * (both set at init time) divided by the output sample rate — i.e.
- *   (dma_desc_num × dma_frame_num × 1 000 000) / sample_rate
- *
- * Using this value instead of a hard-coded constant means the latency
- * stays correct if the DMA config or sample rate is ever changed.
+ * The modelled depth ahead of the playback task's next block, in
+ * microseconds: the steady-state average of what
+ * audio_output_get_pipeline_us() measures, worked out from the DMA ring's
+ * size and the output rate.  For logs, and for backends without a
+ * measurement.
  */
 uint32_t audio_output_get_hardware_latency_us(void);
 
 /**
  * Sample the live output pipeline delay: how long from now until the first
- * sample of the NEXT backend write is heard.
+ * frame the playback task renders next reaches the end of the DMA ring.
  *
- * Unlike audio_output_get_hardware_latency_us(), which models a permanently
- * half-full DMA ring, this reports the measured queue depth (frames handed
- * to the hardware minus frames the hardware reports as clocked out).  The
- * measurement is what makes the timing engine's error signal honest:
+ * Unlike audio_output_get_hardware_latency_us(), a fixed model, this is
+ * measured from the driver's buffer queue (audio_output_cursor.h) plus what
+ * the task holds back for its next write.  The measurement is what makes the
+ * timing engine's error signal honest:
  *
  *   - it is unaffected by when the playback task happens to be scheduled,
  *     removing the one-sided "late read" noise the model suffers from;
- *   - after a writer stall it correctly reports a near-empty ring, so the
- *     engine sees the real lateness of the content it is about to submit
- *     instead of a fixed 43 ms guess.
+ *   - after a writer stall it reports how little is left in the ring, so the
+ *     engine sees the real lateness of the content it is about to submit.
  *
  * @param now_us      out: esp_timer_get_time() sampled with the queue depth.
  * @param pipeline_us out: queue depth in microseconds at the output rate.
- * @return false if the backend cannot report a hardware completion cursor,
- *         in which case the caller should fall back to the modelled latency.
+ * @return false if the backend has no completion cursor, or cannot tell for
+ *         the moment (after a Bluetooth or USB sink wrote to the ring), in
+ *         which case the caller should fall back to the modelled latency.
  */
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us);
 
 /**
  * Local monotonic time (ns) at which the first sample of the NEXT backend
- * write will be heard.
- *
- * Deliberately built on the stable modelled latency rather than the live
- * cursor from audio_output_get_pipeline_us(): this is a *scheduling* input,
- * consumed once per render to pick which RTP timestamp to emit next.  The
- * live cursor steps at DMA descriptor boundaries, so feeding it in here would
- * make the chosen timestamp jitter by a whole descriptor and repeatedly
- * re-target the read cursor.  Error measurement still uses the live value.
+ * write will be heard: the live queue depth from
+ * audio_output_get_pipeline_us() (interpolated between DMA completions, so
+ * it does not step by a descriptor), plus the post-ring latency of
+ * audio_output_get_latency().  Falls back to the modelled depth for a
+ * backend without a completion cursor.
  */
 int64_t audio_output_get_next_playout_time_ns(int64_t now_us);
+
+struct audio_latency;
+
+/**
+ * The post-ring latency and its parts (audio_latency.h): FIFO, resampler,
+ * common output delay, DAC and user trim, at the current output rate.
+ */
+void audio_output_get_latency(struct audio_latency *latency);
+
+/**
+ * Backend facts for the latency model; weak defaults in
+ * audio_output_common.c.  The rate the output runs at, the frames that sit in
+ * a hardware FIFO after the completion cursor counts them as sent, and the
+ * delay common to every output (the per-output delay's shared part).
+ */
+uint32_t audio_output_get_rate(void);
+uint32_t audio_output_get_fifo_frames(void);
+uint32_t audio_output_get_common_delay_us(void);
 
 /**
  * Render callback used by a playback task to pull the next block of PCM.

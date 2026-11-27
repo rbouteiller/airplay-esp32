@@ -22,8 +22,8 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .form-group:last-child{margin-bottom:0}
 .form-group>label{display:block;font-size:12px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
 .row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
-input[type=text],input[type=password],select{width:100%;padding:11px 12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
-.row select,.row input[type=text]{flex:1;width:auto;min-width:160px}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:11px 12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;font-size:14px}
+.row select,.row input[type=text],.row input[type=number]{flex:1;width:auto;min-width:160px}
 select option{background:#16213e}
 select:disabled,input:disabled{opacity:0.5;cursor:not-allowed}
 input:focus,select:focus{outline:none;border-color:#e94560}

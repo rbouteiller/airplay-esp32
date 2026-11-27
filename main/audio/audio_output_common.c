@@ -20,12 +20,12 @@
 
 #include "audio_output.h"
 
-#include "audio_receiver.h"
-#include "led.h"
+#include "sdkconfig.h"
 
-// ~5 ms of scheduling + write delay between this call and the samples
-// reaching the backend.  Mirrors PIPELINE_LATENCY_US in audio_timing.c.
-#define OUTPUT_PIPELINE_LATENCY_US 5000
+#include "audio_latency.h"
+#include "audio_receiver.h"
+#include "audio_resample.h"
+#include "led.h"
 
 // Alternate renderer, or NULL for the AirPlay receiver.  Written by the
 // arbitration path once the previous owner has been stopped and read once per
@@ -55,6 +55,10 @@ size_t audio_output_read_source(int16_t *buffer, size_t samples) {
 // the stream as late.  That artifact is one-sided -- a delayed call can only
 // ever measure late -- so it biases any averaging filter downstream.  The live
 // depth moves with the delay and leaves the measured error where it was.
+//
+// Past the ring, the sample still has the post-ring latency to go: the FIFO,
+// the resampler, the common output delay, the DAC and the user's trim (see
+// audio_latency.h).  These used to be one unmeasured 5 ms constant.
 int64_t audio_output_get_next_playout_time_ns(int64_t now_us) {
   int64_t sampled_us = 0;
   uint32_t pipeline_us = 0;
@@ -62,8 +66,29 @@ int64_t audio_output_get_next_playout_time_ns(int64_t now_us) {
     sampled_us = now_us;
     pipeline_us = audio_output_get_hardware_latency_us();
   }
-  return (sampled_us + (int64_t)pipeline_us + OUTPUT_PIPELINE_LATENCY_US) *
-         1000LL;
+  audio_latency_t latency;
+  audio_output_get_latency(&latency);
+  return (sampled_us + (int64_t)pipeline_us + latency.post_ring_us) * 1000LL;
+}
+
+void audio_output_get_latency(audio_latency_t *latency) {
+  audio_latency_compute(audio_output_get_rate(), audio_output_get_fifo_frames(),
+                        audio_resample_get_delay_us(),
+                        audio_output_get_common_delay_us(), latency);
+}
+
+__attribute__((weak)) uint32_t audio_output_get_rate(void) {
+  return CONFIG_OUTPUT_SAMPLE_RATE_HZ;
+}
+
+// No FIFO between a completion cursor and the line, as far as the backend
+// knows: the USB backend has no cursor at all.
+__attribute__((weak)) uint32_t audio_output_get_fifo_frames(void) {
+  return 0;
+}
+
+__attribute__((weak)) uint32_t audio_output_get_common_delay_us(void) {
+  return 0;
 }
 
 __attribute__((weak)) bool audio_output_get_pipeline_us(int64_t *now_us,

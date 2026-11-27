@@ -30,6 +30,7 @@
 
 #include "audio_output.h"
 
+#include "audio_output_cursor.h"
 #include "audio_receiver.h"
 #include "audio_resample.h"
 #include "led.h"
@@ -78,7 +79,7 @@
  * blocks keeps the B preamble every 192 frames even when the DMA wraps over
  * stale descriptors during an underrun.  Multi-room alignment does not
  * depend on the depth being identical, only on it being reported honestly,
- * which the live cursor below does.                                    */
+ * which the output cursor below does.                                  */
 #define DMA_BUF_COUNT  22
 #define DMA_BUF_FRAMES (SPDIF_BLOCK * BMC_BITS / I2S_BITS / SPDIF_BUF_DIV)
 /* Audio (stereo) frames per DMA buffer, and bytes per audio frame on the
@@ -154,17 +155,11 @@ static volatile bool resample_reinit_needed = false;
 static uint32_t spdif_buf[SPDIF_BUF_WORDS];
 static uint32_t *spdif_ptr;
 
-/* ── Live output cursor ────────────────────────────────────────────────
- * Same scheme as the I2S backend (audio_output.c): submitted advances after
- * each half-block write, sent in the TX completion ISR, and their difference
- * is the real queue depth.  When the writer stalls the DMA keeps clocking,
- * sent overtakes submitted, and the excess is folded into lost so the depth
- * stays non-negative.                                                   */
-static uint64_t output_submitted_frames;
-static uint64_t output_sent_frames;
-static uint64_t output_lost_frames;
-static uint32_t output_underruns;
-static int64_t output_sent_us;
+/* ── Output cursor ─────────────────────────────────────────────────────
+ * The same driver as the I2S backend, so the same cursor
+ * (audio_output_cursor.h).  spdif_write() hands the driver whole
+ * descriptors only, which is what the cursor needs.                     */
+static output_cursor_t s_cursor;
 
 /* BMC's answer to auto_clear.  Zeros carry no transitions, so a cleared
  * descriptor would drop the receiver's lock; instead overwrite just the
@@ -175,37 +170,25 @@ static bool IRAM_ATTR spdif_on_sent(i2s_chan_handle_t handle,
                                     i2s_event_data_t *event, void *user_ctx) {
   (void)handle;
   (void)user_ctx;
-  if (event && event->size > 0) {
-    if (event->dma_buf) {
-      uint32_t *w = event->dma_buf;
-      const size_t words = event->size / sizeof(uint32_t);
-      for (size_t i = 1; i < words; i += 2) {
-        w[i] = BMC_SILENCE;
-      }
+  if (event && event->dma_buf) {
+    uint32_t *w = event->dma_buf;
+    const size_t words = event->size / sizeof(uint32_t);
+    for (size_t i = 1; i < words; i += 2) {
+      w[i] = BMC_SILENCE;
     }
-    __atomic_add_fetch(&output_sent_frames,
-                       (uint64_t)(event->size / BMC_FRAME_BYTES),
-                       __ATOMIC_RELAXED);
-    __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
   }
+  output_cursor_on_sent(&s_cursor, esp_timer_get_time());
   return false;
 }
 
-/* Frames queued in the DMA ring.  Playback task only (it is the sole writer
- * of submitted and lost), so the rebase needs no lock. */
-static uint32_t output_queued_frames(void) {
-  uint64_t submitted =
-      __atomic_load_n(&output_submitted_frames, __ATOMIC_RELAXED);
-  uint64_t lost = __atomic_load_n(&output_lost_frames, __ATOMIC_RELAXED);
-  uint64_t sent = __atomic_load_n(&output_sent_frames, __ATOMIC_RELAXED);
-
-  if (sent > submitted + lost) {
-    __atomic_store_n(&output_lost_frames, sent - submitted, __ATOMIC_RELAXED);
-    output_underruns++;
-    return 0;
-  }
-  uint64_t queued = submitted + lost - sent;
-  return queued > RING_FRAMES ? RING_FRAMES : (uint32_t)queued;
+static bool IRAM_ATTR spdif_on_send_q_ovf(i2s_chan_handle_t handle,
+                                          i2s_event_data_t *event,
+                                          void *user_ctx) {
+  (void)handle;
+  (void)event;
+  (void)user_ctx;
+  output_cursor_on_overflow(&s_cursor);
+  return false;
 }
 
 /* Frames encoded into spdif_buf but not yet handed to the DMA: they play
@@ -283,7 +266,7 @@ static void spdif_write(const void *src, size_t size) {
 
     /* Half-block complete → toggle B-preamble and flush to DMA          */
     if (spdif_ptr >= &spdif_buf[SPDIF_BUF_WORDS]) {
-      size_t written;
+      size_t written = 0;
 
       /* XOR toggles byte at SYNC_OFFSET between M and B preamble.
        * Because we always XOR, it alternates: B on even half-blocks,
@@ -291,10 +274,11 @@ static void spdif_write(const void *src, size_t size) {
       ((uint8_t *)spdif_buf)[SYNC_OFFSET] ^= SYNC_FLIP;
 
       if (i2s_channel_write(tx_handle, spdif_buf, sizeof(spdif_buf), &written,
-                            portMAX_DELAY) == ESP_OK) {
-        __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / BMC_FRAME_BYTES),
-                           __ATOMIC_RELAXED);
+                            portMAX_DELAY) == ESP_OK &&
+          written == sizeof(spdif_buf)) {
+        output_cursor_wrote(&s_cursor, (uint32_t)(written / BMC_FRAME_BYTES));
+      } else {
+        output_cursor_lost_track(&s_cursor);
       }
       spdif_ptr = spdif_buf;
     }
@@ -328,6 +312,13 @@ static void playback_task(void *arg) {
       // the receiver's lock (it mutes and relocks, often audibly) and break
       // the cursor's continuity.  By the time a flush arrives the render
       // has gone quiet, so the ring already holds silence.
+    }
+    if (output_cursor_ring_drained(&s_cursor)) {
+      // Everything written has played.  A block rendered now could land in
+      // either of two descriptors, depending on whether it is written before
+      // the next EOF; finishing the half-block with silence settles it.
+      spdif_write(silence, (size_t)(DMA_AUDIO_FRAMES - staged_frames()) * 2 *
+                               sizeof(int16_t));
     }
     size_t samples = audio_output_read_source(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
@@ -395,11 +386,12 @@ esp_err_t audio_output_init(void) {
   ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx_handle, &std_cfg), TAG,
                       "std mode init failed");
 
+  output_cursor_init(&s_cursor, DMA_BUF_COUNT, DMA_AUDIO_FRAMES);
   const i2s_event_callbacks_t callbacks = {
       .on_recv = NULL,
       .on_recv_q_ovf = NULL,
       .on_sent = spdif_on_sent,
-      .on_send_q_ovf = NULL,
+      .on_send_q_ovf = spdif_on_send_q_ovf,
   };
   ESP_RETURN_ON_ERROR(
       i2s_channel_register_event_callback(tx_handle, &callbacks, NULL), TAG,
@@ -407,7 +399,9 @@ esp_err_t audio_output_init(void) {
 
   /* Fill the whole ring with encoded silence BEFORE enabling, so the line
    * never carries the zeroed DMA buffers (no transitions, no lock) and every
-   * descriptor already has valid preambles. */
+   * descriptor already has valid preambles.  That leaves the driver's queue
+   * empty and the writer holding a full buffer, which is where the cursor
+   * starts. */
   for (size_t i = 0; i < SPDIF_BUF_WORDS; i += 2) {
     spdif_buf[i + 1] = BMC_SILENCE;
   }
@@ -417,9 +411,9 @@ esp_err_t audio_output_init(void) {
     ESP_RETURN_ON_ERROR(i2s_channel_preload_data(tx_handle, spdif_buf,
                                                  sizeof(spdif_buf), &loaded),
                         TAG, "preload failed");
-    output_submitted_frames += loaded / BMC_FRAME_BYTES;
   }
 
+  output_cursor_reset(&s_cursor, esp_timer_get_time());
   ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
                       "channel enable failed");
 
@@ -447,42 +441,39 @@ void audio_output_set_source_rate(int rate) {
 }
 
 uint32_t audio_output_get_hardware_latency_us(void) {
-  // Steady-state delay ahead of the next write, modelled the same way as the
-  // I2S backend: after a blocking write the ring holds between (N-1) and N
-  // descriptors, (N - 0.5) on average, and spdif_buf holds 0..95 staged
-  // frames, 48 on average.  With 96-frame descriptors the two halves sum to
-  // exactly the full ring.
+  // A model of the depth measured below, for where there is no measurement:
+  // right after a blocking write the ring is N descriptors ahead, less the
+  // moments since the EOF that freed the buffer, and spdif_buf holds 0..95
+  // more frames.  With 96-frame descriptors and ~352-frame blocks the two
+  // come to about the full ring.
   return (uint32_t)((uint64_t)RING_FRAMES * 1000000ULL / OUTPUT_RATE);
 }
 
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
-  // Depth first, then the completion timestamp: a completion landing between
-  // the two errs towards a fuller pipeline, as in audio_output.c.
-  uint32_t queued = output_queued_frames();
-  const int64_t sent_us = __atomic_load_n(&output_sent_us, __ATOMIC_RELAXED);
-  const int64_t sampled_us = esp_timer_get_time();
-
-  // The ISR fires once per 96-frame descriptor; interpolate the drain since
-  // then so the depth does not step by 2.2 ms at a time.
-  if (sent_us > 0 && sampled_us > sent_us) {
-    uint64_t drained =
-        ((uint64_t)(sampled_us - sent_us) * OUTPUT_RATE) / 1000000ULL;
-    if (drained > DMA_AUDIO_FRAMES) {
-      drained = DMA_AUDIO_FRAMES;
-    }
-    queued = drained < queued ? queued - (uint32_t)drained : 0U;
-  }
-  queued += staged_frames();
-
+  int64_t sampled_us = 0;
+  uint32_t frames = 0;
+  const bool known = output_cursor_depth(
+      &s_cursor, OUTPUT_RATE, esp_timer_get_time, &sampled_us, &frames);
   if (now_us) {
     *now_us = sampled_us;
   }
+  if (!known) {
+    return false;
+  }
+  frames += staged_frames();
   if (pipeline_us) {
-    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / OUTPUT_RATE);
+    *pipeline_us = (uint32_t)(((uint64_t)frames * 1000000ULL) / OUTPUT_RATE);
   }
   return true;
 }
 
 uint32_t audio_output_get_underruns(void) {
-  return __atomic_load_n(&output_underruns, __ATOMIC_RELAXED);
+  return output_cursor_underruns(&s_cursor);
+}
+
+// As in audio_output.c: the TX FIFO's 64 x 32-bit entries are still to go
+// out when a descriptor completes.  Each audio frame is four 32-bit BMC
+// words here, so they hold 16 frames.
+uint32_t audio_output_get_fifo_frames(void) {
+  return 64U / (BMC_FRAME_BYTES / sizeof(uint32_t));
 }

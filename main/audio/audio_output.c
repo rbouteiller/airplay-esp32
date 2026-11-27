@@ -5,6 +5,7 @@
 #include "rtsp_server.h"
 
 #include "audio_delay.h"
+#include "audio_output_cursor.h"
 #include "audio_resample.h"
 #include "dac.h"
 #include "led.h"
@@ -96,66 +97,53 @@ static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_MONO;
 static volatile audio_channel_mode_t channel_mode = AUDIO_CHANNEL_STEREO;
 #endif
 
-/* Live output cursor.  output_submitted_frames advances after a successful
- * i2s_channel_write(); output_sent_frames is advanced by the TX DMA
- * completion ISR.  Their difference is the amount of audio queued ahead of
- * the next write, i.e. the real pipeline delay.
- *
- * auto_clear keeps the DMA clocking descriptors even when the writer stalls,
- * so sent can overtake submitted.  The excess is output time that was played
- * as silence and can never be recovered; it is folded into
- * output_lost_frames so that the queue depth stays non-negative and the
- * cursor keeps a stable meaning across a starvation episode. */
-static uint64_t output_submitted_frames;
-static uint64_t output_sent_frames;
-static uint64_t output_lost_frames;
-static uint32_t output_underruns;
-/* esp_timer reading taken when output_sent_frames last advanced, so the depth
- * can be interpolated between interrupts instead of stepping a descriptor at a
- * time.  Zero means no completion has been seen yet. */
-static int64_t output_sent_us;
+/* What is queued ahead of the next write, read from the driver's own buffer
+ * queue (audio_output_cursor.h).  The playback task hands the driver whole
+ * descriptors only, through s_stage, which is what keeps the cursor exact;
+ * the frames waiting there are part of the depth too. */
+#define DESC_BYTES ((size_t)I2S_DMA_FRAME_NUM * OUT_FRAME_BYTES)
+static output_cursor_t s_cursor;
+static output_stage_t s_stage;
 
 static bool IRAM_ATTR audio_output_on_sent(i2s_chan_handle_t handle,
                                            i2s_event_data_t *event,
                                            void *user_ctx) {
   (void)handle;
+  (void)event;
   (void)user_ctx;
-  if (event && event->size > 0) {
-    __atomic_add_fetch(&output_sent_frames,
-                       (uint64_t)(event->size / OUT_FRAME_BYTES),
-                       __ATOMIC_RELAXED);
-    __atomic_store_n(&output_sent_us, esp_timer_get_time(), __ATOMIC_RELAXED);
-  }
+  output_cursor_on_sent(&s_cursor, esp_timer_get_time());
   return false;
 }
 
-static void output_cursor_reset(void) {
-  __atomic_store_n(&output_submitted_frames, 0, __ATOMIC_RELAXED);
-  __atomic_store_n(&output_sent_frames, 0, __ATOMIC_RELAXED);
-  __atomic_store_n(&output_lost_frames, 0, __ATOMIC_RELAXED);
-  __atomic_store_n(&output_sent_us, 0, __ATOMIC_RELAXED);
+static bool IRAM_ATTR audio_output_on_send_q_ovf(i2s_chan_handle_t handle,
+                                                 i2s_event_data_t *event,
+                                                 void *user_ctx) {
+  (void)handle;
+  (void)event;
+  (void)user_ctx;
+  output_cursor_on_overflow(&s_cursor);
+  return false;
 }
 
-/* Frames queued in the DMA ring ahead of the next write.  Called from the
- * playback task only, which is also the sole writer of the submitted and
- * lost counters, so the rebase below needs no lock. */
-static uint32_t output_queued_frames(void) {
-  uint64_t submitted =
-      __atomic_load_n(&output_submitted_frames, __ATOMIC_RELAXED);
-  uint64_t lost = __atomic_load_n(&output_lost_frames, __ATOMIC_RELAXED);
-  uint64_t sent = __atomic_load_n(&output_sent_frames, __ATOMIC_RELAXED);
-
-  if (sent > submitted + lost) {
-    /* The ring ran dry: rebase so queued reads 0 and remember how much
-     * output time went out as silence. */
-    __atomic_store_n(&output_lost_frames, sent - submitted, __ATOMIC_RELAXED);
-    output_underruns++;
-    return 0;
+/* The playback task's only way to the driver: whole descriptors. */
+static bool write_descs(void *ctx, const void *data, size_t bytes) {
+  (void)ctx;
+  size_t written = 0;
+  const esp_err_t err =
+      i2s_channel_write(tx_handle, data, bytes, &written, portMAX_DELAY);
+  if (err == ESP_OK && written == bytes) {
+    output_cursor_wrote(&s_cursor, (uint32_t)(written / OUT_FRAME_BYTES));
+    return true;
   }
+  output_cursor_lost_track(&s_cursor);
+  return false;
+}
 
-  uint64_t queued = submitted + lost - sent;
-  const uint64_t ring = (uint64_t)I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM;
-  return queued > ring ? (uint32_t)ring : (uint32_t)queued;
+/* The cursor is reset first, while the DMA is still stopped, so no EOF can
+ * land between the reset and the enable. */
+static esp_err_t channel_enable(void) {
+  output_cursor_reset(&s_cursor, esp_timer_get_time());
+  return i2s_channel_enable(tx_handle);
 }
 
 /* A bi-amp hybrid flow drives one output per crossover way, so there is no
@@ -413,19 +401,22 @@ static void feed_led(const void *words, size_t frames) {
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
   int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+  // Raw output words, 16- or 32-bit by build: the stage treats them as bytes.
+  void *stage_buf = malloc(DESC_BYTES);
   out_bufs_t out;
   const bool out_ok = out_bufs_alloc(&out, MAX_RESAMPLE_FRAMES);
-  if (!pcm || !resample_buf || !out_ok) {
+  if (!pcm || !resample_buf || !stage_buf || !out_ok) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
     playback_task_handle = NULL;
     free(resample_buf);
+    free(stage_buf);
     out_bufs_free(&out);
     vTaskDelete(NULL);
     return;
   }
+  output_stage_init(&s_stage, stage_buf, DESC_BYTES);
 
-  size_t written;
   while (playback_running) {
     // Retuning touches the I2S channel, so it has to happen here between
     // writes rather than in the caller's context.
@@ -448,8 +439,21 @@ static void playback_task(void *arg) {
       // mutes on a clock loss (the MAX98357A) pops when it comes back, once
       // per flush: a seek flushes twice within 50 ms, which crackles.  The
       // ring holds silence by now anyway, since the render went quiet at the
-      // pause, and the cursor counters stay continuous, which is what the
+      // pause, and the output cursor stays continuous, which is what the
       // depth model expects.
+    }
+    if (!output_cursor_known(&s_cursor)) {
+      // A Bluetooth or USB sink left the driver part-way through a buffer.
+      // Nothing can be scheduled until the ring runs out (at most DESC_NUM
+      // descriptors), which tells the cursor where the queue stands.
+      vTaskDelay(1);
+      continue;
+    }
+    if (output_cursor_ring_drained(&s_cursor)) {
+      // Everything written has played.  A block rendered now could land in
+      // either of two descriptors, depending on whether it is written before
+      // the next EOF; a descriptor of silence first settles it.
+      output_stage_pad(&s_stage, write_descs, NULL);
     }
     size_t samples = audio_output_read_source(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
@@ -463,12 +467,8 @@ static void playback_task(void *arg) {
       const void *words =
           process_pcm(play_buf, play_samples, airplay_get_volume_q15(), &out);
       feed_led(words, play_samples);
-      if (i2s_channel_write(tx_handle, words, play_samples * OUT_FRAME_BYTES,
-                            &written, portMAX_DELAY) == ESP_OK) {
-        __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / OUT_FRAME_BYTES),
-                           __ATOMIC_RELAXED);
-      }
+      output_stage_push(&s_stage, words, play_samples * OUT_FRAME_BYTES,
+                        write_descs, NULL);
       taskYIELD();
     } else {
       // Receiver underflow — output a frame of silence.  Block on the DMA
@@ -481,18 +481,20 @@ static void playback_task(void *arg) {
       const void *words =
           process_pcm(pcm, FRAME_SAMPLES, airplay_get_volume_q15(), &out);
       feed_led(words, FRAME_SAMPLES);
-      if (i2s_channel_write(tx_handle, words,
-                            (size_t)FRAME_SAMPLES * OUT_FRAME_BYTES, &written,
-                            portMAX_DELAY) == ESP_OK) {
-        __atomic_add_fetch(&output_submitted_frames,
-                           (uint64_t)(written / OUT_FRAME_BYTES),
-                           __ATOMIC_RELAXED);
-      }
+      output_stage_push(&s_stage, words,
+                        (size_t)FRAME_SAMPLES * OUT_FRAME_BYTES, write_descs,
+                        NULL);
     }
   }
 
+  // Leave the driver on a descriptor boundary, so a writer that follows
+  // knows where its first frame lands.
+  if (output_stage_bytes(&s_stage) > 0) {
+    output_stage_pad(&s_stage, write_descs, NULL);
+  }
   free(pcm);
   free(resample_buf);
+  free(stage_buf);
   out_bufs_free(&out);
   playback_task_handle = NULL;
   vTaskDelete(NULL);
@@ -557,21 +559,32 @@ esp_err_t audio_output_init(void) {
   ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx_handle, &std_cfg), TAG,
                       "std mode init failed");
 
-  // TX completion callback drives the live output cursor used by the timing
-  // engine (see audio_output_get_pipeline_us).
+  // The cursor counts in whole descriptors of I2S_DMA_FRAME_NUM frames; the
+  // driver would only change that to meet a cache line, which these sizes
+  // already do.
+  i2s_chan_info_t info;
+  if (i2s_channel_get_info(tx_handle, &info) == ESP_OK &&
+      info.total_dma_buf_size != I2S_DMA_DESC_NUM * DESC_BYTES) {
+    ESP_LOGE(TAG,
+             "DMA ring is %" PRIu32 " bytes, expected %u: output timing "
+             "will be off",
+             (uint32_t)info.total_dma_buf_size,
+             (unsigned)(I2S_DMA_DESC_NUM * DESC_BYTES));
+  }
+
+  // The EOF interrupt's two callbacks drive the output cursor the timing
+  // engine reads (see audio_output_get_pipeline_us).
+  output_cursor_init(&s_cursor, I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM);
   const i2s_event_callbacks_t callbacks = {
       .on_recv = NULL,
       .on_recv_q_ovf = NULL,
       .on_sent = audio_output_on_sent,
-      .on_send_q_ovf = NULL,
+      .on_send_q_ovf = audio_output_on_send_q_ovf,
   };
   ESP_RETURN_ON_ERROR(
       i2s_channel_register_event_callback(tx_handle, &callbacks, NULL), TAG,
       "event callback registration failed");
-  output_cursor_reset();
-
-  ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG,
-                      "channel enable failed");
+  ESP_RETURN_ON_ERROR(channel_enable(), TAG, "channel enable failed");
   ESP_LOGI(TAG,
            "I2S initialized: Rate=%u, %u-bit words, DMA_Desc=%d, "
            "DMA_Frame=%d",
@@ -610,10 +623,7 @@ void audio_output_start(void) {
     return; // already running
   }
   playback_running = true;
-  // The DMA has been free-running (A2DP, or plain silence) since the last
-  // AirPlay session, so the cursor carries an arbitrary submitted/sent skew.
-  // Start the new session from a clean slate.
-  output_cursor_reset();
+  output_cursor_writer_started(&s_cursor);
   audio_delay_reset();
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL,
                           AUDIO_PLAYBACK_TASK_PRIORITY, &playback_task_handle,
@@ -643,9 +653,14 @@ void audio_output_stop(void) {
   audio_delay_reset();
 }
 
+// The two writers below hand the driver whatever size they have, so the
+// cursor cannot follow them; it finds its place again once they stop.
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
   size_t written = 0;
-  return i2s_channel_write(tx_handle, data, bytes, &written, wait);
+  const esp_err_t err =
+      i2s_channel_write(tx_handle, data, bytes, &written, wait);
+  output_cursor_lost_track(&s_cursor);
+  return err;
 }
 
 #define PCM_FRAME_BYTES (2 * sizeof(int16_t))
@@ -700,6 +715,7 @@ esp_err_t audio_output_write_pcm(const void *data, size_t bytes,
     size_t written = 0;
     err = i2s_channel_write(tx_handle, words, frames * OUT_FRAME_BYTES,
                             &written, wait);
+    output_cursor_lost_track(&s_cursor);
     if (err != ESP_OK) {
       break;
     }
@@ -727,8 +743,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
   audio_eq_reset();
 #endif
   audio_delay_set_rate(rate);
-  output_cursor_reset();
-  i2s_channel_enable(tx_handle);
+  channel_enable();
   dac_on_i2s_started(rate);
 }
 
@@ -753,63 +768,73 @@ void audio_output_set_source_rate(int rate) {
 }
 
 uint32_t audio_output_get_hardware_latency_us(void) {
-  // Delay between i2s_channel_write() accepting a sample and that sample
-  // leaving the DAC.  This is the DMA ring occupancy AHEAD of the newly
-  // written data, which is NOT the full ring: i2s_channel_write() blocks
-  // only until space frees, so the writer refills as soon as a descriptor
-  // completes and steady-state occupancy oscillates between
-  // (DESC_NUM - 1) and DESC_NUM descriptors.
-  //
-  // Using the full ring (DESC_NUM) overstates the delay by half a
-  // descriptor on average — 2.9 ms at 44.1 kHz with the config below — and
-  // that bias lands directly in compute_early_us(), pushing every frame
-  // toward the "late" side of the threshold.  Model the midpoint instead:
-  //   (DESC_NUM - 0.5) x FRAME_NUM == (2*DESC_NUM - 1) x FRAME_NUM / 2
-  // The residual +/-2.9 ms swing is real jitter that the drift servo in
-  // audio_timing.c absorbs; only the constant bias is removed here.
-  return (uint32_t)((((uint64_t)(2 * I2S_DMA_DESC_NUM - 1) * I2S_DMA_FRAME_NUM *
+  // A model of the depth audio_output_get_pipeline_us() measures, for where
+  // there is no measurement.  The playback task blocks until an EOF frees a
+  // buffer, so right after it writes the ring is full: N descriptors ahead,
+  // less the moments since that EOF.  Up to a descriptor more waits in the
+  // stage for the next write, half of one on average:
+  //   (DESC_NUM + 0.5) x FRAME_NUM == (2*DESC_NUM + 1) x FRAME_NUM / 2
+  return (uint32_t)((((uint64_t)(2 * I2S_DMA_DESC_NUM + 1) * I2S_DMA_FRAME_NUM *
                       1000000ULL) /
                      2) /
                     s_output_rate);
 }
 
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
-  // Sample the queue depth first, then the completion timestamp: any DMA
-  // completion that lands between the two pairs a stale (deeper) depth with a
-  // fresh timestamp, so the interpolation below subtracts nothing and the
-  // result errs in the conservative direction (we believe the pipeline is
-  // fuller, i.e. that the next sample plays later, than it really is).
-  uint32_t queued = output_queued_frames();
-  const int64_t sent_us = __atomic_load_n(&output_sent_us, __ATOMIC_RELAXED);
-  const int64_t sampled_us = esp_timer_get_time();
-
-  // The completion ISR only fires once per descriptor, so a raw depth steps in
-  // I2S_DMA_FRAME_NUM jumps -- 5.8 ms at 44.1 kHz, which swamps a servo trying
-  // to hold sub-millisecond alignment.  The DAC drains at a fixed rate between
-  // interrupts, so charge off the elapsed time since the last completion.  The
-  // clamp covers a late ISR: past one descriptor the next completion is
-  // already due and extrapolating further would invent drain that may not have
-  // happened.
-  if (sent_us > 0 && sampled_us > sent_us) {
-    uint64_t drained =
-        ((uint64_t)(sampled_us - sent_us) * s_output_rate) / 1000000ULL;
-    if (drained > I2S_DMA_FRAME_NUM) {
-      drained = I2S_DMA_FRAME_NUM;
-    }
-    queued = drained < queued ? queued - (uint32_t)drained : 0U;
-  }
-
+  const uint32_t rate = s_output_rate;
+  int64_t sampled_us = 0;
+  uint32_t frames = 0;
+  const bool known = output_cursor_depth(&s_cursor, rate, esp_timer_get_time,
+                                         &sampled_us, &frames);
   if (now_us) {
     *now_us = sampled_us;
   }
+  if (!known) {
+    return false;
+  }
+  frames += (uint32_t)(output_stage_bytes(&s_stage) / OUT_FRAME_BYTES);
   if (pipeline_us) {
-    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / s_output_rate);
+    *pipeline_us = (uint32_t)(((uint64_t)frames * 1000000ULL) / rate);
   }
   return true;
 }
 
 uint32_t audio_output_get_underruns(void) {
-  return __atomic_load_n(&output_underruns, __ATOMIC_RELAXED);
+  return output_cursor_underruns(&s_cursor);
+}
+
+uint32_t audio_output_get_rate(void) {
+  return s_output_rate;
+}
+
+// The output cursor counts a descriptor as played when the DMA has handed
+// its last word to the I2S TX FIFO (out-EOF, in its reset mode), and the FIFO
+// is kept full behind it, so its 64 x 32-bit entries are still to go out.
+// ESP32 TRM v5.9 §22.1 and Table 22.4-1: in 16-bit stereo (TX_FIFO_MOD 0)
+// one entry holds a whole frame, in 32-bit one sample.  The ESP32-S3 and C5
+// TRMs (§28.4, §35.4) give the same 64-entry FIFO and fill it a channel
+// sample per entry (§35.9.1), which makes it 32 frames at either width.
+uint32_t audio_output_get_fifo_frames(void) {
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  return OUT_WORD_SIZE == sizeof(int16_t) ? 64U : 32U;
+#else
+  return 32U;
+#endif
+}
+
+// A delay on both outputs holds the whole stream back by the smaller one.
+uint32_t audio_output_get_common_delay_us(void) {
+  if (!audio_delay_active() || !delay_layout_ok(true)) {
+    return 0;
+  }
+  const uint32_t a = audio_delay_get_us(0);
+  const uint32_t b = audio_delay_get_us(1);
+  const uint32_t us = a < b ? a : b;
+  // Whole samples, as audio_delay.c rounds them.
+  const uint32_t rate = s_output_rate;
+  const uint32_t samples =
+      (uint32_t)(((uint64_t)us * rate + 500000U) / 1000000U);
+  return (uint32_t)(((uint64_t)samples * 1000000U + rate / 2U) / rate);
 }
 
 /* With two amplifiers the DAC configuration already fixes the routing, so a

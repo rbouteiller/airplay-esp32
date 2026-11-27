@@ -52,6 +52,9 @@
 </select></div>
 <p class='hint' id='chan-hint'>Which channel this speaker plays. Two speakers can make a stereo pair, one playing left and one right.</p></div>
 <p class='hint' id='chan-fixed' hidden>The amplifier wiring fixes which channel each output plays; the Equaliser routes them.</p>
+<div class='form-group' id='lat-group' hidden><label for='lat-trim'>Output latency trim (ms)</label>
+<div class='row'><input type='number' id='lat-trim' min='-50' max='50' step='0.1' onchange='saveLatency()'></div>
+<p class='hint'>Positive plays earlier, for delay after the DAC (e.g. a DSP amplifier).</p></div>
 <div class='form-group' id='amp-box' hidden>
 <div class='form-group' id='pbtl-group' hidden><label for='pbtl-mode' id='pbtl-label'>Amplifier wiring</label>
 <div class='row'><select id='pbtl-mode' onchange='saveWiring("pbtl")'>
@@ -273,8 +276,27 @@ async function saveWiring(which){
   catch(e){undo();Shell.tick(sel,false,e.message);}
 }
 
+/* The output latency trim. */
+function showLatency(d){
+  $('lat-group').hidden=false;
+  $('lat-trim').value=(d.trim_us/1000).toFixed(1);
+}
+async function loadLatency(){
+  /* Older firmware has no such endpoint: leave the control hidden. */
+  try{showLatency(await Shell.get('/api/audio/latency'));}catch(e){}
+}
+async function saveLatency(){
+  var el=$('lat-trim'),v=Number(el.value);
+  if(!isFinite(v)){Shell.tick(el,false,'Not a number');return;}
+  try{var d=await Shell.post('/api/audio/latency',{trim_us:Math.round(Math.max(-50,Math.min(50,v))*1000)});
+    if(!d.success)throw new Error(d.error);
+    showLatency(d);Shell.tick(el,true);}
+  catch(e){Shell.tick(el,false,e.message);}
+}
+
 Shell.info().then(async function(i){
   await loadChannel();
+  await loadLatency();
   /* Only a TAS58xx build registers the wiring; asking anyway logs a
      warning on the device for every page load. */
   if(i.dual_supported)await loadWiring();

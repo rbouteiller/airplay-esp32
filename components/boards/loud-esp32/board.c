@@ -69,6 +69,11 @@ static void max98357_set_power_mode(dac_power_mode_t mode) {
 #endif
 }
 
+// No output_delay_q4. The MAX98357A datasheet (19-6779 Rev 7, "DAC Digital
+// Filters" and Table 4) lists the filter's cutoffs but no group delay. The
+// Amped boards share these ops with a PCM5100A in front of their amplifier,
+// so leaving it NULL also lets their Kconfig preset (PCM510xA normal filter)
+// apply.
 static const dac_ops_t max98357_ops = {
     .init = max98357_init,
     .set_power_mode = max98357_set_power_mode,

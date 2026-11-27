@@ -33,6 +33,7 @@
 #define PCM51XX_REG_PLL_REF    0x0D // SREF[6:4]: 000 SCK, 001 BCK
 #define PCM51XX_REG_IGNORE_ERR 0x25 // clock error detection masks
 #define PCM51XX_REG_DAC_ROUTING 0x2A // data path: 0x11 = L->L, R->R
+#define PCM51XX_REG_DSP_PROGRAM 0x2B // PSEL[4:0]: interpolation filter
 #define PCM51XX_REG_VOL_L       0x3D // digital volume left, 0x30 = 0 dB
 #define PCM51XX_REG_VOL_R       0x3E // digital volume right
 #define PCM51XX_REG_CLK_STATUS  0x5E // read-only clock detection flags
@@ -83,6 +84,10 @@ static SemaphoreHandle_t s_mutex = NULL;
 static bool s_initialized = false;
 static dac_power_mode_t s_power_state = DAC_POWER_OFF;
 static float s_volume_db = -15.0f;
+// P0-R43 PSEL as read back after the reset, for the output delay. The driver
+// never changes it, so it is the reset default (1, the normal FIR) unless the
+// part says otherwise. 0 until read: no figure.
+static volatile uint8_t s_dsp_program;
 
 static esp_err_t wr(uint8_t reg, uint8_t val) {
   esp_err_t err = board_i2c_write(s_dev, reg, &val, 1);
@@ -169,6 +174,13 @@ static esp_err_t configure_locked(void) {
                       "Clock setup failed");
   ESP_RETURN_ON_ERROR(wr(PCM51XX_REG_DAC_ROUTING, PCM51XX_ROUTE_STEREO), TAG,
                       "Routing failed");
+  // The interpolation filter sets the output delay. Read rather than assumed:
+  // a failed read only loses the figure.
+  uint8_t psel = 0;
+  s_dsp_program =
+      board_i2c_read(s_dev, PCM51XX_REG_DSP_PROGRAM, &psel, 1) == ESP_OK
+          ? (uint8_t)(psel & 0x1F)
+          : 0;
 
   // Analog gain: 0 dB (2V RMS) or -6 dB (1V RMS), per Kconfig. Lives on
   // page 1; select page 0 again immediately after so every register access
@@ -396,10 +408,32 @@ static void pcm51xx_on_i2s_started(uint32_t sample_rate_hz) {
   xSemaphoreGive(s_mutex);
 }
 
+// Group delay of the interpolation filter that P0-R43 PSEL selects, in input
+// sample periods (TI SLAS763C §7.5 "Delay time", and §8.3.4.2 Tables 9-20):
+// 1 normal x8 FIR 20 tS (the reset default), 2 low-latency IIR 3.5 tS,
+// 3 high-attenuation 33.7 tS, 7 ringing-less low-latency FIR 1.2 tS. The
+// fixed process flow (5) and RAM programs have no published figure. Q4.
+static uint32_t pcm51xx_output_delay_q4(uint32_t sample_rate_hz) {
+  (void)sample_rate_hz;
+  switch (s_dsp_program) {
+  case 1:
+    return 20U * 16U;
+  case 2:
+    return 56U; // 3.5
+  case 3:
+    return 539U; // 33.7
+  case 7:
+    return 19U; // 1.2
+  default:
+    return DAC_OUTPUT_DELAY_UNKNOWN;
+  }
+}
+
 const dac_ops_t dac_pcm51xx_ops = {
     .init = pcm51xx_init,
     .deinit = pcm51xx_deinit,
     .set_volume = pcm51xx_set_volume,
     .set_power_mode = pcm51xx_set_power_mode,
     .on_i2s_started = pcm51xx_on_i2s_started,
+    .output_delay_q4 = pcm51xx_output_delay_q4,
 };

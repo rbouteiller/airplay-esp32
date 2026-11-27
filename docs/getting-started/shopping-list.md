@@ -26,6 +26,18 @@ cause of silence.
   <figcaption>PCM5102A with the expected solder bridge configuration</figcaption>
 </figure>
 
+Read with H on the left pad of each bridge and L on the right:
+
+| Bridge | Pin | Position | Effect |
+| --- | --- | --- | --- |
+| H1L | FLT | L | Normal interpolation filter, 22 samples of delay, which the firmware compensates for |
+| H2L | DEMP | L | De-emphasis off |
+| H3L | XSMT | H | Never soft-muted: there is no mute line to drive |
+| H4L | FMT | L | I2S data format |
+
+On the front, the **SCK** pads are bridged to GND (arrow), so the DAC makes its own master
+clock from the bit clock.
+
 ## Optional extras
 
 | Component | What it adds | Page |

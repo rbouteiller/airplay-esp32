@@ -79,6 +79,7 @@ void vTaskDelay(uint32_t ticks);
 
 esp_err_t settings_get_volume(float *volume);
 #define CONFIG_PCM51XX_MAX_VOLUME 0
+#define CONFIG_DAC_PLAIN_DELAY_UNKNOWN 1
 #define CONFIG_PCM51XX_I2C_ADDR   0x4D
 #define CONFIG_DAC_ENABLE_GPIO    13
 #define CONFIG_DAC_I2C_SDA        21

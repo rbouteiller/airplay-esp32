@@ -2068,6 +2068,10 @@ int dac_tas57xx_get_device_count(void) {
   return s_dev_count;
 }
 
+// No output_delay_q4: TI publishes no latency for the TAS5756M/54M HybridFlow
+// programs this driver runs (SLAS988B §7.5 has no delay entry; the flows add
+// their own processing and, in some, a delay element), so it is left
+// unknown. Calibrate with the output latency trim.
 const dac_ops_t dac_tas57xx_ops = {
     .init = tas57xx_init,
     .deinit = tas57xx_deinit,

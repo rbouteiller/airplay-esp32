@@ -18,6 +18,7 @@ set( SRC_FILES
     "audio/audio_decode_worker.c"
     "audio/audio_crypto.c"
     "audio/audio_resample.c"
+    "audio/audio_latency.c"
     "rtsp/rtsp_server.c"
     "rtsp/rtsp_conn.c"
     "rtsp/rtsp_message.c"
@@ -60,10 +61,12 @@ set( SRC_FILES
 list(APPEND SRC_FILES "audio/audio_output_common.c")
 if(CONFIG_AUDIO_OUTPUT_SPDIF)
     list(APPEND SRC_FILES "audio/audio_output_spdif.c")
+    list(APPEND SRC_FILES "audio/audio_output_cursor.c")
 elseif(CONFIG_AUDIO_OUTPUT_USB)
     list(APPEND SRC_FILES "audio/audio_output_usb.c")
 else()
     list(APPEND SRC_FILES "audio/audio_output.c")
+    list(APPEND SRC_FILES "audio/audio_output_cursor.c")
     list(APPEND SRC_FILES "audio/audio_delay.c")
 endif()
 

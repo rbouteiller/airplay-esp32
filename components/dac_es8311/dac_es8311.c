@@ -410,6 +410,9 @@ static void es8311_enable_line_out(bool enable) {
   ESP_LOGW(TAG, "Line out not supported");
 }
 
+// No output_delay_q4: Everest's ES8311 datasheet gives no DAC filter group
+// delay, so the delay is left unknown (and the plain-DAC preset, normally
+// "Unknown", stands in). Calibrate with the output latency trim.
 const dac_ops_t dac_es8311_ops = {
     .init = es8311_init,
     .deinit = es8311_deinit,

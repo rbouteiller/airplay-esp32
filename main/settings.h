@@ -269,6 +269,14 @@ esp_err_t settings_get_output_delay_us(uint16_t us[SETTINGS_DELAY_OUTPUTS]);
 esp_err_t
 settings_set_output_delay_us(const uint16_t us[SETTINGS_DELAY_OUTPUTS]);
 
+// ---- Output latency trim (audio_latency.h) ----
+
+/** The saved output latency trim in microseconds, 0 if none (cached). */
+int32_t settings_get_output_latency_trim_us(void);
+
+/** Save the output latency trim, clamped to +-50 000 us. */
+esp_err_t settings_set_output_latency_trim_us(int32_t us);
+
 // ---- Per-channel level trim (TAS57xx) ----
 
 /** The two amplifier output channels, A and B. */
