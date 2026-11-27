@@ -401,7 +401,8 @@ static void feed_led(const void *words, size_t frames) {
 static void playback_task(void *arg) {
   int16_t *pcm = malloc((size_t)(FRAME_SAMPLES + 1) * 2 * sizeof(int16_t));
   int16_t *resample_buf = malloc(MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
-  uint8_t *stage_buf = malloc(DESC_BYTES);
+  // Raw output words, 16- or 32-bit by build: the stage treats them as bytes.
+  void *stage_buf = malloc(DESC_BYTES);
   out_bufs_t out;
   const bool out_ok = out_bufs_alloc(&out, MAX_RESAMPLE_FRAMES);
   if (!pcm || !resample_buf || !stage_buf || !out_ok) {
