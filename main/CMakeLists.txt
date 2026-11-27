@@ -52,6 +52,7 @@ set( SRC_FILES
     "playback_control.c"
     "playback_events.c"
     "dacp_client.c"
+    "mqtt_nowplaying.c"
 )
 
 # Select audio output implementation at compile time. audio_output_common.c
@@ -139,6 +140,7 @@ set( DEPS
     audio-resampler
     esp_eth
     spiffs_storage
+    mqtt
 )
 
 # Bluetooth component only needed when A2DP is enabled

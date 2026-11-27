@@ -41,11 +41,20 @@
 
 #include "playback_events.h"
 #include "dacp_client.h"
+#include "mqtt_nowplaying.h"
 
 static const char *TAG = "rtsp_handlers";
 
 uint64_t airplay_features(void) {
-  return settings_airplay_v1() ? UINT64_C(0x5C4A00) : UINT64_C(0x1C340405C4A00);
+  uint64_t f =
+      settings_airplay_v1() ? UINT64_C(0x5C4A00) : UINT64_C(0x1C340405C4A00);
+  // MQTT now-playing artwork: also advertise bit 15 (artwork metadata).
+  // AirPlay 2 senders were seen to send cover art only with it set; they do
+  // not go by the md TXT record.
+  if (mqtt_nowplaying_artwork_enabled()) {
+    f |= UINT64_C(1) << 15;
+  }
+  return f;
 }
 
 #define STATUS_FLAG_AUDIO_LINK        (1U << 2)
@@ -1855,17 +1864,24 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
   } else if (strstr(req->content_type, "image/jpeg") ||
              strstr(req->content_type, "image/png")) {
 #ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
-    // Artwork - log and flag in metadata
-    ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
-             body_len);
-    event_data.metadata.has_artwork = true;
-    has_metadata = true;
+    const bool want_artwork = true;
 #else
-    // Artwork reception disabled — ignore it.  The md txt record already asks
-    // senders not to transmit cover art, but some send it regardless.
-    ESP_LOGD(TAG, "Ignoring artwork (%s, %zu bytes): disabled in config",
-             req->content_type, body_len);
+    const bool want_artwork = mqtt_nowplaying_artwork_enabled();
 #endif
+    if (want_artwork) {
+      // Artwork - log and flag in metadata; MQTT now-playing keeps a copy
+      // (PSRAM) when it asked for it.
+      ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
+               body_len);
+      mqtt_nowplaying_set_artwork(body, body_len, req->content_type);
+      event_data.metadata.has_artwork = true;
+      has_metadata = true;
+    } else {
+      // Artwork reception disabled — ignore it.  The md txt record already
+      // asks senders not to transmit cover art, but some send it regardless.
+      ESP_LOGD(TAG, "Ignoring artwork (%s, %zu bytes): disabled in config",
+               req->content_type, body_len);
+    }
   } else if (strstr(req->content_type, "application/x-apple-binary-plist")) {
     if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
       int64_t value;

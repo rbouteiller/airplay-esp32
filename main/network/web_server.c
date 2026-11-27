@@ -34,6 +34,7 @@
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
+#include "mqtt_nowplaying.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -3333,6 +3334,7 @@ esp_err_t web_server_start(uint16_t port) {
 #ifdef CONFIG_DAC_TAS57XX
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
+  config.max_uri_handlers += MQTT_NOWPLAYING_URI_HANDLERS;
   config.max_resp_headers = 8;
 #ifdef CONFIG_SENDSPIN_OPUS
   /* libopus keeps its CELT scratch on the stack: measured peak is 11.7 KB at
@@ -3691,6 +3693,7 @@ esp_err_t web_server_start(uint16_t port) {
   register_uri(&hf_flow_post_uri);
 #endif
 
+  mqtt_nowplaying_register_http(s_server);
   log_stream_register(s_server);
 #ifdef CONFIG_SENDSPIN_ENABLE
   // Returns ESP_ERR_INVALID_STATE when sendspin_init() was skipped, which is

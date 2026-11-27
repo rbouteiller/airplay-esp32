@@ -737,4 +737,56 @@ menu "Airplay ESP Configuration"
                 initial burst runs much faster than this so the filter
                 converges before the client reports itself available.
     endmenu
+    menu "MQTT now-playing"
+        config MQTT_NOWPLAYING
+            bool "Publish now-playing state over MQTT (Home Assistant)"
+            default n
+            help
+                Publish play state, track metadata, progress and volume to an
+                MQTT broker as a retained JSON document, with Home Assistant
+                MQTT discovery, and accept play/pause/next/prev/volume
+                commands on MQTT topics. Commands reach the sender through
+                the same paths the buttons use (DACP when the sender offers
+                it).
+
+                The broker, credentials and topics are set at runtime on the
+                /mqtt page or via /api/mqtt and stored in NVS (namespace
+                "mqtt_np"). MQTT stays off until it is enabled there, so a
+                build with this option on behaves as before until configured.
+
+                Adds the esp-mqtt client (espressif/mqtt on ESP-IDF 6.x).
+
+        config MQTT_NOWPLAYING_ARTWORK
+            bool "Serve cover art for MQTT clients (PSRAM only)"
+            depends on MQTT_NOWPLAYING && SPIRAM
+            default y
+            help
+                Keep the latest cover-art image in PSRAM and serve it at
+                /api/nowplaying/artwork; its URL is published on
+                <base>/artwork_url for Home Assistant's MQTT image entity.
+                Only active when "artwork" is ticked on the /mqtt page and
+                PSRAM is present; it then also asks senders for artwork (md
+                record and AirPlay feature bit 15). The buffer is allocated
+                on the first image, never in internal RAM.
+
+        config MQTT_NOWPLAYING_ARTWORK_MAX_KB
+            int "Largest cover-art image kept (KB)"
+            depends on MQTT_NOWPLAYING_ARTWORK
+            range 32 1024
+            default 256
+            help
+                Size of the PSRAM buffer for cover art. Larger images are
+                dropped.
+
+        config MQTT_NOWPLAYING_SNTP
+            bool "Start SNTP so position_updated_at carries wall-clock time"
+            depends on MQTT_NOWPLAYING
+            default y
+            help
+                Starts the ESP-IDF SNTP client (DHCP-provided server first,
+                then pool.ntp.org) when MQTT is enabled, so the state JSON
+                can carry position_ts / position_updated_at. Only
+                gettimeofday() is affected; the AirPlay PTP/NTP clocks run on
+                esp_timer.
+    endmenu
 endmenu
