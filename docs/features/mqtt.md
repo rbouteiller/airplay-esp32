@@ -14,7 +14,7 @@ In `idf.py menuconfig` → *Airplay ESP Configuration* → *MQTT now-playing*:
 | `CONFIG_MQTT_NOWPLAYING` | n | Compile the feature in. Adds the esp-mqtt client (`espressif/mqtt` on ESP-IDF 6.x). |
 | `CONFIG_MQTT_NOWPLAYING_ARTWORK` | y (needs `SPIRAM`) | Keep the latest cover art in PSRAM and serve it to MQTT clients. |
 | `CONFIG_MQTT_NOWPLAYING_ARTWORK_MAX_KB` | 256 | Size of the PSRAM cover-art buffer. Larger images are dropped. |
-| `CONFIG_MQTT_NOWPLAYING_SNTP` | y (n on 4 MB flash) | Start SNTP when MQTT is enabled, for `position_updated_at`. |
+| `CONFIG_MQTT_NOWPLAYING_SNTP` | y | Start SNTP when MQTT is enabled, for `position_updated_at`. |
 
 Or add `CONFIG_MQTT_NOWPLAYING=y` to an extra `sdkconfig.defaults` file.
 
@@ -87,7 +87,7 @@ Static, from `idf.py size` (ESP-IDF 6.1):
 | Preset | App image, option on | Change vs option off | Static internal RAM |
 |---|---|---|---|
 | `esp32s3` (16 MB) | 1,737,296 B | +36,592 B | +900 B |
-| `esp32wrover-dev` (plain ESP32, 4 MB) | 1,958,640 B (7,440 B free in the app slot) | +26,192 B | DRAM +840 B, IRAM +68 B |
+| `esp32wrover-dev` (plain ESP32, 4 MB) | 1,962,112 B (3,968 B free in the app slot) | +29,664 B | DRAM +848 B, IRAM +68 B |
 
 - With the option off, nothing changes: the image is byte-for-byte the same size.
 - At runtime, when enabled, there is one task: the esp-mqtt client (4 KB stack, internal

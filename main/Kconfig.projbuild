@@ -781,14 +781,14 @@ menu "Airplay ESP Configuration"
         config MQTT_NOWPLAYING_SNTP
             bool "Start SNTP so position_updated_at carries wall-clock time"
             depends on MQTT_NOWPLAYING
-            default n if ESPTOOLPY_FLASHSIZE_4MB
             default y
             help
                 Starts the ESP-IDF SNTP client (DHCP-provided server first,
                 then pool.ntp.org) when MQTT is enabled, so the state JSON
                 can carry position_ts / position_updated_at. Only
                 gettimeofday() is affected; the AirPlay PTP/NTP clocks run on
-                esp_timer. Off by default on 4 MB flash, where the app
-                partition has little room (~2 KB).
+                esp_timer. Costs about 3.5 KB of flash (no IRAM); on a
+                4 MB board that leaves the app slot nearly full, so switch
+                it off there if you need the room.
     endmenu
 endmenu
