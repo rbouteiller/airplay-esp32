@@ -1011,12 +1011,15 @@ static void sntp_start_once(void) {
   }
   started = true;
   esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+#if defined(CONFIG_LWIP_DHCP_GET_NTP_SRV) && CONFIG_LWIP_SNTP_MAX_SERVERS > 1
   // Slot 0 takes the NTP server from DHCP when the router offers one; slot 1
-  // stays pool.ntp.org.
+  // stays pool.ntp.org. Without both lwIP options, esp_netif_sntp_init()
+  // rejects this, so the default build uses pool.ntp.org alone.
   cfg.server_from_dhcp = true;
   cfg.renew_servers_after_new_IP = true;
   cfg.index_of_first_server = 1;
   cfg.ip_event_to_renew = IP_EVENT_STA_GOT_IP;
+#endif
   cfg.wait_for_sync = false;
   esp_err_t err = esp_netif_sntp_init(&cfg);
   ESP_LOGI(TAG, "SNTP start: %s", esp_err_to_name(err));
