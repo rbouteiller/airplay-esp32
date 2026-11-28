@@ -85,3 +85,10 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # semaphores, DMA descriptors and WiFi management structures that *must*
 # live in internal DRAM.  Default is 16384 — far too aggressive
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+# MQTT now-playing (CONFIG_MQTT_NOWPLAYING, off by default): it only talks
+# plain TCP to a local broker, so leave esp-mqtt's TLS and WebSocket
+# transports out (~5 KB of flash), and keep its buffers in SPIRAM where there
+# is one. Nothing from esp-mqtt is linked while the option is off.
+# CONFIG_MQTT_TRANSPORT_SSL is not set
+# CONFIG_MQTT_TRANSPORT_WEBSOCKET is not set
+CONFIG_MQTT_BUFFERS_ON_EXTERNAL_MEMORY=y

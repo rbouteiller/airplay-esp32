@@ -5,9 +5,11 @@
  * Optional MQTT now-playing publisher — see mqtt_nowplaying.h.
  *
  * Threading: RTSP event callbacks only copy data under a mutex and set a
- * dirty flag.  A single low-priority worker task does all MQTT publishing,
- * so the RTSP/audio path never blocks on the network.  No NVS writes happen
- * during playback (only when the user saves the MQTT form).
+ * dirty flag.  A 500 ms esp_timer tick queues the MQTT publishes (it never
+ * blocks), so the RTSP/audio path never waits on the network and the feature
+ * needs no task of its own beyond the esp-mqtt client.  No NVS writes happen
+ * during playback (only when the user saves the MQTT form).  The settings
+ * page itself is data/www/mqtt.html in SPIFFS.
  */
 
 #include "mqtt_nowplaying.h"
@@ -19,7 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include <time.h>
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -40,7 +41,6 @@
 #include "playback_control.h"
 #include "playback_events.h"
 #include "settings.h"
-#include "spiram_task.h"
 #include "wifi.h"
 
 static const char *TAG = "mqtt_np";
@@ -99,10 +99,13 @@ static char s_art_type[24];
 #endif
 static volatile bool s_dirty;
 static volatile playback_source_t s_last_source = PLAYBACK_SOURCE_NONE;
-static volatile bool s_restart;
+static SemaphoreHandle_t s_cli_lock; // guards s_client create/destroy
 static esp_mqtt_client_handle_t s_client;
 static volatile bool s_mqtt_connected;
-static TaskHandle_t s_task;
+static esp_timer_handle_t s_tick;
+#ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
+static volatile bool s_art_resend; // republish artwork_url (new connection)
+#endif
 static char s_dev_id[32]; // "airplay_esp32_" + Wi-Fi STA MAC
 
 // ---------------------------------------------------------------------------
@@ -325,16 +328,37 @@ static const char *state_str(np_play_state_t s) {
   }
 }
 
+// "YYYY-MM-DDTHH:MM:SSZ" for a Unix time, without libc's time zone and
+// strftime code (they cost ~5 KB of IRAM on the ESP32). Days to civil date
+// per H. Hinnant's days_from_civil inverse.
+static void iso_utc(int64_t t, char out[24]) {
+  int64_t days = t / 86400;
+  int64_t sod = t % 86400;
+  days += 719468;
+  const int64_t era = days / 146097;
+  const int64_t doe = days - era * 146097;
+  const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const int64_t mp = (5 * doy + 2) / 153;
+  const int d = (int)(doy - (153 * mp + 2) / 5 + 1);
+  const int m = (int)(mp < 10 ? mp + 3 : mp - 9);
+  const int y = (int)(yoe + era * 400 + (m <= 2));
+  snprintf(out, 24, "%04d-%02d-%02dT%02d:%02d:%02dZ", y, m, d,
+           (int)(sod / 3600), (int)(sod / 60 % 60), (int)(sod % 60));
+}
+
 // Build the JSON state document. Caller frees the string.
-static char *build_state_json(void) {
+static char *build_state_json(TickType_t wait) {
   np_state_t st;
-  xSemaphoreTake(s_lock, portMAX_DELAY);
+  if (!xSemaphoreTake(s_lock, wait)) {
+    return NULL;
+  }
   st = s_np;
   xSemaphoreGive(s_lock);
 
   bool have_art = false;
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
-  if (xSemaphoreTake(s_art_lock, pdMS_TO_TICKS(50))) {
+  if (xSemaphoreTake(s_art_lock, wait)) {
     have_art = s_art_len > 0;
     xSemaphoreGive(s_art_lock);
   }
@@ -376,11 +400,8 @@ static char *build_state_json(void) {
     double wall = (double)tv.tv_sec + tv.tv_usec / 1e6 - (now_us - at_us) / 1e6;
     cJSON_AddNumberToObject(j, "position_ts",
                             (double)(int64_t)(wall * 1000) / 1000.0);
-    time_t ws = (time_t)wall;
-    struct tm tmv;
-    gmtime_r(&ws, &tmv);
     char iso[24];
-    strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    iso_utc((int64_t)wall, iso);
     cJSON_AddStringToObject(j, "position_updated_at", iso);
   } else {
     cJSON_AddNullToObject(j, "position_ts");
@@ -420,6 +441,15 @@ static void publish(const char *suffix, const char *payload, bool retain) {
   char t[NP_TOPIC_MAX];
   topic(t, sizeof(t), suffix);
   esp_mqtt_client_publish(s_client, t, payload, 0, 1, retain ? 1 : 0);
+}
+
+// Non-blocking publish for the periodic tick: the message goes to the client
+// outbox and the MQTT task sends it. Only used while connected, when the
+// client's lock is held briefly (the long hold is a reconnect, skipped here).
+static void publish_q(const char *suffix, const char *payload, bool retain) {
+  char t[NP_TOPIC_MAX];
+  topic(t, sizeof(t), suffix);
+  esp_mqtt_client_enqueue(s_client, t, payload, 0, 1, retain ? 1 : 0, true);
 }
 
 static cJSON *device_block(void) {
@@ -594,17 +624,17 @@ static void handle_command(const char *t, int tlen, const char *d, int dlen) {
       playback_control_volume_down();
     }
   } else if (strcmp(suffix, "volume/set") == 0) {
-    float v = strtof(payload, NULL);
+    long v = strtol(payload, NULL, 10);
     if (v < 0) {
       v = 0;
     } else if (v > 100) {
       v = 100;
     }
-    ESP_LOGI(TAG, "volume set %.0f%%", v);
+    ESP_LOGI(TAG, "volume set %ld%%", v);
     // Same path as the buttons: the DAC follows, and an AirPlay sender is
     // told over DACP or the AirPlay 2 event channel. The sender's slider is
     // linear in dB over -30..0. Not persisted per step.
-    playback_control_set_volume_db(-30.0f + (v / 100.0f) * 30.0f);
+    playback_control_set_volume_db(-30.0f + (float)v * 0.3f);
     s_dirty = true;
   }
 }
@@ -625,6 +655,9 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id,
     esp_mqtt_client_subscribe(s_client, t, 0);
     publish("status", "online", true);
     publish_discovery();
+#ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
+    s_art_resend = true;
+#endif
     s_dirty = true;
     break;
   }
@@ -688,38 +721,45 @@ static void client_start(void) {
   esp_mqtt_client_start(s_client);
 }
 
-static void worker_task(void *arg) {
+// Every 500 ms on the esp_timer task: publish the state when it changed, and
+// every NP_PROGRESS_SECS while playing. Replaces a dedicated worker task, so
+// the feature has no internal-RAM stack of its own. Never blocks: it skips a
+// tick if a lock is busy or the client is being replaced.
+static void tick_cb(void *arg) {
   (void)arg;
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
-  uint32_t last_art = UINT32_MAX;
+  static uint32_t last_art = UINT32_MAX;
 #endif
-  int last_vol = -1;
-  int64_t last_pub = 0;
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(500));
-    if (s_restart) {
-      s_restart = false;
-      client_start();
+  static int last_vol = -1;
+  static int64_t last_pub = 0;
+  {
+    if (!s_mqtt_connected || !xSemaphoreTake(s_cli_lock, 0)) {
+      return;
+    }
+    if (!s_client || !s_mqtt_connected) {
+      xSemaphoreGive(s_cli_lock);
+      return;
+    }
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
+    if (s_art_resend) {
+      s_art_resend = false;
       last_art = UINT32_MAX;
+    }
 #endif
-    }
-    if (!s_mqtt_connected) {
-      continue;
-    }
     int vol = playback_control_get_volume_percent();
     bool playing = s_np.state == NP_STATE_PLAYING;
     int64_t now = esp_timer_get_time();
     bool periodic = playing && (now - last_pub) > NP_PROGRESS_SECS * 1000000LL;
     if (!s_dirty && vol == last_vol && !periodic) {
-      continue;
+      xSemaphoreGive(s_cli_lock);
+      return;
     }
     s_dirty = false;
     last_vol = vol;
     last_pub = now;
-    char *js = build_state_json();
+    char *js = build_state_json(0);
     if (js) {
-      publish("state", js, true);
+      publish_q("state", js, true);
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
       cJSON *j = cJSON_Parse(js);
       uint32_t art = s_np.artwork_version;
@@ -730,7 +770,7 @@ static void worker_task(void *arg) {
         // transparent PNG, so the image entity really clears. The state
         // JSON `artwork` stays null for that case.
         if (a && cJSON_IsString(a)) {
-          publish("artwork_url", a->valuestring, true);
+          publish_q("artwork_url", a->valuestring, true);
           last_art = art;
         } else {
           char ip[20] = {0};
@@ -738,7 +778,7 @@ static void worker_task(void *arg) {
             char url[80];
             snprintf(url, sizeof(url),
                      "http://%s/api/nowplaying/artwork?v=%" PRIu32, ip, art);
-            publish("artwork_url", url, true);
+            publish_q("artwork_url", url, true);
             last_art = art;
           } // else retry on a later pass once the IP is known
         }
@@ -746,7 +786,10 @@ static void worker_task(void *arg) {
       cJSON_Delete(j);
 #endif
       free(js);
+    } else {
+      s_dirty = true; // lock busy: try again next tick
     }
+    xSemaphoreGive(s_cli_lock);
   }
 }
 
@@ -843,7 +886,10 @@ static esp_err_t mqtt_post_handler(httpd_req_t *req) {
   cJSON *r = cJSON_CreateObject();
   if (err == ESP_OK) {
     s_cfg = c;
-    s_restart = true; // worker task reconnects with the new settings
+    // Reconnect with the new settings (blocking is fine on the httpd task).
+    xSemaphoreTake(s_cli_lock, portMAX_DELAY);
+    client_start();
+    xSemaphoreGive(s_cli_lock);
     cJSON_AddBoolToObject(r, "success", true);
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
     cJSON_AddBoolToObject(r, "restart_needed_for_artwork",
@@ -857,7 +903,7 @@ static esp_err_t mqtt_post_handler(httpd_req_t *req) {
 }
 
 static esp_err_t nowplaying_handler(httpd_req_t *req) {
-  char *js = build_state_json();
+  char *js = build_state_json(portMAX_DELAY);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_send(req, js ? js : "{}", HTTPD_RESP_USE_STRLEN);
@@ -895,46 +941,6 @@ static esp_err_t artwork_handler(httpd_req_t *req) {
 }
 #endif // CONFIG_MQTT_NOWPLAYING_ARTWORK
 
-// Minimal built-in settings page (the SPIFFS web UI has no MQTT form).
-// The password field is write-only: left blank, the stored one is kept.
-static const char MQTT_PAGE[] =
-    "<!doctype html><html><head><meta charset='utf-8'>"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>MQTT</title><style>body{font-family:sans-serif;max-width:420px;"
-    "margin:20px auto;padding:0 12px}label{display:block;margin:10px 0 4px}"
-    "input[type=text],input[type=password],input[type=number]{width:100%;"
-    "padding:6px;box-sizing:border-box}button{margin-top:14px;padding:8px "
-    "16px}</style></head><body><h2>MQTT now-playing</h2>"
-    "<label><input type=checkbox id=enabled> Enabled</label>"
-    "<label>Broker host</label><input type=text id=host>"
-    "<label>Port</label><input type=number id=port>"
-    "<label>Username</label><input type=text id=username>"
-    "<label>Password <small id=pw></small></label>"
-    "<input type=password id=password placeholder='(unchanged)'>"
-    "<label>Base topic</label><input type=text id=base_topic>"
-    "<label>Discovery prefix</label><input type=text id=discovery_prefix>"
-    "<label><input type=checkbox id=artwork> Receive cover art "
-    "(restart needed)</label>"
-    "<button onclick='save()'>Save</button> <span id=msg></span>"
-    "<p><a href='/api/nowplaying'>/api/nowplaying</a></p><script>"
-    "const F=['host','port','username','base_topic','discovery_prefix'];"
-    "fetch('/api/mqtt').then(r=>r.json()).then(c=>{F.forEach(k=>"
-    "document.getElementById(k).value=c[k]);enabled.checked=c.enabled;"
-    "artwork.checked=c.artwork;pw.textContent=c.has_password?'(set)':'(none)';"
-    "msg.textContent=c.connected?'connected':'not connected'});"
-    "function save(){const b={enabled:enabled.checked,artwork:artwork.checked};"
-    "F.forEach(k=>b[k]=document.getElementById(k).value);b.port=+b.port;"
-    "if(password.value)b.password=password.value;"
-    "fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':"
-    "'application/json'},body:JSON.stringify(b)}).then(r=>r.json()).then(r=>"
-    "{msg.textContent=r.success?'saved':'error: '+r.error;password.value=''})}"
-    "</script></body></html>";
-
-static esp_err_t mqtt_page_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  return httpd_resp_send(req, MQTT_PAGE, HTTPD_RESP_USE_STRLEN);
-}
-
 void mqtt_nowplaying_register_http(httpd_handle_t server) {
   if (!server) {
     return;
@@ -946,12 +952,9 @@ void mqtt_nowplaying_register_http(httpd_handle_t server) {
   httpd_uri_t u3 = {.uri = "/api/nowplaying",
                     .method = HTTP_GET,
                     .handler = nowplaying_handler};
-  httpd_uri_t u5 = {
-      .uri = "/mqtt", .method = HTTP_GET, .handler = mqtt_page_handler};
   httpd_register_uri_handler(server, &u1);
   httpd_register_uri_handler(server, &u2);
   httpd_register_uri_handler(server, &u3);
-  httpd_register_uri_handler(server, &u5);
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
   httpd_uri_t u4 = {.uri = "/api/nowplaying/artwork",
                     .method = HTTP_GET,
@@ -969,7 +972,8 @@ esp_err_t mqtt_nowplaying_init(void) {
     return ESP_OK;
   }
   s_lock = xSemaphoreCreateMutex();
-  if (!s_lock) {
+  s_cli_lock = xSemaphoreCreateMutex();
+  if (!s_lock || !s_cli_lock) {
     return ESP_ERR_NO_MEM;
   }
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
@@ -1006,8 +1010,6 @@ static void sntp_start_once(void) {
     return;
   }
   started = true;
-  setenv("TZ", "UTC0", 1);
-  tzset();
   esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
   // Slot 0 takes the NTP server from DHCP when the router offers one; slot 1
   // stays pool.ntp.org.
@@ -1030,12 +1032,17 @@ void mqtt_nowplaying_start(void) {
     sntp_start_once();
   }
 #endif
-  if (!s_task) {
-    task_create_spiram(worker_task, "mqtt_np", 4096, NULL, 2, &s_task, NULL);
+  if (!s_tick) {
+    const esp_timer_create_args_t ta = {.callback = tick_cb, .name = "mqtt_np"};
+    if (esp_timer_create(&ta, &s_tick) == ESP_OK) {
+      esp_timer_start_periodic(s_tick, 500 * 1000);
+    }
   }
+  xSemaphoreTake(s_cli_lock, portMAX_DELAY);
   if (!s_client) {
-    s_restart = true;
+    client_start();
   }
+  xSemaphoreGive(s_cli_lock);
 }
 
 #endif // CONFIG_MQTT_NOWPLAYING

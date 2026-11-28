@@ -273,6 +273,11 @@ static const static_file_t STATIC_FILES[] = {
     {"/logs", "/spiffs/www/logs.html", "text/html"},
     {"/app.css", "/spiffs/www/app.css", "text/css; charset=utf-8"},
     {"/shell.js", "/spiffs/www/shell.js", "text/javascript; charset=utf-8"},
+#ifdef CONFIG_MQTT_NOWPLAYING
+    {"/mqtt", "/spiffs/www/mqtt.html",
+     "text/html"}, // counted in
+                   // MQTT_NOWPLAYING_URI_HANDLERS
+#endif
 };
 
 static esp_err_t static_file_handler(httpd_req_t *req) {

@@ -14,13 +14,18 @@ In `idf.py menuconfig` → *Airplay ESP Configuration* → *MQTT now-playing*:
 | `CONFIG_MQTT_NOWPLAYING` | n | Compile the feature in. Adds the esp-mqtt client (`espressif/mqtt` on ESP-IDF 6.x). |
 | `CONFIG_MQTT_NOWPLAYING_ARTWORK` | y (needs `SPIRAM`) | Keep the latest cover art in PSRAM and serve it to MQTT clients. |
 | `CONFIG_MQTT_NOWPLAYING_ARTWORK_MAX_KB` | 256 | Size of the PSRAM cover-art buffer. Larger images are dropped. |
-| `CONFIG_MQTT_NOWPLAYING_SNTP` | y | Start SNTP when MQTT is enabled, for `position_updated_at`. |
+| `CONFIG_MQTT_NOWPLAYING_SNTP` | y (n on 4 MB flash) | Start SNTP when MQTT is enabled, for `position_updated_at`. |
 
 Or add `CONFIG_MQTT_NOWPLAYING=y` to an extra `sdkconfig.defaults` file.
 
+`config/sdkconfig.defaults` builds esp-mqtt for plain TCP only (no TLS or WebSocket
+transports) and puts its buffers in SPIRAM when there is one. The feature talks to a
+broker on the local network.
+
 ## Setup
 
-Open `http://<device>/mqtt`, or send JSON to `POST /api/mqtt`:
+Open `http://<device>/mqtt` (`data/www/mqtt.html` in SPIFFS, only included when the
+option is on), or send JSON to `POST /api/mqtt`:
 
 ```json
 {"enabled": true, "host": "broker.local", "port": 1883,
@@ -77,11 +82,17 @@ A `universal` media player can combine them into one player.
 
 ## Memory
 
+Static, from `idf.py size` (ESP-IDF 6.1):
+
+| Preset | App image, option on | Change vs option off | Static internal RAM |
+|---|---|---|---|
+| `esp32s3` (16 MB) | 1,737,296 B | +36,592 B | +900 B |
+| `esp32wrover-dev` (plain ESP32, 4 MB) | 1,958,640 B (7,440 B free in the app slot) | +26,192 B | DRAM +840 B, IRAM +68 B |
+
 - With the option off, nothing changes: the image is byte-for-byte the same size.
-- With it on, the `esp32s3` app image grows by about 53 KB and static internal RAM by
-  about 1 KB.
-- At runtime, when enabled: the MQTT client task (4 KB stack), a worker task (4 KB
-  stack, in PSRAM), and about 2.5 KB of MQTT buffers.
+- At runtime, when enabled, there is one task: the esp-mqtt client (4 KB stack, internal
+  RAM). The periodic publish runs as a 500 ms `esp_timer` callback instead of a task of
+  its own, and the MQTT buffers are in SPIRAM.
 - Cover art lives only in PSRAM. Its buffer is allocated when the first image arrives.
   Without PSRAM, artwork is not requested at all.
 

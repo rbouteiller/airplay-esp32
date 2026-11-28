@@ -86,6 +86,9 @@ endif()
 if(NOT CONFIG_DAC_TAS58XX)
   list(APPEND spiffs_stage_args --exclude "hf/tas5825m_fw*.bin")
 endif()
+if(NOT CONFIG_MQTT_NOWPLAYING)
+  list(APPEND spiffs_stage_args --exclude "www/mqtt.html")
+endif()
 add_custom_target(
   spiffs_image_stage ALL
   COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/scripts/gen_spiffs_image.py"

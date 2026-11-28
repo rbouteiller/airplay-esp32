@@ -33,7 +33,8 @@ esp_err_t mqtt_nowplaying_init(void);
 /** Start (or restart) the MQTT client if enabled. Safe to call repeatedly. */
 void mqtt_nowplaying_start(void);
 
-/** Register /api/mqtt (GET/POST), /api/nowplaying and /mqtt. */
+/** Register /api/mqtt (GET/POST) and /api/nowplaying[/artwork]. The /mqtt
+ * page is data/www/mqtt.html, served by web_server.c's static file table. */
 void mqtt_nowplaying_register_http(httpd_handle_t server);
 
 #ifdef CONFIG_MQTT_NOWPLAYING_ARTWORK
